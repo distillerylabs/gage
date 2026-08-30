@@ -41,17 +41,17 @@ myvault/                          # git repo root
 ├── .gage/
 │   └── config.toml               # repo-level config: method + device metadata (committed, plaintext)
 ├── .age-recipients               # recipients for the whole repo — the only one
-├── vault/
+├── secrets/
 │   ├── 4b9d7710-8e2a-4a1f-9c3d-1a2b3c4d5e6f.age
 │   ├── a03e5f88-1c44-4e9a-8b77-2d3e4f5a6b7c.age
 │   └── 8f3a1c2e-5566-4a11-9d22-33aa44bb55cc.age
 └── .gitignore
 ```
 
-Flat *inside* `vault/`, deliberately — the UUID files themselves have no
-further structure. Keeping them under `vault/` rather than scattered at
+Flat *inside* `secrets/`, deliberately — the UUID files themselves have no
+further structure. Keeping them under `secrets/` rather than scattered at
 the repo root is purely cosmetic (a `git status`/`ls` at the root shows
-`.gage/`, `.age-recipients`, `vault/` — three things, not a growing wall
+`.gage/`, `.age-recipients`, `secrets/` — three things, not a growing wall
 of random UUIDs) since there's no more per-directory recipient scoping to
 motivate any particular placement. Filenames carry no meaning — they're
 generated (UUIDv4) at `insert` time and never chosen or seen by the user

@@ -69,7 +69,7 @@ something worth cloning.
 ### Tests (write first)
 
 - [ ] `gage init` on an empty temp dir creates `.gage/config.toml`,
-      `.age-recipients`, `vault/`, `.gitignore`, and a git repo with
+      `.age-recipients`, `secrets/`, `.gitignore`, and a git repo with
       exactly one commit
 - [ ] `gage init` into a non-empty, non-gage directory fails cleanly
       without touching existing files
@@ -106,7 +106,7 @@ something worth cloning.
 ## M2 — Entry format + crypto round-trip
 
 The core loop, at the library level, no CLI verb wired up yet: generate
-UUID, YAML-encode an entry, encrypt to `vault/<uuid>.age` via the `age`
+UUID, YAML-encode an entry, encrypt to `secrets/<uuid>.age` via the `age`
 library against `.age-recipients`, decrypt it back. This is the riskiest
 technical piece (crypto correctness) — prove it in isolation before
 anything else depends on it.
@@ -128,8 +128,8 @@ anything else depends on it.
 ### Implementation
 
 - [ ] Entry struct + YAML (de)serialization
-- [ ] Encrypt entry to `vault/<uuid>.age`
-- [ ] Decrypt entry from `vault/<uuid>.age`
+- [ ] Encrypt entry to `secrets/<uuid>.age`
+- [ ] Decrypt entry from `secrets/<uuid>.age`
 
 ## M3 — Dumbest possible CRUD (one-shot mode)
 
@@ -144,7 +144,7 @@ command line, decrypting everything every time (no cache).
       the actual CLI (not just the library)
 - [ ] `gage insert` produces exactly one new git commit
 - [ ] `gage ls` lists the inserted entry's title
-- [ ] `gage rm` deletes the vault file and commits the deletion; a
+- [ ] `gage rm` deletes the file under `secrets/` and commits the deletion; a
       subsequent `cat`/`ls` no longer shows the entry
 - [ ] `gage cat` on an unknown title/UUID fails with a clear error and
       nonzero exit code
