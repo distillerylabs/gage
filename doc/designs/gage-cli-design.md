@@ -595,7 +595,19 @@ gage repo list
 gage repo remove <name>              # forgets locally; does not delete the git repo
 gage repo info [<name>]              # method, recipient count, remote, dirty/clean
 gage repo set-default <name>         # changes `current` in global config
+gage repo set-remote <name> <url>    # sets/changes the git remote — see below
 ```
+
+`--remote` on `init` is optional — a repo can start local-only (no
+sync until you're ready) and gain a remote later, e.g. after creating an
+empty repo on GitHub. `gage repo set-remote` is the command for that: it
+sets `origin` on the actual git repo (equivalent to `git remote add/set-url
+origin <url>`) *and* updates `repos.<name>.remote` in the global config in
+the same step, so the two never drift apart. This is deliberately not left
+to `gage git -- remote add origin <url>` — that passthrough would touch
+git's remote config without gage's global config ever finding out, leaving
+`repo info` reporting a stale or missing remote for a repo that actually
+has one.
 
 `use` is the one verb for "operate against this repo," in both modes:
 

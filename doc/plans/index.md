@@ -83,6 +83,17 @@ something worth cloning.
 - [ ] `gage repo remove <name>` drops it from global config but leaves the
       git repo and its files on disk untouched
 - [ ] `gage repo set-default <name>` updates `current` in global config
+- [ ] `gage init` without `--remote` succeeds and leaves the repo
+      remote-less (no `origin`, no `remote` in global config)
+- [ ] `gage repo set-remote <name> <url>` sets `origin` on the actual git
+      repo (verified by reading git config back via go-git) *and* updates
+      `repos.<name>.remote` in global config in the same call
+- [ ] `gage repo set-remote <name> <new-url>` on a repo that already has
+      an `origin` changes it (equivalent to `set-url`), and `repo info`
+      reflects the new URL afterward
+- [ ] `gage repo set-remote` invoked without both `<name>` and `<url>`
+      fails with a usage error and makes no change to the repo or global
+      config
 
 ### Implementation
 
@@ -90,6 +101,7 @@ something worth cloning.
 - [ ] `.gage/config.toml` read/write
 - [ ] `.age-recipients` read/write
 - [ ] `gage repo list/info/remove/set-default`
+- [ ] `gage repo set-remote` (go-git set/update `origin`, sync into global config)
 
 ## M2 — Entry format + crypto round-trip
 
