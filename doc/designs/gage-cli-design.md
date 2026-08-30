@@ -152,10 +152,12 @@ presentation choices, not library behavior, and won't have a direct GUI/TUI
 equivalent — they're mentioned here so it's clear they don't need to
 survive a port:
 
-- `gage edit`'s `$EDITOR`-on-tmpfs round trip. The library operation is
-  "update these fields on this entry"; the CLI happens to implement its
-  editing UI via `$EDITOR`. A GUI would just have a form calling the same
-  update method.
+- `gage edit`'s and `gage insert -e`'s shared `$EDITOR`-on-tmpfs round
+  trip. The library operation is "write this fully-formed entry" (create
+  or update); the CLI happens to implement its authoring UI via
+  `$EDITOR`, seeded with a decrypted entry for `edit` and an empty stub
+  for `insert -e`. A GUI would just have a form calling the same
+  underlying method.
 - Terminal ASCII QR rendering (`-q`/`--qr`). The library returns the bytes
   to encode; the CLI renders them as terminal art, a GUI would render an
   actual QR image widget.
@@ -362,7 +364,9 @@ fields:
 
 `gage insert`/`gage generate` populate `title`/`created`/`updated_by`
 automatically; `gage edit` opens the full YAML in `$EDITOR` and re-stamps
-`updated`/`updated_by` on save.
+`updated`/`updated_by` on save. `gage insert -e` shares that same
+`$EDITOR` round trip at creation time, so `fields` can be populated
+immediately instead of requiring a follow-up `edit`.
 
 ---
 
@@ -966,7 +970,8 @@ gage search <pattern> [--use NAME]          # matches title/description/body
                                               # (decrypts in bulk if no index
                                               # cached yet; alias: gage grep)
 
-gage insert <title> [--use NAME] [--description TEXT] [-m|--multiline] [-f|--force] [--yes]
+gage insert <title> [--use NAME] [--description TEXT]
+             [-m|--multiline | --value-stdin | -e|--edit] [-f|--force] [--yes]
 gage edit <query>   [--use NAME]            # decrypt to tmpfs, $EDITOR, re-encrypt, commit
                                               # (re-stamps updated/updated_by)
 gage rename <query> <new-title> [--use NAME]  # quick metadata-only edit, no $EDITOR
@@ -986,6 +991,31 @@ gage cp <query> --to-vault <name> [--use NAME] [--yes]   # same, but keeps the o
 `--yes` bypasses the recipient-change confirmation prompt (see "Local
 trust cache") for scripting/CI; interactively it's never needed since
 `gage` just asks.
+
+Notes on `insert`:
+- Exactly one of `-m`, `--value-stdin`, `-e` may be given; with none of
+  them, `gage` prompts for `value` once, masked, the same way it prompts
+  for a passphrase. `-m` reads multiple lines straight from the terminal
+  until EOF, no external process. `--value-stdin` reads `value` verbatim
+  from stdin (one trailing newline trimmed) — deliberately not named
+  `--stdin`, which is already the *session*-level flag for piping whole
+  command lines into non-interactive mode (see "Session model"); the two
+  would otherwise fight over the same stream inside a scripted session.
+  `-e`/`--edit` opens the full entry as YAML in `$EDITOR`, seeded with
+  `title`/`description` already filled in and empty `value`/`fields` —
+  the same tmpfs round trip `gage edit` uses (see below), just seeded
+  with a stub instead of a decrypted entry. It's the only `insert` mode
+  that can set `fields` at creation time; every other mode leaves
+  `fields` empty until a follow-up `gage edit`.
+- `-e`/`--edit` aborts the insert (no entry written, no commit) if the
+  file comes back unchanged, or with `value` still empty and `fields`
+  still empty — the same "empty message aborts the commit" convention
+  `git commit` uses, so quitting the editor without really saving
+  anything can't silently create a blank secret.
+- The template lets `title` itself be edited, not just `description`/
+  `value`/`fields`; the duplicate-title check (and whether `-f` is
+  required) runs against whatever title is in the file when it's saved,
+  not the `<title>` argument the command was invoked with.
 
 Notes on `show`:
 - Default (no flag): prints the `value` field only — not `title`,
@@ -1119,6 +1149,15 @@ for a vault that actually has one.
   REPL with recallable history. Titles typed as *queries* are fine to log
   (you typed them yourself); it's only the decrypted `value`/`fields`
   values that must never land in the history file.
+- **`insert`'s value-input modes are mutually exclusive, and the
+  per-value stdin flag isn't named `--stdin`.** The global `--stdin` flag
+  already means "read whole command lines from stdin for non-interactive
+  session mode" (see "Session model"); reusing that name for "read this
+  one value from stdin" on `insert` would mean the two senses fight over
+  the same stream inside a scripted session. The per-command flag is
+  `--value-stdin` instead, and it's mutually exclusive with `-m` and
+  `-e`/`--edit` — `gage` rejects more than one being set before doing any
+  I/O.
 - **`--reencrypt` is mandatory, not default-on, for recipient removal.**
   Silently leaving stale ciphertext readable by a removed recipient is a
   worse failure mode than forcing the user to explicitly opt into the

@@ -216,12 +216,25 @@ command line, decrypting everything every time (no cache). Each of these
 explicit parameter and never unlocks internally — `cmd/gage`'s one-shot
 handler is what calls `Unlock` → the CRUD method → `Identity.Close()` for
 each invocation. M5 reuses these same methods unchanged by caching the
-`Identity` across calls instead of closing it after one.
+`Identity` across calls instead of closing it after one. `gage insert`'s
+value comes from a masked prompt (default), `--value-stdin`, or
+`-m|--multiline`; `-e|--edit` (a full `$EDITOR` template) is deferred to
+M4, once `gage edit`'s tmpfs/`$EDITOR` round trip exists for it to share.
 
 ### Tests (write first)
 
 - [ ] `gage insert` followed by `gage cat` round-trips the value through
       the actual CLI (not just the library)
+- [ ] `gage insert --value-stdin` reads the value from stdin (one
+      trailing newline trimmed) and round-trips through `cat` identically
+      to the default prompt path
+- [ ] `gage insert -m` captures multiple lines from the terminal until
+      EOF and round-trips through `cat` byte-for-byte
+- [ ] With none of `-m`/`--value-stdin` given, `gage insert` prompts once
+      for `value` via the library's `Prompter` (a fake in tests) rather
+      than reading stdin directly
+- [ ] Passing more than one of `-m`/`--value-stdin` is rejected with a
+      usage error before any prompt or read happens
 - [ ] `gage insert` produces exactly one new git commit
 - [ ] `gage ls` lists the inserted entry's title
 - [ ] `gage rm` deletes the file under `entries/` and commits the deletion; a
@@ -233,7 +246,9 @@ each invocation. M5 reuses these same methods unchanged by caching the
 
 ### Implementation
 
-- [ ] `gage insert`
+- [ ] `gage insert`: masked `Prompter` prompt (default), `--value-stdin`
+      (read + trim), or `-m|--multiline` (terminal capture until EOF) for
+      the value; mutually exclusive, validated before any I/O happens
 - [ ] `gage cat` (exact UUID/title only)
 - [ ] `gage rm`
 - [ ] `gage ls`
@@ -243,7 +258,9 @@ each invocation. M5 reuses these same methods unchanged by caching the
 
 Upgrade addressing from "exact UUID/title" to the full resolution order
 (prefix → exact → unique substring → ambiguous prompt/fail). Wire `show`,
-`edit`, `rename`, `generate` on top of it.
+`edit`, `rename`, `generate` on top of it. Also adds `-e|--edit` to
+`gage insert` (deferred from M3), since it shares `gage edit`'s
+tmpfs/`$EDITOR` round trip — one CLI-layer helper, two call sites.
 
 ### Tests (write first)
 
@@ -255,6 +272,16 @@ Upgrade addressing from "exact UUID/title" to the full resolution order
       mode, fails with nonzero exit instead of prompting
 - [ ] `gage edit` re-stamps `updated`/`updated_by` on save, leaves other
       fields untouched if unedited, and produces a new commit
+- [ ] `gage insert -e` opens a template (`title`/`description`
+      pre-filled, empty `value`/`fields`) in `$EDITOR`; saving it inserts
+      an entry with the edited `value`/`fields`, including `fields` set
+      directly at creation — the one `insert` mode that can do that
+- [ ] `gage insert -e` aborts with no entry written and no commit if the
+      file comes back unchanged, or with `value` still empty and `fields`
+      still empty
+- [ ] `gage insert -e` changing `title` inside the editor uses the
+      edited title, not the original `<title>` argument, for both the
+      saved entry and the duplicate-title/`-f` check
 - [ ] `gage rename` changes only the title (not `value`/`fields`) and
       bumps `updated`
 - [ ] `gage generate` inserts a new entry whose `value` matches the
@@ -266,7 +293,13 @@ Upgrade addressing from "exact UUID/title" to the full resolution order
       resolved entry or a candidate list as a value — never printed text;
       the CLI layer decides whether to prompt (session) or fail (one-shot)
 - [ ] `gage show`
-- [ ] `gage edit` (`$EDITOR` + tmpfs, re-stamps `updated`/`updated_by`)
+- [ ] Shared `editYAML` CLI helper (write to tmpfs, launch `$EDITOR`,
+      read back, detect unchanged) used by both `gage edit` and
+      `gage insert -e`
+- [ ] `gage edit` (`editYAML` seeded with the decrypted entry, re-stamps
+      `updated`/`updated_by`)
+- [ ] `gage insert -e` (`editYAML` seeded with a stub entry instead of a
+      decrypted one)
 - [ ] `gage rename`
 - [ ] `gage generate`
 
