@@ -271,7 +271,8 @@ each invocation. M5 reuses these same methods unchanged by caching the
 `Identity` across calls instead of closing it after one. `gage insert`'s
 value comes from a masked prompt (default), `--value-stdin`, or
 `-m|--multiline`; `-e|--edit` (a full `$EDITOR` template) is deferred to
-M4, once `gage edit`'s tmpfs/`$EDITOR` round trip exists for it to share.
+M4, once `gage edit`'s `$EDITOR`-on-scratch-file round trip exists for it
+to share.
 
 ### Tests (write first)
 
@@ -312,7 +313,8 @@ Upgrade addressing from "exact UUID/title" to the full resolution order
 (prefix → exact → unique substring → ambiguous prompt/fail). Wire `show`,
 `edit`, `rename`, `generate` on top of it. Also adds `-e|--edit` to
 `gage insert` (deferred from M3), since it shares `gage edit`'s
-tmpfs/`$EDITOR` round trip — one CLI-layer helper, two call sites.
+`$EDITOR`-on-scratch-file round trip — one CLI-layer helper, two call
+sites.
 
 ### Tests (write first)
 
@@ -334,6 +336,12 @@ tmpfs/`$EDITOR` round trip — one CLI-layer helper, two call sites.
 - [ ] `gage insert -e` changing `title` inside the editor uses the
       edited title, not the original `<title>` argument, for both the
       saved entry and the duplicate-title/`-f` check
+- [ ] `editYAML`'s scratch file lands in a verified tmpfs directory on
+      Linux and the OS's standard temp directory elsewhere, created
+      `0600`
+- [ ] The scratch file is removed (contents overwritten first) on every
+      exit path — `$EDITOR` exits zero, `$EDITOR` exits non-zero, and the
+      edited content fails to parse back into an `Entry`
 - [ ] `gage rename` changes only the title (not `value`/`fields`) and
       bumps `updated`
 - [ ] `gage generate` inserts a new entry whose `value` matches the
@@ -345,8 +353,15 @@ tmpfs/`$EDITOR` round trip — one CLI-layer helper, two call sites.
       resolved entry or a candidate list as a value — never printed text;
       the CLI layer decides whether to prompt (session) or fail (one-shot)
 - [ ] `gage show`
-- [ ] Shared `editYAML` CLI helper (write to tmpfs, launch `$EDITOR`,
-      read back, detect unchanged) used by both `gage edit` and
+- [ ] Cross-platform scratch-file location for `editYAML`: on Linux,
+      verify (via `statfs`) and prefer a tmpfs-backed directory
+      (`$XDG_RUNTIME_DIR`, falling back to `/dev/shm`); on macOS/Windows,
+      fall back to the OS's standard secure temp directory (`0600`,
+      exclusively created)
+- [ ] Shared `editYAML` CLI helper: write the scratch file, launch
+      `$EDITOR`, read back, detect unchanged, then best-effort overwrite
+      before deleting on every exit path (success, non-zero `$EDITOR`
+      exit, parse failure) — used by both `gage edit` and
       `gage insert -e`
 - [ ] `gage edit` (`editYAML` seeded with the decrypted entry, re-stamps
       `updated`/`updated_by`)

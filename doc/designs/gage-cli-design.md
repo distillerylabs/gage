@@ -152,12 +152,15 @@ presentation choices, not library behavior, and won't have a direct GUI/TUI
 equivalent — they're mentioned here so it's clear they don't need to
 survive a port:
 
-- `gage edit`'s and `gage insert -e`'s shared `$EDITOR`-on-tmpfs round
-  trip. The library operation is "write this fully-formed entry" (create
-  or update); the CLI happens to implement its authoring UI via
+- `gage edit`'s and `gage insert -e`'s shared `$EDITOR`-on-scratch-file
+  round trip. The library operation is "write this fully-formed entry"
+  (create or update); the CLI happens to implement its authoring UI via
   `$EDITOR`, seeded with a decrypted entry for `edit` and an empty stub
-  for `insert -e`. A GUI would just have a form calling the same
-  underlying method.
+  for `insert -e`. The scratch file itself prefers a verified tmpfs-backed
+  directory where the OS provides one (Linux) and falls back to a
+  tightly-permissioned, best-effort-wiped temp file elsewhere (macOS,
+  Windows) — see "A few decisions worth calling out" for why. A GUI
+  would just have a form calling the same underlying method.
 - Terminal ASCII QR rendering (`-q`/`--qr`). The library returns the bytes
   to encode; the CLI renders them as terminal art, a GUI would render an
   actual QR image widget.
@@ -985,8 +988,9 @@ gage search <pattern> [--use NAME]          # matches title/description/body
 
 gage insert <title> [--use NAME] [--description TEXT]
              [-m|--multiline | --value-stdin | -e|--edit] [-f|--force] [--yes]
-gage edit <query>   [--use NAME]            # decrypt to tmpfs, $EDITOR, re-encrypt, commit
-                                              # (re-stamps updated/updated_by)
+gage edit <query>   [--use NAME]            # decrypt to a scratch file, $EDITOR,
+                                              # re-encrypt, commit (re-stamps
+                                              # updated/updated_by)
 gage rename <query> <new-title> [--use NAME]  # quick metadata-only edit, no $EDITOR
 gage generate <title> [--use NAME] [-l LENGTH] [--no-symbols]
                        [-f|--force] [-c|--clip] [-q|--qr] [--yes]
@@ -1016,8 +1020,9 @@ Notes on `insert`:
   would otherwise fight over the same stream inside a scripted session.
   `-e`/`--edit` opens the full entry as YAML in `$EDITOR`, seeded with
   `title`/`description` already filled in and empty `value`/`fields` —
-  the same tmpfs round trip `gage edit` uses (see below), just seeded
-  with a stub instead of a decrypted entry. It's the only `insert` mode
+  the same scratch-file round trip `gage edit` uses (see below), just
+  seeded with a stub instead of a decrypted entry. It's the only `insert`
+  mode
   that can set `fields` at creation time; every other mode leaves
   `fields` empty until a follow-up `gage edit`.
 - `-e`/`--edit` aborts the insert (no entry written, no commit) if the
@@ -1164,6 +1169,25 @@ for a vault that actually has one.
   once and proceeds unlocked-but-unprotected rather than refusing to
   work — the same "warn and proceed" posture as an unreachable network in
   "Sync model."
+- **The `$EDITOR` scratch file prefers real tmpfs, but doesn't pretend to
+  have it everywhere.** Linux gets the strong guarantee — a verified
+  tmpfs-backed directory (`$XDG_RUNTIME_DIR`, falling back to
+  `/dev/shm`; checked via `statfs`, not assumed from the path), so
+  plaintext never touches persistent storage during an edit. macOS has
+  no built-in equivalent; a real RAM-backed volume is possible there
+  (`hdiutil attach -nomount ram://`) but was deliberately ruled out — it
+  shells out to `hdiutil`/`diskutil`, leaves a visible mounted volume
+  while active, and needs its own crash-recovery story if `gage` is
+  killed mid-edit. Windows has no equivalent at all without a
+  third-party driver. Both fall back instead to a tightly-permissioned
+  (`0600`, exclusively created) file in the OS's standard temp
+  directory, best-effort overwritten before deletion — and `gage` says
+  plainly that this is *not* a hard no-disk-touch guarantee there, since
+  SSD wear-leveling and copy-on-write filesystems (APFS included) mean
+  overwrite-before-delete can't reliably erase the original blocks
+  regardless of effort. Same posture as Windows' weaker core-dump
+  guarantee above: a documented gap, not a claimed guarantee the
+  platform can't back.
 - **Session vaults are re-lockable without killing the process.** `lock
   <vault>` (or the idle timeout) drops that vault's key from memory while
   leaving other unlocked vaults and the shell itself intact — useful when
