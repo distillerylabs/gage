@@ -47,7 +47,7 @@ Key dependencies, decided up front so later milestones don't reshuffle:
       with `XDG_*` env vars set, and with them unset (defaults)
 - [ ] XDG path resolution: correct `%APPDATA%`/`%LOCALAPPDATA%`-based paths
       on Windows
-- [ ] Global `config.toml` round-trip: write a `repos.*`/`current` struct,
+- [ ] Global `config.toml` round-trip: write a `vaults.*`/`current` struct,
       read it back, fields match exactly
 
 ### Implementation
@@ -59,12 +59,13 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 - [ ] XDG path resolution (config/data/state, with Windows mapping)
 - [ ] Global `$GAGE_CONFIG/config.toml` read/write
 
-## M1 — Repo lifecycle, single method
+## M1 — Vault lifecycle, single method
 
 `gage init` with **one** method only (passphrase — simplest, no external
-plugin dependency). Writes `.gage/config.toml`, `.age-recipients`,
-git-inits, registers in global config. Defer `clone` until there's
-something worth cloning.
+plugin dependency) and **one** vault type only (`git` — the only type
+that exists). Writes `.gage/config.toml` (with `type = "git"`),
+`.age-recipients`, git-inits, registers in global config. Defer `clone`
+until there's something worth cloning.
 
 ### Tests (write first)
 
@@ -73,35 +74,43 @@ something worth cloning.
       exactly one commit
 - [ ] `gage init` into a non-empty, non-gage directory fails cleanly
       without touching existing files
-- [ ] `.gage/config.toml` round-trip: method + `[[recipients]]` fields
-      survive write/parse
+- [ ] `.gage/config.toml` round-trip: `[vault]` (including `type = "git"`)
+      + method + `[[recipients]]` fields survive write/parse
+- [ ] `gage init` with no `--type` flag defaults to `type = "git"`
+- [ ] `gage init --type git` succeeds and is equivalent to omitting the flag
+- [ ] `gage init --type <anything-else>` fails with a usage error before
+      creating any files, and lists `git` as the only accepted value
 - [ ] `.age-recipients` round-trip: one public key per line, no gage-only
       framing, so a stock `age`/`passage` CLI could use it as-is
-- [ ] `gage repo list` includes a freshly-`init`'d repo
-- [ ] `gage repo info <name>` reports the correct method, recipient count,
-      remote, and clean/dirty state
-- [ ] `gage repo remove <name>` drops it from global config but leaves the
-      git repo and its files on disk untouched
-- [ ] `gage repo set-default <name>` updates `current` in global config
-- [ ] `gage init` without `--remote` succeeds and leaves the repo
-      remote-less (no `origin`, no `remote` in global config)
-- [ ] `gage repo set-remote <name> <url>` sets `origin` on the actual git
+- [ ] `gage vault list` includes a freshly-`init`'d vault
+- [ ] `gage vault info <name>` reports the correct type, method, recipient
+      count, and (for `git`) remote + clean/dirty state
+- [ ] `gage vault remove <name>` drops it from global config but leaves
+      the underlying git repo and its files on disk untouched
+- [ ] `gage vault set-default <name>` updates `current` in global config
+- [ ] `gage init` without `--remote` succeeds and leaves the vault
+      remote-less (no `origin`, no `[vaults.<name>.git]` table in global
+      config)
+- [ ] `gage git set-remote <name> <url>` sets `origin` on the actual git
       repo (verified by reading git config back via go-git) *and* updates
-      `repos.<name>.remote` in global config in the same call
-- [ ] `gage repo set-remote <name> <new-url>` on a repo that already has
-      an `origin` changes it (equivalent to `set-url`), and `repo info`
+      `vaults.<name>.git.origin` in global config in the same call
+- [ ] `gage git set-remote <name> <new-url>` on a vault that already has
+      an `origin` changes it (equivalent to `set-url`), and `vault info`
       reflects the new URL afterward
-- [ ] `gage repo set-remote` invoked without both `<name>` and `<url>`
+- [ ] `gage git set-remote` invoked without both `<name>` and `<url>`
       fails with a usage error and makes no change to the repo or global
       config
 
 ### Implementation
 
-- [ ] `gage init` (passphrase method only, go-git `git.PlainInit` + initial commit)
-- [ ] `.gage/config.toml` read/write
+- [ ] `gage init` (passphrase method only; `--type` flag, default/only
+      value `git`, validated against a single-element allowlist; go-git
+      `git.PlainInit` + initial commit)
+- [ ] `.gage/config.toml` read/write (`[vault]` section, incl. `type`)
 - [ ] `.age-recipients` read/write
-- [ ] `gage repo list/info/remove/set-default`
-- [ ] `gage repo set-remote` (go-git set/update `origin`, sync into global config)
+- [ ] `gage vault list/info/remove/set-default`
+- [ ] `gage git set-remote` (go-git set/update `origin`, sync into
+      `vaults.<name>.git.origin` in global config)
 
 ## M2 — Entry format + crypto round-trip
 
@@ -192,20 +201,20 @@ Upgrade addressing from "exact UUID/title" to the full resolution order
 
 The REPL: `use`, `lock`, `status`, `exit`. In-memory key holding with
 `mlock`, all M3/M4 commands ported to work against "current session
-repo." No metadata index yet — still decrypt-on-demand per command.
+vault." No metadata index yet — still decrypt-on-demand per command.
 
 ### Tests (write first)
 
-- [ ] `use <repo>` unlocks once; subsequent entry commands in the same
+- [ ] `use <vault>` unlocks once; subsequent entry commands in the same
       session don't re-prompt for the passphrase
-- [ ] `lock <repo>` drops that repo's key; the next entry command against
-      it re-prompts, while other unlocked repos in the same session are
-      unaffected
-- [ ] `status` reports correct lock state for multiple repos touched in
+- [ ] `lock <vault>` drops that vault's key; the next entry command
+      against it re-prompts, while other unlocked vaults in the same
+      session are unaffected
+- [ ] `status` reports correct lock state for multiple vaults touched in
       one session
 - [ ] `exit`/EOF terminates cleanly
 - [ ] Idle timeout: with simulated/injected elapsed time past
-      `idle_timeout`, the next command against that repo re-prompts as if
+      `idle_timeout`, the next command against that vault re-prompts as if
       `lock` had been run
 - [ ] Session command history contains typed command lines (e.g. `show
       protonmail`) but never a decrypted `secret`/`fields` value
@@ -226,7 +235,7 @@ M5 — correctness doesn't change.
 ### Tests (write first)
 
 - [ ] The first `ls`/`show`/`search` after `use` triggers exactly one
-      full-decrypt pass over the repo (assert via decrypt call-count
+      full-decrypt pass over the vault (assert via decrypt call-count
       instrumentation)
 - [ ] Subsequent `ls`/`show`/`search` calls in the same session reuse the
       index without re-decrypting unchanged entries
@@ -238,7 +247,7 @@ M5 — correctness doesn't change.
 
 ### Implementation
 
-- [ ] Build index on first `ls`/`show`/`search` per repo
+- [ ] Build index on first `ls`/`show`/`search` per vault
 - [ ] Incremental update on insert/edit/rm
 - [ ] `gage reindex`
 - [ ] `gage search` / `gage grep`
@@ -246,12 +255,14 @@ M5 — correctness doesn't change.
 ## M7 — Sync
 
 Needs M5's session lifecycle to hook `use` into, and M3's
-commit-per-write already true.
+commit-per-write already true. These commands stay vault-generic in the
+CLI (`sync`/`pull`/`push`/`git`) even though, per the design doc's "Vault
+types," they're entirely git-implemented today.
 
 ### Tests (write first)
 
 - [ ] `use` performs a fetch + fast-forward-only pull when the remote has
-      commits the local repo lacks
+      commits the local vault lacks
 - [ ] `use` with no network reachable warns once and proceeds with the
       local copy instead of blocking or failing
 - [ ] A write command triggers a push; when nothing has diverged, it
@@ -264,7 +275,7 @@ commit-per-write already true.
 - [ ] `gage sync` surfaces both versions of a conflicting entry and
       requires an explicit choice before proceeding
 - [ ] `gage git -- <args...>` passthrough executes an arbitrary git
-      subcommand against the repo
+      subcommand against the vault's git repo
 
 ### Implementation
 
@@ -295,7 +306,7 @@ naturally after single-user CRUD+sync are solid.
 - [ ] `gage recipient verify` exits 0 and reports "in sync" when
       `.age-recipients` and `config.toml` agree; exits 1 and lists the
       specific differences when they don't
-- [ ] After a device's first successful use of a repo, `known-config.toml`
+- [ ] After a device's first successful use of a vault, `known-config.toml`
       is written to local state; a subsequent unreviewed recipient change
       triggers a diff warning before the next encrypt
 - [ ] Confirming a *routine* recipient change (files agree) regenerates
@@ -311,28 +322,28 @@ naturally after single-user CRUD+sync are solid.
 - [ ] `gage recipient verify`
 - [ ] Local trust cache (`known-config.toml`, diff + warning on `use`/encrypt)
 
-## M9 — Cross-repo sharing
+## M9 — Cross-vault sharing
 
-Just M2's encrypt primitive pointed at a second repo's recipients —
-trivial once M1–M2 exist for two repos, but distinct enough to be its own
+Just M2's encrypt primitive pointed at a second vault's recipients —
+trivial once M1–M2 exist for two vaults, but distinct enough to be its own
 milestone since it's the sharing story.
 
 ### Tests (write first)
 
-- [ ] `gage mv --to-repo` removes the entry from the source repo and it
-      becomes decryptable in the destination repo under the destination's
+- [ ] `gage mv --to-vault` removes the entry from the source vault and it
+      becomes decryptable in the destination vault under the destination's
       recipients
-- [ ] `gage cp --to-repo` leaves the original in the source repo and adds
-      a decryptable copy in the destination
-- [ ] `mv`/`cp --to-repo` succeeds even when the destination repo is not
+- [ ] `gage cp --to-vault` leaves the original in the source vault and
+      adds a decryptable copy in the destination
+- [ ] `mv`/`cp --to-vault` succeeds even when the destination vault is not
       currently unlocked (encrypting to public keys needs no private key)
-- [ ] `gage clone` against a repo where the local device isn't yet a
+- [ ] `gage clone` against a vault where the local device isn't yet a
       recipient reports that plainly and points at `gage identity add`
 
 ### Implementation
 
-- [ ] `gage mv --to-repo`
-- [ ] `gage cp --to-repo`
+- [ ] `gage mv --to-vault`
+- [ ] `gage cp --to-vault`
 - [ ] `gage clone` (go-git `PlainClone`)
 
 ## M10 — Polish / output modes
@@ -356,7 +367,7 @@ parallelize or reorder freely, safe to defer individually.
 - [ ] `gage history --decrypt` walks revisions and produces a diff of
       decrypted content across commits
 - [ ] `--script`/`--stdin` runs a sequence of commands non-interactively,
-      unlocking each repo at most once
+      unlocking each vault at most once
 
 ### Implementation
 
@@ -376,6 +387,10 @@ parallelize or reorder freely, safe to defer individually.
   plugin) — passphrase alone proves the `identity`/`recipient`
   abstraction; add real methods once that interface is stable, otherwise
   you're debugging plugin behavior and architecture at the same time.
+- **Additional vault types** — `git` alone proves the vault/backing-store
+  split; a second type (e.g. object-storage-backed) is only worth adding
+  once the vault-generic vs. git-specific command boundary has been
+  exercised by real implementation, not just designed on paper.
 - **Signed recipient changes** — design doc calls this out as "reserve
   for high-stakes repos," not a default.
 - **`gage clone` against a real remote** — folded into M9, but only

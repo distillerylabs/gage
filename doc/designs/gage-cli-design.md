@@ -4,25 +4,31 @@
 
 ## Design principles
 
-1. **A repository is the unit of trust.** Each repo has exactly one decryption
+1. **A vault is the unit of trust.** Each vault has exactly one decryption
    method chosen at `init` time, and its own set of recipients. You can have
-   as many repos as you want (`work`, `personal`, `shared-family`), each with
-   a different security posture.
+   as many vaults as you want (`work`, `personal`, `shared-family`), each with
+   a different security posture. A vault also has a *type*, naming the
+   backing store that durably holds and syncs its entries — today that's
+   always `git` (see "Vault types" below), but making it a first-class field
+   rather than an assumption is what lets the storage layer change later
+   without the rest of `gage` noticing.
 2. **Entries are just files, named opaquely.** A password, a structured note
    (API keys, recovery codes), or an unstructured note (a paragraph of text)
    are all the same thing on disk: one `.age`-encrypted file per entry,
    git-tracked, named with a random UUID rather than a human-readable path.
    Everything a human would recognize — title, description, the actual
    secret — lives *inside* the encrypted payload as structured YAML. Someone
-   with read access to the repo but not the decryption key sees only opaque
+   with read access to the vault but not the decryption key sees only opaque
    filenames and ciphertext; they learn nothing about what you have stored,
    not even categories or counts-per-topic.
-3. **Git is sync, not a feature to hide.** Every write is a commit. Standard
-   git remotes (self-hosted, GitHub private repo, etc.) do the syncing;
-   `gage` never invents its own transport.
+3. **Sync happens via the backing store, not a feature `gage` hides.** Every
+   write is a commit. Standard git remotes (self-hosted, GitHub private repo,
+   etc.) do the syncing today; `gage` never invents its own transport, and a
+   future vault type would sync via whatever transport *it* natively uses,
+   under the same principle.
 4. **Decryption method is pluggable, not hardcoded.** Passphrase, raw age
    key file, SSH key, YubiKey (`age-plugin-yubikey`), Secure Enclave — the
-   repo just stores *which* method and *whose* public keys; each device
+   vault just stores *which* method and *whose* public keys; each device
    registers its own way of proving it holds the matching private key.
 5. **Key material lives exactly as long as the process that holds it.**
    No background daemon, no IPC socket, no separate agent lifecycle to
@@ -34,13 +40,60 @@
 
 ---
 
+## Vault types
+
+A vault's *type* names the backing store that durably holds its entries
+and handles sync — separate from its decryption *method* (how a device
+proves it can read it) and its *recipients* (who can). Pulling this out
+as its own field, rather than assuming git, is what keeps everything else
+— entry CRUD, identity/recipient management, the session model,
+query resolution — from ever needing to know or care how a given vault
+is actually stored.
+
+Today there is exactly **one** type: `git`. Every vault is a git
+repository, and `type = "git"` is recorded explicitly (in both the
+vault's own `.gage/config.toml` and the global config — see "Global
+config" below) rather than left implicit, so that:
+
+- **Type-specific metadata has a home.** For `git`, that's just the
+  remote URL (`origin`). A future type would carry its own metadata —
+  a bucket name, an endpoint, whatever it needs — namespaced under that
+  type rather than bolted onto fields that assume git.
+- **The vault-generic/type-specific split in the command reference is
+  real, not just a mental model.** Commands that only make sense because
+  the backing store *is* git — setting a remote, dropping into raw `git`
+  for anything gage doesn't model — are namespaced under `gage git`, not
+  `gage vault` (see "Git-specific commands" below). Everything else —
+  `init`, `clone`, `vault list/info/remove/set-default`, `use`, all entry
+  CRUD, `identity`, `recipient` — talks about vaults in the abstract and
+  would not need to change if a second type showed up.
+- **Even the git-implemented verbs that stay generic are deliberately
+  generic.** `sync`/`pull`/`push`/`log`/`history` remain plain `gage`
+  commands, not `gage git` commands, because every vault type will need
+  some notion of "catch up," "publish my changes," and "show history" —
+  the *interface* is store-agnostic even though today's one
+  *implementation* isn't.
+
+`gage init` takes an optional `--type` flag, defaulting to (and, today,
+only accepting) `git`. With exactly one type there's nothing real to
+choose between yet, but the flag exists now — validated against a
+single-element allowlist — so that adding a second type later is purely
+additive to the CLI surface (a new accepted value) rather than a breaking
+change introducing the flag for the first time on configs and scripts
+that predate the concept of "type" at all.
+
+---
+
 ## On-disk layout
+
+This shows the layout of a `git`-type vault — the only type that exists
+today:
 
 ```
 myvault/                          # git repo root
 ├── .gage/
-│   └── config.toml               # repo-level config: method + device metadata (committed, plaintext)
-├── .age-recipients               # recipients for the whole repo — the only one
+│   └── config.toml               # vault-level config: type + method + device metadata (committed, plaintext)
+├── .age-recipients               # recipients for the whole vault — the only one
 ├── secrets/
 │   ├── 4b9d7710-8e2a-4a1f-9c3d-1a2b3c4d5e6f.age
 │   ├── a03e5f88-1c44-4e9a-8b77-2d3e4f5a6b7c.age
@@ -50,7 +103,7 @@ myvault/                          # git repo root
 
 Flat *inside* `secrets/`, deliberately — the UUID files themselves have no
 further structure. Keeping them under `secrets/` rather than scattered at
-the repo root is purely cosmetic (a `git status`/`ls` at the root shows
+the vault root is purely cosmetic (a `git status`/`ls` at the root shows
 `.gage/`, `.age-recipients`, `secrets/` — three things, not a growing wall
 of random UUIDs) since there's no more per-directory recipient scoping to
 motivate any particular placement. Filenames carry no meaning — they're
@@ -59,31 +112,32 @@ in normal use. Categorization lives entirely in each entry's metadata (see
 "Entry format" below), searchable only by someone holding the key.
 
 If you want a subset of entries to have a *different* set of people who
-can read them, that's a different repo, not a subtree of this one — see
+can read them, that's a different vault, not a subtree of this one — see
 "Why no per-directory sharing" below.
 
-Two things live at the repo root instead of nested, and one thing doesn't
+Two things live at the vault root instead of nested, and one thing doesn't
 — worth being explicit about why, since it's not arbitrary:
 
-- **`.age-recipients` stays flat at the root.** It needs a predictable,
-  un-nested path so the stock `age`/`passage` CLI can use it directly
-  (`age -R .age-recipients -e file`) without knowing anything about
-  `gage`'s internal layout — that external-interop requirement is the
-  whole reason it's not tucked away somewhere.
-- **`config.toml` lives under `.gage/`, not at the root.** Nothing outside
-  `gage` itself ever reads it, so there's no interop reason it needs a
-  flat path. Nesting it — mirroring `.git/`'s own convention — makes clear
-  it's `gage`'s control-plane data rather than repo content, and leaves
-  room for more `gage`-owned files later (schema version markers,
-  migration state) without cluttering the root or claiming a generic name
-  like `config.toml` at the top level.
+- **`.age-recipients` stays flat at the vault root.** It needs a
+  predictable, un-nested path so the stock `age`/`passage` CLI can use it
+  directly (`age -R .age-recipients -e file`) without knowing anything
+  about `gage`'s internal layout — that external-interop requirement is
+  the whole reason it's not tucked away somewhere.
+- **`config.toml` lives under `.gage/`, not at the vault root.** Nothing
+  outside `gage` itself ever reads it, so there's no interop reason it
+  needs a flat path. Nesting it — mirroring `.git/`'s own convention —
+  makes clear it's `gage`'s control-plane data rather than vault content,
+  and leaves room for more `gage`-owned files later (schema version
+  markers, migration state) without cluttering the root or claiming a
+  generic name like `config.toml` at the top level.
 
-`.gage/config.toml` (plaintext, committed — it names the method and public
-keys, never secret material):
+`.gage/config.toml` (plaintext, committed — it names the vault's type,
+method, and public keys, never secret material):
 
 ```toml
-[repo]
+[vault]
 name = "myvault"
+type = "git"              # the only type today — see "Vault types"
 format_version = 1
 created = "2026-08-29"
 
@@ -99,29 +153,29 @@ device = "recovery-paper-key"
 pubkey = "age1..."
 ```
 
-Recipients apply to the whole repo, full stop — no per-directory overrides.
-`gage init` is cheap enough that "who needs access to this?" is a repo-level
+Recipients apply to the whole vault, full stop — no per-directory overrides.
+`gage init` is cheap enough that "who needs access to this?" is a vault-level
 question answered once at creation, not something that needs finer-grained
-plumbing inside a single repo.
+plumbing inside a single vault.
 
 ### Why no per-directory sharing
 
 An earlier version of this design let `.age-recipients` be overridden per
-subtree, `passage`-style, so one repo could mix a household `shared/` tree
+subtree, `passage`-style, so one vault could mix a household `shared/` tree
 with a private `personal/` tree. It works, but it buys a real amount of
 complexity for a use case that has a much simpler answer: **make a second
-repo.**
+vault.**
 
 ```
 gage init shared-family --method passphrase --recipient <family-member-pubkey>
-gage mv family-wifi --to-repo shared-family
+gage mv family-wifi --to-vault shared-family
 ```
 
-`mv --to-repo` decrypts the entry from the source repo (which has to be
-unlocked) and re-encrypts it for the destination repo's recipients — and
+`mv --to-vault` decrypts the entry from the source vault (which has to be
+unlocked) and re-encrypts it for the destination vault's recipients — and
 notably, that destination doesn't need to be unlocked at all, since
 encrypting *to* a set of public keys never requires holding any of the
-matching private keys. `cp --to-repo` does the same but leaves the
+matching private keys. `cp --to-vault` does the same but leaves the
 original in place.
 
 This isn't just simpler to implement — it removes an entire class of
@@ -129,14 +183,15 @@ problem rather than mitigating it. Per-directory recipients meant "which
 directory an entry sits in" was itself a privilege boundary, which is
 exactly the shape of bug your original question was probing: someone with
 git write access moving a file into a directory they happen to have keys
-for. With one recipient list per repo, there's no finer-grained boundary
-to attack — "does this person have write access to this specific git
-repo" is now the entire question, and it's a question git hosting already
+for. With one recipient list per vault, there's no finer-grained boundary
+to attack — "does this person have write access to this specific vault"
+is now the entire question (today, that means git write access to its
+repo), and it's a question the backing store's own hosting already
 answers.
 
-What you give up: if your `work` repo needs three different partial-access
-groups, that's three repos instead of one repo with three subtrees. In
-practice this tends to be the right shape anyway — separate repos get
+What you give up: if your `work` vault needs three different partial-access
+groups, that's three vaults instead of one vault with three subtrees. In
+practice this tends to be the right shape anyway — separate vaults get
 separate remotes, separate access lists on the git host, and separate
 audit trails, which is arguably what you wanted for genuinely different
 trust groups regardless of what `gage` did internally.
@@ -203,24 +258,37 @@ writes those as `$GAGE_CONFIG`, `$GAGE_DATA`, `$GAGE_STATE` — e.g.
 `$GAGE_CONFIG` resolves to `~/.config/gage` on Linux/macOS and
 `%APPDATA%\gage` on Windows.
 
-`$GAGE_CONFIG/config.toml` tracks known repos and shell preferences:
+`$GAGE_CONFIG/config.toml` tracks known vaults and shell preferences:
 
 ```toml
 current = "personal"
 
-[repos.personal]
+[vaults.personal]
 path = "$GAGE_DATA/vaults/personal"
-remote = "git@github.com:you/personal-vault.git"
+type = "git"
 
-[repos.work]
+[vaults.personal.git]
+origin = "git@github.com:you/personal-vault.git"
+
+[vaults.work]
 path = "$GAGE_DATA/vaults/work"
-remote = "git@internal:secrets/work-vault.git"
+type = "git"
+
+[vaults.work.git]
+origin = "git@internal:secrets/work-vault.git"
 
 [shell]
-prompt = "[{repo}{lock}] gage> "     # {repo}, {lock} (🔓/🔒), {dirty} tokens available
-idle_timeout = "10m"                 # auto re-lock a session repo after inactivity
+prompt = "[{vault}{lock}] gage> "    # {vault}, {lock} (🔓/🔒), {dirty} tokens available
+idle_timeout = "10m"                 # auto re-lock a session vault after inactivity
 history_file = "$GAGE_STATE/history"   # command names/paths only, never values
 ```
+
+Type-specific metadata (`origin`, for `git`) lives in its own nested
+table — `[vaults.<name>.<type>]` — rather than flat fields on
+`[vaults.<name>]`, for the same reason as the type-specific command
+namespacing above: it keeps "generic vault fields" and "this-type-only
+fields" visibly separate, so a second vault type only ever adds a new
+nested table, never touches the shape of an existing one.
 
 Splitting config/data/state across the three XDG roots instead of one
 flat directory buys two things a single root can't:
@@ -228,9 +296,9 @@ flat directory buys two things a single root can't:
 - **Dotfile managers already expect this shape.** `config.toml` is
   small, plaintext, and worth version-controlling alongside the rest of
   a user's dotfiles — tools like `chezmoi`/`yadm` sync `$XDG_CONFIG_HOME`
-  by convention, and now they pick up exactly that file. Vaults (actual
-  git repos, synced by `gage` itself via their own remotes) and state
-  (this device's own history and trust cache — explicitly *not*
+  by convention, and now they pick up exactly that file. Vaults (today,
+  always git repos, synced by `gage` itself via their own remotes) and
+  state (this device's own history and trust cache — explicitly *not*
   something to carry to a new machine, see "Local trust cache") land in
   `$XDG_DATA_HOME`/`$XDG_STATE_HOME` instead, so a dotfiles sync of
   `~/.config` can't accidentally sweep up either.
@@ -239,11 +307,11 @@ flat directory buys two things a single root can't:
   well-behaved CLI tool's files to live.
 
 Within each root the substructure is unchanged in spirit from the old
-single-root design: `$GAGE_DATA/vaults/` holds actual git repos,
-`$GAGE_STATE/` holds local-only, never-synced device state (the history
-file and, per-repo, `$GAGE_STATE/<repo>/known-config.toml` — the trust
-cache used to detect unreviewed recipient changes, see "Local trust
-cache").
+single-root design: `$GAGE_DATA/vaults/` holds actual vaults (git repos,
+today), `$GAGE_STATE/` holds local-only, never-synced device state (the
+history file and, per-vault, `$GAGE_STATE/<vault>/known-config.toml` —
+the trust cache used to detect unreviewed recipient changes, see "Local
+trust cache").
 
 ---
 
@@ -288,7 +356,7 @@ personal locked. run `use personal` to unlock again.
 $
 ```
 
-The unlocked identity for each repo is held **only in this process's
+The unlocked identity for each vault is held **only in this process's
 memory**, `mlock`'d so it can't be paged to swap, with core dumps disabled
 for the process. There is nothing to attach to from another terminal —
 that's the whole point. When the process exits (`exit`, `quit`, Ctrl-D, or
@@ -307,18 +375,18 @@ cat commands.txt | gage --stdin        # same, from stdin
 ### Session-only commands
 
 ```
-use <repo>          switch/unlock the active repo for this session
-lock [repo]         drop key material for one repo (or all, if omitted)
+use <vault>          switch/unlock the active vault for this session
+lock [vault]         drop key material for one vault (or all, if omitted)
                      without exiting the process
-status / whoami     list repos touched this session and their lock state
+status / whoami     list vaults touched this session and their lock state
 help
 exit / quit / ^D
 ```
 
 All entry commands (`show`, `ls`, `insert`, `edit`, `generate`,
 `search` (aka `grep`), `rm`, `mv`, `cp`, `sync`, `git`, `log`, `history`) work
-against the current session repo without needing `--use` each time, but
-`--use NAME` still works ad hoc against any repo already `use`d this
+against the current session vault without needing `--use` each time, but
+`--use NAME` still works ad hoc against any vault already `use`d this
 session (it'll prompt to unlock if you haven't touched it yet).
 
 ### Addressing entries & the metadata index
@@ -346,7 +414,7 @@ Making this fast is why `ls` used to be a "cheap, no-decrypt" command and
 can't be anymore — the moment titles move inside the encrypted payload,
 even *browsing* requires the key. The session process resolves this by
 building an **in-memory metadata index** the first time `ls`/`show`/`search`
-needs one per repo: it decrypts every entry once, pulls out just the
+needs one per vault: it decrypts every entry once, pulls out just the
 metadata fields (title, description, dates, `updated_by`), and keeps that
 index in memory for the rest of the session, updating it incrementally as
 you `insert`/`edit`/`rm`. This index dies with the process exactly like the
@@ -365,7 +433,7 @@ vault, prefer session mode for anything beyond a single known lookup.
 Process lifetime is a clean boundary in theory, but terminal multiplexers
 break the assumption that "process exits when you're done." A `gage`
 session left running in a `tmux` pane over a weekend is functionally an
-unmanaged agent again. `idle_timeout` re-locks a repo's key automatically
+unmanaged agent again. `idle_timeout` re-locks a vault's key automatically
 after inactivity — the process stays alive, but the prompt drops to
 `🔒` and the next data-touching command re-prompts, same as if you'd run
 `lock` yourself. This is a deliberate belt-and-suspenders addition, not a
@@ -388,6 +456,12 @@ it can be added as an *opt-in* agent mode without changing the default.
 
 ## Sync model: mostly automatic, deliberately not fully
 
+This section describes how the `git` vault type syncs — the only type
+that exists today (see "Vault types" above). A future vault type would
+need its own sync policy, but the split below — between "always-local
+durability" and "risky network operations get an actual policy" — is one
+every type should preserve.
+
 Sync is split into two operations with very different risk profiles, and
 they're handled differently on purpose.
 
@@ -399,8 +473,8 @@ sync or no sync. This part was never in question.
 **Push/pull are network-dependent and can conflict**, so they get an actual
 policy instead of "always" or "never":
 
-- **On `use <repo>`** — entering a repo in session mode, or unlocking it for
-  a one-shot command — gage does a `git fetch` + fast-forward-only pull
+- **On `use <vault>`** — entering a vault in session mode, or unlocking it
+  for a one-shot command — gage does a `git fetch` + fast-forward-only pull
   automatically. This is the "catch me up" moment for sitting down at a
   fresh terminal. Fast-forward-only means it never silently merges anything:
   it either cleanly fast-forwards or it doesn't touch local state at all. If
@@ -414,7 +488,7 @@ policy instead of "always" or "never":
   locally — nothing is lost, you just have unpushed commits, same as any
   ordinary git repo — and the next successful `use`/push retries it.
 - **Real divergence is the one thing that never auto-resolves.** If another
-  device has pushed commits your local repo doesn't have, the automatic
+  device has pushed commits your local copy doesn't have, the automatic
   push simply fails and reports it: `origin has diverged — 2 local commits
   pending, run 'gage sync'`. `.age` files are opaque binary blobs, so git
   can't three-way-merge two edits to the same encrypted entry the way it
@@ -447,7 +521,7 @@ list.
 
 **2. Can someone get added as a recipient for *future* writes?** This is a
 much weaker guarantee. `.age-recipients` is a plain, unsigned,
-git-committed text file. Anyone with git write access to the repo — even
+git-committed text file. Anyone with git write access to the vault — even
 someone holding no decryption key at all — can append a public key to it.
 `gage` has no built-in way to distinguish "a device legitimately
 registered via `gage identity add`" from "a line someone typed into a text
@@ -457,11 +531,11 @@ key for that recipient too.
 
 Removing per-directory recipients (see "Why no per-directory sharing"
 above) already closed the sharper version of this problem — there's no
-longer a way to gain access to *part* of a repo by manipulating where a
+longer a way to gain access to *part* of a vault by manipulating where a
 file sits, since there's only one recipient list and it's not tied to
 location at all. What's left is the coarser, unavoidable version: **git
-write access to a repo is, transitively, the ability to eventually get
-added as a recipient of that repo.** That's not really a `gage`-specific
+write access to a vault is, transitively, the ability to eventually get
+added as a recipient of that vault.** That's not really a `gage`-specific
 problem — it's true of any system where "who can commit" and "who can
 grant access" aren't cryptographically separated — but it's worth stating
 plainly rather than assuming the encryption alone covers it.
@@ -469,10 +543,11 @@ plainly rather than assuming the encryption alone covers it.
 ### Mitigations
 
 - **Git-hosting access control (the baseline).** Don't grant write access
-  to a repo to anyone who shouldn't eventually be able to read everything
+  to a vault to anyone who shouldn't eventually be able to read everything
   in it. This is external to `gage` — a property of GitHub/self-hosted
-  permissions — but since a repo is now the *entire* trust boundary, it's
-  also the entire mitigation surface at this layer.
+  permissions today, or whatever access control a future vault type's
+  backing store offers — but since a vault is now the *entire* trust
+  boundary, it's also the entire mitigation surface at this layer.
 - **Change detection on the recipient list (a practical backstop).** See
   "Local trust cache" below — a concrete mechanism, not just a policy.
 - **Signed recipient changes (optional, higher-assurance).** For methods
@@ -481,21 +556,21 @@ plainly rather than assuming the encryption alone covers it.
   `.age-recipients`, and `gage` would refuse to honor a file whose latest
   change isn't validly signed by a previously trusted recipient. Real
   fix, not just a warning — but real added complexity, so worth reserving
-  for genuinely high-stakes shared repos rather than making it a default.
+  for genuinely high-stakes shared vaults rather than making it a default.
 
 Nothing here changes guarantee #1: no already-encrypted entry becomes
 readable through this vector, ever. What's at stake is only whether an
 untrusted git-writer can add themselves to what gets encrypted *next* —
-and now that the whole repo is one flat trust boundary, "don't give that
-person write access to this repo" is most of the answer by itself.
+and now that the whole vault is one flat trust boundary, "don't give that
+person write access to this vault" is most of the answer by itself.
 
 ### Local trust cache
 
 The mechanism behind "change detection" above:
 
-- **What's cached.** The first time a device successfully uses a repo,
+- **What's cached.** The first time a device successfully uses a vault,
   `gage` writes a verbatim copy of `.gage/config.toml` to
-  `$GAGE_STATE/<repo>/known-config.toml`, plus the content hash of
+  `$GAGE_STATE/<vault>/known-config.toml`, plus the content hash of
   `.age-recipients` at that same moment, both local, uncommitted, never
   synced. `config.toml` is the file diffed and shown to the user (device
   names alongside pubkeys make for a legible warning; a bare `age1...`
@@ -506,8 +581,8 @@ The mechanism behind "change detection" above:
   I last see and approve, as of the last time I encrypted (or explicitly
   reviewed) here.
 - **When it's checked.** Before any operation that encrypts
-  (`insert`, `edit`, `generate`, `rename`, and `mv`/`cp --to-repo` against
-  the *destination* repo's cache), `gage` compares the current committed
+  (`insert`, `edit`, `generate`, `rename`, and `mv`/`cp --to-vault` against
+  the *destination* vault's cache), `gage` compares the current committed
   `.gage/config.toml` and `.age-recipients` against the cached copies.
   It also checks opportunistically on `use`/`sync`, so you see a warning
   when you sit down, not only at the moment you're about to write.
@@ -516,7 +591,7 @@ The mechanism behind "change detection" above:
   the cached copy of `config.toml`:
   ```
   [personal🔓] gage> generate chase-checking
-  ⚠ Recipients for this repo changed since you last encrypted here:
+  ⚠ Recipients for this vault changed since you last encrypted here:
 
   --- known-config.toml (last confirmed 2026-08-14)
   +++ .gage/config.toml (current)
@@ -556,7 +631,7 @@ The mechanism behind "change detection" above:
   - Declining either prompt aborts the write entirely; the cache stays at
     its old value, so the same warning reappears next time.
 - **Why local state is trustworthy here.** This cache lives only on a
-  device that already holds decrypt access to the repo (or is about to
+  device that already holds decrypt access to the vault (or is about to
   gain it) — it's not protecting against a compromised local machine,
   which is a different, more severe threat model where the game is
   already lost. It's protecting against a remote git-writer trying to
@@ -567,49 +642,44 @@ The mechanism behind "change detection" above:
 
 ## Command reference
 
-### Repository lifecycle
+### Vault lifecycle
 
 ```
-gage init <name> [--dir PATH] [--remote URL]
+gage init <name> [--dir PATH] [--remote URL] [--type git]
                   --method passphrase|age-key|ssh|yubikey|secure-enclave|plugin:<name>
                   [--recipient PUBKEY ...]
 
-    Creates a new repo: git init, writes .gage/config.toml with the chosen
-    method, generates or registers the first identity, commits the initial
-    (empty) structure. --recipient can be repeated to add extra recipients
-    (e.g. a recovery key) at creation time. Without --dir, the repo is
-    created at $GAGE_DATA/vaults/<name> and registered under that path in
-    the global config.
+    Creates a new vault: for the git type (the only one today), this means
+    git init, writes .gage/config.toml with type = "git" plus the chosen
+    method, generates or registers the first identity, and commits the
+    initial (empty) structure. --recipient can be repeated to add extra
+    recipients (e.g. a recovery key) at creation time. Without --dir, the
+    vault is created at $GAGE_DATA/vaults/<name> and registered under that
+    path in the global config. --type defaults to (and, today, can only be)
+    git; it's accepted now, validated against a single-value allowlist, so
+    a future second type is additive to the CLI rather than introducing
+    the flag for the first time. --remote is git-type-specific — a vault
+    can be created local-only and gain a remote later via `gage git
+    set-remote` (see "Git-specific commands" below).
 
 gage clone <remote-url> [--name NAME] [--dir PATH]
 
-    git clones the repo and reads .gage/config.toml to learn the required
-    method. Without --dir, clones to $GAGE_DATA/vaults/<name> — same default
-    as `init` — inferring <name> from the remote URL unless --name overrides
-    it. Does NOT grant you access — if your device isn't already a
-    recipient, gage tells you to run `gage identity add` to generate your
-    public key, then get it added via `gage recipient add` from a device
-    that already has access.
+    Clones an existing vault: for the git type, a git clone, followed by
+    reading .gage/config.toml to learn the required method. Without --dir,
+    clones to $GAGE_DATA/vaults/<name> — same default as `init` — inferring
+    <name> from the remote URL unless --name overrides it. Does NOT grant
+    you access — if your device isn't already a recipient, gage tells you
+    to run `gage identity add` to generate your public key, then get it
+    added via `gage recipient add` from a device that already has access.
 
-gage repo list
-gage repo remove <name>              # forgets locally; does not delete the git repo
-gage repo info [<name>]              # method, recipient count, remote, dirty/clean
-gage repo set-default <name>         # changes `current` in global config
-gage repo set-remote <name> <url>    # sets/changes the git remote — see below
+gage vault list
+gage vault remove <name>             # forgets locally; does not delete the underlying store
+gage vault info [<name>]             # type, method, recipient count, and type-specific
+                                      # detail (for git: remote, dirty/clean)
+gage vault set-default <name>        # changes `current` in global config
 ```
 
-`--remote` on `init` is optional — a repo can start local-only (no
-sync until you're ready) and gain a remote later, e.g. after creating an
-empty repo on GitHub. `gage repo set-remote` is the command for that: it
-sets `origin` on the actual git repo (equivalent to `git remote add/set-url
-origin <url>`) *and* updates `repos.<name>.remote` in the global config in
-the same step, so the two never drift apart. This is deliberately not left
-to `gage git -- remote add origin <url>` — that passthrough would touch
-git's remote config without gage's global config ever finding out, leaving
-`repo info` reporting a stale or missing remote for a repo that actually
-has one.
-
-`use` is the one verb for "operate against this repo," in both modes:
+`use` is the one verb for "operate against this vault," in both modes:
 
 - **Session mode:** `use <name>` as its own line, switching what subsequent
   commands in this `gage>` process target.
@@ -617,10 +687,10 @@ has one.
 
 Previously these were two different words (`repo use` vs. a `--repo` flag)
 for the same underlying action, which was needless vocabulary to learn.
-Now it's one concept — select which repo this command or session talks to
-— spelled the same way everywhere. `repo set-default` is kept as a
+Now it's one concept — select which vault this command or session talks to
+— spelled the same way everywhere. `vault set-default` is kept as a
 separate, deliberately different-sounding command because it does something
-meaningfully different: it doesn't select a repo for the current action, it
+meaningfully different: it doesn't select a vault for the current action, it
 changes what "no `--use` given" falls back to, persistently, in the global
 config. Conflating "use this now" with "make this the default forever"
 under one verb would be confusing in the other direction.
@@ -631,7 +701,7 @@ under one verb would be confusing in the other direction.
 gage identity add --use NAME --method ssh|yubikey|passphrase|secure-enclave
                    [--key-path PATH]
 
-    Registers this device's way of satisfying the repo's method, and prints
+    Registers this device's way of satisfying the vault's method, and prints
     the resulting public key so it can be added as a recipient (either by
     you, if you're bootstrapping, or by an existing recipient).
 
@@ -647,7 +717,7 @@ gage recipient list [--use NAME]
 gage recipient verify [--use NAME]
 
     Adding a recipient only affects future encryptions unless --reencrypt
-    is passed, which decrypts and re-writes every entry in the repo so the
+    is passed, which decrypts and re-writes every entry in the vault so the
     new recipient can read history too. Removing a recipient REQUIRES
     --reencrypt (gage refuses to silently leave old ciphertext readable by
     a removed party) and prints a clear warning that this revokes future
@@ -682,10 +752,10 @@ gage show <query> [--use NAME] [-c|--clip] [-q|--qr] [--field NAME]
 gage cat  <query> [--use NAME]              # always full raw plaintext, for scripting/piping
 
 gage rm <query> [--use NAME]
-gage mv <query> --to-repo <name> [--use NAME] [--yes]   # decrypt here, re-encrypt + commit
+gage mv <query> --to-vault <name> [--use NAME] [--yes]   # decrypt here, re-encrypt + commit
                                                   # there, remove from here — this
                                                   # is the sharing mechanism
-gage cp <query> --to-repo <name> [--use NAME] [--yes]   # same, but keeps the original too
+gage cp <query> --to-vault <name> [--use NAME] [--yes]   # same, but keeps the original too
 ```
 
 `--yes` bypasses the recipient-change confirmation prompt (see "Local
@@ -709,59 +779,95 @@ Notes on `show`:
   metadata) doesn't get dumped whole into a QR code when you only wanted
   the TOTP seed.
 
-### Git / sync
+### Sync (vault-generic, git-implemented today)
 
 Push and fast-forward-only pull happen automatically around `use` and
 writes (see "Sync model" above) — these commands are the manual override:
-forcing a check, resolving a real divergence, or scripting/CI use.
+forcing a check, resolving a real divergence, or scripting/CI use. They
+stay top-level, undecorated `gage` verbs rather than living under `git`,
+because every vault type needs some notion of "catch up," "publish my
+changes," and "show history," even though today's one vault type happens
+to implement all three via git:
 
 ```
 gage sync [--use NAME]          # pull, surface + resolve any conflicts, then push
 gage pull [--use NAME]
 gage push [--use NAME]
-gage git [--use NAME] -- <args...>   # passthrough for anything else (branches, tags, etc.)
 
 gage log [QUERY] [--use NAME]         # commit history for one entry (resolved via query);
                                        # timestamps only — filenames alone reveal nothing
 gage history --decrypt <query> [--use NAME]
-                                       # walks git log for one entry and decrypts each
+                                       # walks history for one entry and decrypts each
                                        # revision to show a diff. Explicit subcommand,
                                        # not a flag on `log`, because it's meaningfully
                                        # more dangerous (surfaces old secret values).
 ```
 
+### Git-specific commands
+
+Everything here only exists because the current (and only) vault type is
+`git` — none of it has an obvious equivalent under a different backing
+store, which is exactly why it's namespaced under `git` instead of
+`vault`: these are the commands that would need reworking, or would simply
+disappear, if a second vault type showed up.
+
+```
+gage git set-remote <name> <url>     # sets/changes the git remote (origin) — see below
+gage git [--use NAME] -- <args...>   # passthrough for anything else (branches, tags, etc.)
+```
+
+`--remote` on `init` is optional — a vault can start local-only (no sync
+until you're ready) and gain a remote later, e.g. after creating an empty
+repo on GitHub. `gage git set-remote` is the command for that: it sets
+`origin` on the actual git repo (equivalent to `git remote add/set-url
+origin <url>`) *and* updates `vaults.<name>.git.origin` in the global
+config in the same step, so the two never drift apart. This is
+deliberately not left to `gage git -- remote add origin <url>` — that
+passthrough would touch git's remote config without gage's global config
+ever finding out, leaving `vault info` reporting a stale or missing remote
+for a vault that actually has one.
+
 ---
 
 ## A few decisions worth calling out
 
+- **`vault` replaces `repo` in the vocabulary; a `type` field says how
+  it's actually stored.** Every command that used to say `--repo`/`repo
+  <verb>` now says `--use`/`vault <verb>`, and each vault's config records
+  `type = "git"` alongside its method and recipients. Today `git` is the
+  only type, so on its own this looks like renaming for its own sake —
+  but paired with the vault-generic/git-specific split in the command
+  reference (see "Vault types" and "Git-specific commands"), it's what
+  lets a future backing store slot in without touching entry CRUD,
+  identity, recipients, or the session model at all.
 - **No daemon means no IPC attack surface.** There's no unix socket whose
   permissions need auditing, no risk of a stale agent process outliving
   the terminal that spawned it and being forgotten about. The trust
   boundary collapses to "is this specific process still alive," which the
   OS already enforces.
-- **One verb, `use`, for repo selection everywhere.** Session mode and
+- **One verb, `use`, for vault selection everywhere.** Session mode and
   one-shot mode used to have different vocabulary for the same action
-  (`use <name>` vs. `--repo NAME`); they now both say `use`, as a bare
-  session command or a `-u|--use NAME` flag. `repo set-default` stays a
-  distinct command since "pick a repo for this default" is a different,
-  persistent action, not the same thing spelled differently.
+  (`use <name>` vs. a `--repo NAME` flag); they now both say `use`, as a
+  bare session command or a `-u|--use NAME` flag. `vault set-default`
+  stays a distinct command since "pick a vault for this default" is a
+  different, persistent action, not the same thing spelled differently.
 - **`config.toml` and `.age-recipients` are split by access pattern, not
   just by convention.** `config.toml` (method/device metadata) is read
   rarely and changes almost never. `.age-recipients` is read on every
   encrypt and changes comparatively often, and it's a plain, flat,
   one-key-per-line file — that's what keeps it usable directly by stock
-  `age`/`passage`, with no per-repo parsing beyond splitting lines.
+  `age`/`passage`, with no per-vault parsing beyond splitting lines.
 - **`identity` vs `recipient` stay separate.** `recipient` is "who can
-  decrypt this repo" (public keys, repo-side, committed to git).
+  decrypt this vault" (public keys, vault-side, committed to git).
   `identity` is "how does *this device* prove it's one of those
   recipients" (private-key handling, device-side, never committed). A
-  YubiKey-based repo might have a laptop identity via NFC/USB touch and a
+  YubiKey-based vault might have a laptop identity via NFC/USB touch and a
   phone identity via the Secure Enclave — same recipient list, different
   local mechanics.
-- **Session repos are re-lockable without killing the process.** `lock
-  <repo>` (or the idle timeout) drops that repo's key from memory while
-  leaving other unlocked repos and the shell itself intact — useful when
-  you're about to step away but want to keep working in a different repo,
+- **Session vaults are re-lockable without killing the process.** `lock
+  <vault>` (or the idle timeout) drops that vault's key from memory while
+  leaving other unlocked vaults and the shell itself intact — useful when
+  you're about to step away but want to keep working in a different vault,
   or hand the terminal to someone else without exiting entirely.
 - **Command history must never contain plaintext.** The session's
   readline-style history should log `show protonmail`, not the decrypted
@@ -781,7 +887,7 @@ gage history --decrypt <query> [--use NAME]
   guessing a winner risks silently discarding a secret with no trace.
 - **Filenames are opaque UUIDs; metadata lives inside the ciphertext.**
   This trades away the one thing `pass`/`passage` leave exposed — that
-  someone with repo read access (but no key) can see your entry names and
+  someone with vault read access (but no key) can see your entry names and
   folder structure even if they can't read the values. Here they see
   nothing but random filenames. The cost is that `ls` and `search` are no
   longer distinct tiers — both now require the key, since even browsing
@@ -797,17 +903,18 @@ gage history --decrypt <query> [--use NAME]
   `history --decrypt` walks git log and decrypts *past* revisions of a
   secret's actual value, which is a strictly bigger exposure, so it stays
   an explicit, separately-named subcommand rather than a flag on `log`.
-- **One repo, one recipient list — sharing means making another repo, not
-  another subtree.** An earlier version let `.age-recipients` be overridden
-  per directory, `passage`-style. Dropping that isn't just simpler to
-  build — it removes the entire class of bug where "which directory a file
-  sits in" is itself a privilege boundary. Now the repo *is* the trust
-  boundary, full stop, and creating a new one is cheap enough that there's
-  no real cost to that simplicity. See "Why no per-directory sharing."
-- **`mv`/`cp` are now cross-repo, and that's the sharing mechanism.** With
+- **One vault, one recipient list — sharing means making another vault,
+  not another subtree.** An earlier version let `.age-recipients` be
+  overridden per directory, `passage`-style. Dropping that isn't just
+  simpler to build — it removes the entire class of bug where "which
+  directory a file sits in" is itself a privilege boundary. Now the vault
+  *is* the trust boundary, full stop, and creating a new one is cheap
+  enough that there's no real cost to that simplicity. See "Why no
+  per-directory sharing."
+- **`mv`/`cp` are now cross-vault, and that's the sharing mechanism.** With
   a single flat recipient list, there's nothing left to move an entry
-  *between* within one repo — so `mv <query> --to-repo <name>` /
-  `cp <query> --to-repo <name>` decrypt from the source and re-encrypt for
+  *between* within one vault — so `mv <query> --to-vault <name>` /
+  `cp <query> --to-vault <name>` decrypt from the source and re-encrypt for
   the destination's recipients, which is literally what "share this
   credential with someone" means in this design.
 - **`.age-recipients` is a confidentiality boundary for the future, not an
@@ -815,7 +922,7 @@ gage history --decrypt <query> [--use NAME]
   to add themselves as a recipient for *upcoming* writes — the encryption
   can't prevent that, since the file is plain committed text and age has
   no concept of "who's allowed to add a recipient." Removing per-directory
-  scoping already shrank this to "git write access to the repo," which
+  scoping already shrank this to "git write access to the vault," which
   `gage` backs up with local, uncommitted change detection rather than
   pretending the crypto alone makes the file trustworthy. See "Trust
   boundaries."
