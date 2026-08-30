@@ -6,6 +6,12 @@ leave the tool in a runnable, testable state — no milestone should require
 reworking a prior one, though later milestones may extend earlier
 abstractions.
 
+Every milestone builds its logic into the `internal/gage` library first
+and wires `cmd/gage` (Cobra) on top as a thin frontend — see the design
+doc's "Library architecture." This is what keeps a future GUI/TUI addable
+later without reworking any milestone here: it's a second frontend over
+the same methods, not a refactor of them.
+
 **Workflow per milestone:** write the milestone's test suite first (it
 should fail against the not-yet-built code), then implement until it
 passes. A milestone isn't done until its full test list is green — the
@@ -22,6 +28,11 @@ Language/toolchain: **Go** (single static binary, mature `age` library,
 easy cross-compilation for the Windows/macOS/Linux XDG story). Project
 setup, build tooling, and CLI/config skeleton — no crypto yet, just prove
 the plumbing.
+
+The `internal/gage` (library) / `cmd/gage` (CLI) split is decided here
+too, before any real logic exists to misplace: every later milestone
+builds core behavior into the library and wires a thin CLI layer on top,
+so a future GUI/TUI is a new frontend on stable ground, not a refactor.
 
 Key dependencies, decided up front so later milestones don't reshuffle:
 - **[spf13/cobra](https://github.com/spf13/cobra)** for command
@@ -42,6 +53,9 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 - [ ] `make build` produces a `gage` binary
 - [ ] `make test` runs with no network access and no pre-existing keys
 - [ ] `make lint` and `make fmt --check` exit 0 on a clean tree
+- [ ] a lint check fails if `internal/gage` (the library layer) references
+      `os.Stdin`/`os.Stdout` or calls `fmt.Print*`/`os.Exit` outside
+      `_test.go` files — keeps CLI-only I/O out of the library from day one
 - [ ] `gage --help` exits 0 and lists the registered top-level subcommands
 - [ ] XDG path resolution: correct config/data/state paths on Linux/macOS
       with `XDG_*` env vars set, and with them unset (defaults)
@@ -52,10 +66,17 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 
 ### Implementation
 
-- [ ] `go.mod` + directory layout (`cmd/gage`, `internal/...`)
+- [ ] `go.mod` + directory layout: `cmd/gage` (thin Cobra frontend) and
+      `internal/gage` (library — vault/session/entry logic, no terminal
+      I/O), split from the start so later milestones build into the
+      right layer
 - [ ] `Makefile` with `build`, `test`, `lint`, `fmt`, `clean` targets
 - [ ] `.gitignore` (binaries, `dist/`, etc.)
 - [ ] Cobra root command + subcommand dispatch skeleton
+- [ ] skeleton `Prompter` (or similar) callback interface in
+      `internal/gage` for interactive decisions (unlock, confirm,
+      disambiguate) — implemented against stdin/stdout by `cmd/gage`,
+      satisfied by a fake in library tests
 - [ ] XDG path resolution (config/data/state, with Windows mapping)
 - [ ] Global `$GAGE_CONFIG/config.toml` read/write
 
@@ -70,7 +91,7 @@ until there's something worth cloning.
 ### Tests (write first)
 
 - [ ] `gage init` on an empty temp dir creates `.gage/config.toml`,
-      `.age-recipients`, `secrets/`, `.gitignore`, and a git repo with
+      `.age-recipients`, `entries/`, `.gitignore`, and a git repo with
       exactly one commit
 - [ ] `gage init` into a non-empty, non-gage directory fails cleanly
       without touching existing files
@@ -105,7 +126,9 @@ until there's something worth cloning.
 
 - [ ] `gage init` (passphrase method only; `--type` flag, default/only
       value `git`, validated against a single-element allowlist; go-git
-      `git.PlainInit` + initial commit)
+      `git.PlainInit` + initial commit); passphrase entry goes through the
+      library's `Prompter` interface, not a direct stdin read in library
+      code
 - [ ] `.gage/config.toml` read/write (`[vault]` section, incl. `type`)
 - [ ] `.age-recipients` read/write
 - [ ] `gage vault list/info/remove/set-default`
@@ -115,7 +138,7 @@ until there's something worth cloning.
 ## M2 — Entry format + crypto round-trip
 
 The core loop, at the library level, no CLI verb wired up yet: generate
-UUID, YAML-encode an entry, encrypt to `secrets/<uuid>.age` via the `age`
+UUID, YAML-encode an entry, encrypt to `entries/<uuid>.age` via the `age`
 library against `.age-recipients`, decrypt it back. This is the riskiest
 technical piece (crypto correctness) — prove it in isolation before
 anything else depends on it.
@@ -123,7 +146,7 @@ anything else depends on it.
 ### Tests (write first)
 
 - [ ] Entry struct marshals to the exact expected YAML shape
-      (`title`/`description`/`created`/`updated`/`updated_by`/`secret`/`fields`)
+      (`title`/`description`/`created`/`updated`/`updated_by`/`value`/`fields`)
       and unmarshals back to an identical struct
 - [ ] Encrypt → decrypt round-trip recovers a byte-identical entry
 - [ ] An entry encrypted to N recipients is independently decryptable by
@@ -137,23 +160,23 @@ anything else depends on it.
 ### Implementation
 
 - [ ] Entry struct + YAML (de)serialization
-- [ ] Encrypt entry to `secrets/<uuid>.age`
-- [ ] Decrypt entry from `secrets/<uuid>.age`
+- [ ] Encrypt entry to `entries/<uuid>.age`
+- [ ] Decrypt entry from `entries/<uuid>.age`
 
 ## M3 — Dumbest possible CRUD (one-shot mode)
 
 `insert`, `cat` (by UUID or exact title match only — no fuzzy/ambiguous
 resolution yet), `rm`, `ls`. Every write is a git commit (no push yet).
-First end-to-end usable slice: store and retrieve a secret from the
+First end-to-end usable slice: store and retrieve an entry from the
 command line, decrypting everything every time (no cache).
 
 ### Tests (write first)
 
-- [ ] `gage insert` followed by `gage cat` round-trips the secret through
+- [ ] `gage insert` followed by `gage cat` round-trips the value through
       the actual CLI (not just the library)
 - [ ] `gage insert` produces exactly one new git commit
 - [ ] `gage ls` lists the inserted entry's title
-- [ ] `gage rm` deletes the file under `secrets/` and commits the deletion; a
+- [ ] `gage rm` deletes the file under `entries/` and commits the deletion; a
       subsequent `cat`/`ls` no longer shows the entry
 - [ ] `gage cat` on an unknown title/UUID fails with a clear error and
       nonzero exit code
@@ -184,14 +207,16 @@ Upgrade addressing from "exact UUID/title" to the full resolution order
       mode, fails with nonzero exit instead of prompting
 - [ ] `gage edit` re-stamps `updated`/`updated_by` on save, leaves other
       fields untouched if unedited, and produces a new commit
-- [ ] `gage rename` changes only the title (not `secret`/`fields`) and
+- [ ] `gage rename` changes only the title (not `value`/`fields`) and
       bumps `updated`
-- [ ] `gage generate` inserts a new entry whose `secret` matches the
+- [ ] `gage generate` inserts a new entry whose `value` matches the
       requested length/character-set constraints
 
 ### Implementation
 
-- [ ] Query resolver (prefix/exact/substring/ambiguous)
+- [ ] Query resolver (prefix/exact/substring/ambiguous), returning a
+      resolved entry or a candidate list as a value — never printed text;
+      the CLI layer decides whether to prompt (session) or fail (one-shot)
 - [ ] `gage show`
 - [ ] `gage edit` (`$EDITOR` + tmpfs, re-stamps `updated`/`updated_by`)
 - [ ] `gage rename`
@@ -199,32 +224,40 @@ Upgrade addressing from "exact UUID/title" to the full resolution order
 
 ## M5 — Session mode
 
-The REPL: `use`, `lock`, `status`, `exit`. In-memory key holding with
-`mlock`, all M3/M4 commands ported to work against "current session
-vault." No metadata index yet — still decrypt-on-demand per command.
+The `Session` library type (see design doc's "Library architecture"):
+in-memory key holding with `mlock`, multi-vault `use`/`lock`/`status`, all
+M3/M4 commands working against a "current" vault. The REPL (`use`, `lock`,
+`status`, `exit`) is `cmd/gage`'s terminal rendering of that type — tests
+below cover `Session` directly wherever possible, with a thinner
+REPL-wiring test on top. No metadata index yet — still decrypt-on-demand
+per command.
 
 ### Tests (write first)
 
-- [ ] `use <vault>` unlocks once; subsequent entry commands in the same
-      session don't re-prompt for the passphrase
-- [ ] `lock <vault>` drops that vault's key; the next entry command
+- [ ] `Session.Use(vault)` unlocks once; subsequent entry calls against
+      the same session don't re-prompt for the passphrase
+- [ ] `Session.Lock(vault)` drops that vault's key; the next entry call
       against it re-prompts, while other unlocked vaults in the same
       session are unaffected
-- [ ] `status` reports correct lock state for multiple vaults touched in
-      one session
-- [ ] `exit`/EOF terminates cleanly
+- [ ] `Session.Status()` reports correct lock state for multiple vaults
+      touched in one session
+- [ ] `exit`/EOF terminates the REPL cleanly
 - [ ] Idle timeout: with simulated/injected elapsed time past
-      `idle_timeout`, the next command against that vault re-prompts as if
-      `lock` had been run
+      `idle_timeout`, the next `Session` call against that vault re-prompts
+      as if `Lock` had been called
 - [ ] Session command history contains typed command lines (e.g. `show
-      protonmail`) but never a decrypted `secret`/`fields` value
+      protonmail`) but never a decrypted `value`/`fields` value
+- [ ] the REPL is a thin wiring layer: it parses a typed line into the
+      corresponding `Session` call and renders the result — one wiring
+      test suffices here, not a re-test of `Session` behavior
 
 ### Implementation
 
-- [ ] REPL loop + session commands (`use`/`lock`/`status`/`exit`/`help`)
-- [ ] In-memory key holding (`mlock`, no core dumps)
-- [ ] Entry commands ported to session mode
-- [ ] Idle timeout re-lock
+- [ ] `Session` library type: `Use`/`Lock`/`Status`, in-memory key holding
+      (`mlock`, no core dumps), idle timeout re-lock
+- [ ] REPL loop in `cmd/gage`: thin terminal wiring over `Session`
+      (`use`/`lock`/`status`/`exit`/`help`)
+- [ ] Entry commands ported to work against `Session`'s current vault
 
 ## M6 — Metadata index
 
@@ -314,6 +347,10 @@ naturally after single-user CRUD+sync are solid.
       (`.age-recipients` and `config.toml` disagree) does not silently
       clear the cache — `verify` keeps failing until the inconsistency is
       actually fixed
+- [ ] the recipient-change warning is a typed value returned by the
+      library (diff content, routine-vs-mismatched flag), not printed
+      text — `cmd/gage` renders it as the `[y/N]` prompt shown in the
+      design doc
 
 ### Implementation
 
@@ -321,6 +358,9 @@ naturally after single-user CRUD+sync are solid.
 - [ ] `gage recipient add/remove --reencrypt`
 - [ ] `gage recipient verify`
 - [ ] Local trust cache (`known-config.toml`, diff + warning on `use`/encrypt)
+- [ ] `RecipientChangeWarning` (or similar) structured type returned by
+      the library on a trust-cache mismatch; `cmd/gage` renders it as the
+      terminal diff + `[y/N]` prompt
 
 ## M9 — Cross-vault sharing
 
@@ -395,3 +435,9 @@ parallelize or reorder freely, safe to defer individually.
   for high-stakes repos," not a default.
 - **`gage clone` against a real remote** — folded into M9, but only
   really testable once there's an actual remote to clone from.
+- **A GUI and/or TUI frontend.** The library/CLI split (see design doc's
+  "Library architecture") is *not* deferred — it's built in from M0 — but
+  actually writing a second frontend is. Once the library's
+  interactive-decision interface (`Prompter`, structured warnings/candidate
+  lists) is proven by the CLI through M8, a GUI/TUI is a new consumer of
+  existing methods, not new core logic.

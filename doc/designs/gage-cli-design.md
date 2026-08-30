@@ -17,7 +17,7 @@
    are all the same thing on disk: one `.age`-encrypted file per entry,
    git-tracked, named with a random UUID rather than a human-readable path.
    Everything a human would recognize — title, description, the actual
-   secret — lives *inside* the encrypted payload as structured YAML. Someone
+   value — lives *inside* the encrypted payload as structured YAML. Someone
    with read access to the vault but not the decryption key sees only opaque
    filenames and ciphertext; they learn nothing about what you have stored,
    not even categories or counts-per-topic.
@@ -37,6 +37,96 @@
 6. **Plaintext should be surprising to produce.** Default `show` prints to
    the terminal (you asked for it), but copy-to-clipboard and QR-to-camera
    are first-class so plaintext never has to sit in scrollback or a file.
+7. **The CLI is a frontend, not the implementation.** Every command is a
+   method on a small set of library types (`Vault`, `Session`, `Entry`)
+   that know nothing about terminals, flags, or stdin — no `fmt.Print`, no
+   reading a passphrase off stdin, no `os.Exit`. `cmd/gage` is a thin
+   Cobra layer that calls into that library and renders the result. This
+   isn't speculative: a GUI and/or TUI are planned on top of the same
+   library, in-process, with no authentication layer between them and
+   it — same binary module, same process, so principle 5's trust boundary
+   ("key material lives exactly as long as the process that holds it")
+   already covers this without change. See "Library architecture" below.
+
+---
+
+## Library architecture
+
+`gage` is designed so the CLI is the first frontend, not the only one. A
+GUI and/or TUI are expected to sit on top of the same functionality later,
+and the goal is for that to be additive — new frontends consuming an
+existing library — rather than a rewrite of core logic that happened to be
+buried inside Cobra command handlers.
+
+**The library layer.** All the behavior described in this document —
+vault lifecycle, entry CRUD, identity/recipient management, session
+unlocking, sync, the trust cache — lives in a library package
+(`internal/gage`) built around a small set of types:
+
+- **`Vault`** — a single vault's on-disk state: config, recipients,
+  entries. Handles the vault-generic operations (`init`, `ls`, `insert`,
+  `recipient add`, ...) whether or not any identity is unlocked.
+- **`Session`** — the in-memory, process-scoped object described in
+  "Session model" below: one or more unlocked `Vault`s, their decrypted
+  keys, and the per-vault metadata index. `Session` is a library type,
+  not a REPL — the REPL is the CLI's particular way of driving one.
+- **`Entry`** — a single decrypted record.
+
+None of these types do their own I/O. No `fmt.Print`, no reading a
+passphrase from stdin, no `os.Exit`. A method either returns a value/error,
+or — for the handful of operations that need a human decision mid-flight —
+returns a structured request for one (see "Interactive decisions" below).
+`cmd/gage` (Cobra) is a thin layer on top: it parses flags, calls into
+`Session`/`Vault`, and renders the result as terminal output, prompts, or
+an exit code. A future GUI or TUI would be an equally thin layer calling
+the same methods and rendering the same results differently — a dialog
+instead of a `[y/N]` prompt, a form instead of `$EDITOR`, a native QR
+widget instead of terminal ASCII art.
+
+**Why this needs no authentication.** The library is embedded in-process,
+not served over a socket or RPC — a GUI/TUI built against it links the
+same package into its own binary and calls it directly, the same way the
+CLI does. There's no network boundary or IPC channel for an auth layer to
+guard. This is the same trust boundary as principle 5's "no daemon": each
+frontend process holds its own unlocked keys in its own memory for as
+long as it runs, whether that process is `gage`, a GUI app, or a TUI.
+Nothing here reopens the cross-terminal-sharing trade-off described later
+in "Trade-off vs. a shared agent" — a GUI's `Session` is exactly as
+isolated from the CLI's `Session` as two CLI processes are from each
+other.
+
+**Interactive decisions become data, not printed text.** A few points in
+this document describe `gage` printing something and waiting for an
+answer: the recipient-change diff and `[y/N]` prompt (see "Local trust
+cache"), the ambiguous-query candidate list (see "Addressing entries"),
+and the unlock prompt itself (passphrase entry, YubiKey touch). At the
+library level, each of these is a typed result — a recipient-change
+warning struct, a candidate list, an unlock-callback interface — that the
+caller decides how to present. The CLI renders them as terminal prompts
+exactly as described elsewhere in this document; a GUI would render the
+same data as a dialog or picker. The underlying decision logic (what
+counts as ambiguous, when a cache regenerates, what `--yes` skips) doesn't
+change — only which layer owns the pixels.
+
+**What's deliberately CLI-only.** Some things in the command reference are
+presentation choices, not library behavior, and won't have a direct GUI/TUI
+equivalent — they're mentioned here so it's clear they don't need to
+survive a port:
+
+- `gage edit`'s `$EDITOR`-on-tmpfs round trip. The library operation is
+  "update these fields on this entry"; the CLI happens to implement its
+  editing UI via `$EDITOR`. A GUI would just have a form calling the same
+  update method.
+- Terminal ASCII QR rendering (`-q`/`--qr`). The library returns the bytes
+  to encode; the CLI renders them as terminal art, a GUI would render an
+  actual QR image widget.
+- The readline-style session history file and its plaintext-query-only
+  rule (see "A few decisions worth calling out"). This is CLI-terminal
+  state; a GUI wouldn't have a comparable file at all.
+- `--script`/`--stdin` non-interactive mode. This is the CLI's way of
+  driving a `Session` from a list of commands instead of a TTY — a
+  stand-in for "just call the library directly," which is what a GUI/TUI
+  does anyway.
 
 ---
 
@@ -94,17 +184,17 @@ myvault/                          # git repo root
 ├── .gage/
 │   └── config.toml               # vault-level config: type + method + device metadata (committed, plaintext)
 ├── .age-recipients               # recipients for the whole vault — the only one
-├── secrets/
+├── entries/
 │   ├── 4b9d7710-8e2a-4a1f-9c3d-1a2b3c4d5e6f.age
 │   ├── a03e5f88-1c44-4e9a-8b77-2d3e4f5a6b7c.age
 │   └── 8f3a1c2e-5566-4a11-9d22-33aa44bb55cc.age
 └── .gitignore
 ```
 
-Flat *inside* `secrets/`, deliberately — the UUID files themselves have no
-further structure. Keeping them under `secrets/` rather than scattered at
+Flat *inside* `entries/`, deliberately — the UUID files themselves have no
+further structure. Keeping them under `entries/` rather than scattered at
 the vault root is purely cosmetic (a `git status`/`ls` at the root shows
-`.gage/`, `.age-recipients`, `secrets/` — three things, not a growing wall
+`.gage/`, `.age-recipients`, `entries/` — three things, not a growing wall
 of random UUIDs) since there's no more per-directory recipient scoping to
 motivate any particular placement. Filenames carry no meaning — they're
 generated (UUIDv4) at `insert` time and never chosen or seen by the user
@@ -209,7 +299,7 @@ description: Personal email, 2FA via authenticator app
 created: 2026-01-14T10:32:00Z
 updated: 2026-08-20T09:03:00Z
 updated_by: yubikey-5c-nfc-1
-secret: correcthorsebatterystaple
+value: correcthorsebatterystaple
 fields:
   username: me@proton.me
   totp_seed: JBSWY3DPEHPK3PXP
@@ -223,12 +313,13 @@ fields:
   is the local device's identity name (the same one registered via
   `gage identity add`, e.g. `yubikey-5c-nfc-1`) — no new concept needed,
   it's just recording which already-known identity made the change.
-- **`secret`** / **`fields`** — the actual payload. `secret` holds the
-  primary value (a password, or the body of an unstructured note); `fields`
-  holds structured key/value metadata (`--field NAME` on `show`/generate
-  extracts from here). This replaces the old positional "line 1 = secret,
-  rest = key:value" convention from `pass`/`passage` with explicit keys,
-  since the file is already structured YAML for the metadata anyway.
+- **`value`** / **`fields`** — the actual payload. `value` holds the
+  entry's primary payload (a password, or the body of an unstructured note);
+  `fields` holds structured key/value metadata (`--field NAME` on
+  `show`/generate extracts from here). This replaces the old positional
+  "line 1 = secret, rest = key:value" convention from `pass`/`passage` with
+  explicit keys, since the file is already structured YAML for the metadata
+  anyway.
 
 `gage insert`/`gage generate` populate `title`/`created`/`updated_by`
 automatically; `gage edit` opens the full YAML in `$EDITOR` and re-stamps
@@ -321,6 +412,11 @@ Instead of a background daemon with a socket, `gage` has **two invocation
 modes**, and they're deliberately independent — nothing bridges them, so
 there's no persistent listener to secure or forget about:
 
+(`Session` here is also the name of the underlying library type — see
+"Library architecture" above. What follows describes the CLI's REPL
+rendering of it, but the same object, unlocked the same way, is what a
+future GUI/TUI would hold too.)
+
 **1. One-shot mode** — `gage show protonmail`. Unlocks the identity,
 decrypts every entry once to resolve the title against what you typed,
 shows the match, drops the key from memory, exits. Every invocation pays
@@ -409,6 +505,11 @@ Resolution order: exact UUID (or its short prefix) → exact title match →
 unique substring match on title → ambiguous, so list candidates and ask
 (one-shot mode fails with the same list instead of prompting, since there's
 no one to ask).
+
+At the library level this is one method that returns either a resolved
+entry or a candidate list — never printed text. One-shot CLI treats a
+non-empty candidate list as failure, session-mode CLI prompts with it, and
+a future GUI would render it as a picker; see "Library architecture."
 
 Making this fast is why `ls` used to be a "cheap, no-decrypt" command and
 can't be anymore — the moment titles move inside the encrypted payload,
@@ -607,6 +708,9 @@ The mechanism behind "change detection" above:
 
   1 recipient added. Proceed and trust this recipient list? [y/N]
   ```
+  At the library level this is a typed value (the diff, plus whether
+  `.age-recipients` matches `config.toml`) that `cmd/gage` renders as the
+  terminal prompt above — see "Library architecture."
 - **Resolving it — two different outcomes depending on `verify`.**
   - **`.age-recipients` matches `config.toml`** (the ordinary case: a
     legitimate `gage recipient add` from another device, correctly
@@ -641,6 +745,11 @@ The mechanism behind "change detection" above:
 ---
 
 ## Command reference
+
+Every command below is `cmd/gage`'s rendering of a `Vault`/`Session`
+library method (see "Library architecture") — flags become method
+parameters, and prompts become terminal renderings of the structured
+results those methods return.
 
 ### Vault lifecycle
 
@@ -763,12 +872,12 @@ trust cache") for scripting/CI; interactively it's never needed since
 `gage` just asks.
 
 Notes on `show`:
-- Default (no flag): prints the `secret` field only — not `title`,
+- Default (no flag): prints the `value` field only — not `title`,
   `description`, `fields`, or the timestamps. Just the one value you
   almost certainly want, so it composes cleanly with pipes/paste. `gage
   cat` is the command that dumps the full decrypted YAML, metadata
   included, when you actually want everything.
-- `--field NAME`: prints one entry from `fields` instead of `secret`
+- `--field NAME`: prints one entry from `fields` instead of `value`
   (e.g. `--field username`, `--field totp_seed`).
 - `-c`: copies to clipboard, auto-clears after a short timeout.
 - `-q`: renders a terminal QR code **instead of** printing plaintext — this
@@ -831,6 +940,13 @@ for a vault that actually has one.
 
 ## A few decisions worth calling out
 
+- **The library has no idea it's being driven by a terminal.**
+  `Vault`/`Session` methods return values, errors, or structured requests
+  for a decision (unlock, confirm, disambiguate) — never printed text or a
+  stdin read. `cmd/gage` owns all of that. This is what keeps a future
+  GUI/TUI from needing to rework any of the above — it's a second thin
+  layer over the same calls, not a fork of the logic. See "Library
+  architecture."
 - **`vault` replaces `repo` in the vocabulary; a `type` field says how
   it's actually stored.** Every command that used to say `--repo`/`repo
   <verb>` now says `--use`/`vault <verb>`, and each vault's config records
@@ -873,7 +989,7 @@ for a vault that actually has one.
   readline-style history should log `show protonmail`, not the decrypted
   value that was printed — an easy leak vector to overlook once you have a
   REPL with recallable history. Titles typed as *queries* are fine to log
-  (you typed them yourself); it's only the decrypted `secret`/`fields`
+  (you typed them yourself); it's only the decrypted `value`/`fields`
   values that must never land in the history file.
 - **`--reencrypt` is mandatory, not default-on, for recipient removal.**
   Silently leaving stale ciphertext readable by a removed recipient is a
