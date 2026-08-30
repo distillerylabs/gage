@@ -154,8 +154,9 @@ the first device's identity — a fresh X25519 keypair, private half
 wrapped via age's scrypt passphrase recipient and written to
 `$GAGE_DATA/identities/<vault>/<device>.age` (see design doc's "Local
 identity storage") — with only the resulting public key going into
-`.age-recipients`/`config.toml`. Defer `clone` until there's something
-worth cloning. This milestone also establishes the cross-platform memory
+`.age-recipients`/`config.toml`. Defer `clone` to M7, once a bare-remote
+test harness exists to clone *from* — there's nothing worth cloning yet.
+This milestone also establishes the cross-platform memory
 protection every later identity relies on — page-locking and core-dump
 disabling on Linux, macOS, and Windows — since it's the first point any
 private key material exists in process memory.
@@ -520,7 +521,7 @@ session mode (see design doc's "Library architecture").
 - [ ] `gage reindex`
 - [ ] `gage search` / `gage grep`
 
-## M7 — Sync
+## M7 — Sync (+ `clone`)
 
 Needs M5's session lifecycle to hook `use` into, and M3's
 commit-per-write already true. These commands stay vault-generic in the
@@ -529,6 +530,15 @@ types," they're entirely git-implemented today. (`gage git set-remote` —
 the one git-*specific* command — was already implemented back in M1;
 there's no generic `gage git -- <args...>` passthrough — see the design
 doc's "Git-specific commands" for why.)
+
+`gage clone` lands here too, not with M10's cross-vault sharing — it has
+nothing to do with sharing between two local vaults, it's the last
+generic sync-family verb (`gage init`/`push`/`pull`/`sync`/`clone` all
+just wrap go-git operations against a remote), and it needs exactly the
+bare-remote test harness this milestone already builds for divergence
+testing. Cloning against a *real, external* remote (an actual GitHub URL)
+stays untestable here, same as it would be anywhere else — see "Deferred"
+at the bottom of this doc.
 
 Test harness for this milestone: real fetch/push/pull/divergence
 behavior is tested against ephemeral local bare repos, extending M0's
@@ -570,6 +580,14 @@ offline-handling logic runs.
       exactly the error `Vault`'s sync logic treats as "unreachable" —
       proving the warn-and-proceed path is reachable without depending on
       a real network failure
+- [ ] `gage clone` against a `gittest.NewBareRemote` produces a working
+      vault — `.gage/config.toml`, `.age-recipients`, and `entries/`
+      matching the remote's committed state — registered in global config
+      the same way `init` registers a new one
+- [ ] `gage clone` against a vault where the local device isn't yet a
+      recipient reports that plainly and points at `gage identity add`,
+      rather than leaving a vault directory that silently can't decrypt
+      anything
 
 ### Implementation
 
@@ -592,6 +610,10 @@ offline-handling logic runs.
 - [ ] Manual `pull`/`push` via go-git (both already implemented purely in
       go-git — no passthrough, no `git` binary dependency, anywhere in
       `gage`)
+- [ ] `gage clone` (go-git `PlainClone`, reusing this milestone's
+      bare-remote test harness); reads the cloned `.gage/config.toml` to
+      learn the vault's method and reports plainly if the local device
+      isn't yet a recipient
 
 ## M8 — Identity/recipient management + atomic reencrypt
 
@@ -731,14 +753,11 @@ milestone since it's the sharing story.
       *destination* vault's cache (not the source's) before encrypting
       there, and an unreviewed recipient change on the destination
       triggers the same diff warning a same-vault write would
-- [ ] `gage clone` against a vault where the local device isn't yet a
-      recipient reports that plainly and points at `gage identity add`
 
 ### Implementation
 
 - [ ] `gage mv --to-vault`
 - [ ] `gage cp --to-vault`
-- [ ] `gage clone` (go-git `PlainClone`)
 
 ## M11 — Polish / output modes
 
@@ -788,8 +807,10 @@ parallelize or reorder freely, safe to defer individually.
   exercised by real implementation, not just designed on paper.
 - **Signed recipient changes** — design doc calls this out as "reserve
   for high-stakes repos," not a default.
-- **`gage clone` against a real remote** — folded into M10, but only
-  really testable once there's an actual remote to clone from.
+- **`gage clone` against a real, external remote** — the command itself
+  is implemented and tested against a `gittest` bare remote in M7; an
+  actual GitHub/self-hosted URL is only really exercisable manually, not
+  in CI.
 - **A GUI and/or TUI frontend.** The library/CLI split (see design doc's
   "Library architecture") is *not* deferred — it's built in from M0 — but
   actually writing a second frontend is. Once the library's
