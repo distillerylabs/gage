@@ -680,6 +680,14 @@ crypto risk and M7 isolates sync risk.
       `generate` as for a session-mode one — the cache check hooks the
       `Vault` methods that encrypt, not `Session.Use`, since one-shot mode
       never calls `Session.Use` at all
+- [ ] A non-blocking opportunistic warning fires on a plain `gage show`/
+      `ls` in one-shot mode when recipients have changed, even though
+      neither command encrypts anything — the same unlock hook M7's auto
+      fetch+pull uses, not the mandatory pre-encrypt check
+- [ ] `gage sync` surfaces the opportunistic warning even when it resolves
+      via a clean fast-forward with no conflicting entry — the case where
+      sync never unlocks any identity at all, so the warning can't be
+      riding along on a `Vault.Unlock` call
 - [ ] Confirming a *routine* recipient change (files agree) regenerates
       the cache and stops warning; confirming a *mismatched* change
       (`.age-recipients` and `config.toml` disagree) does not silently
@@ -692,11 +700,14 @@ crypto risk and M7 isolates sync risk.
 
 ### Implementation
 
-- [ ] Local trust cache (`known-config.toml`, diff + warning): the check
-      lives on the `Vault` methods that encrypt (`insert`/`edit`/
-      `generate`/`rename`/`mv`/`cp`) plus an opportunistic check on
-      `use`/`sync`, so it fires identically whether the caller is a
-      one-shot command or a session
+- [ ] Local trust cache (`known-config.toml`, diff + warning): the
+      blocking check lives on the `Vault` methods that encrypt
+      (`insert`/`edit`/`generate`/`rename`/`mv`/`cp`); a separate
+      non-blocking opportunistic check is wired into `Vault.Unlock`
+      itself (covering session `use` and every one-shot command's
+      implicit unlock, mirroring M7's fetch+pull hook) *and* into `sync`
+      directly, since a clean fast-forward sync can complete without ever
+      calling `Unlock`
 - [ ] `RecipientChangeWarning` (or similar) structured type returned by
       the library on a trust-cache mismatch; `cmd/gage` renders it as the
       terminal diff + `[y/N]` prompt

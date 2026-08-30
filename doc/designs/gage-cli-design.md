@@ -827,9 +827,18 @@ The mechanism behind "change detection" above:
 - **When it's checked.** Before any operation that encrypts
   (`insert`, `edit`, `generate`, `rename`, and `mv`/`cp --to-vault` against
   the *destination* vault's cache), `gage` compares the current committed
-  `.gage/config.toml` and `.age-recipients` against the cached copies.
-  It also checks opportunistically on `use`/`sync`, so you see a warning
-  when you sit down, not only at the moment you're about to write.
+  `.gage/config.toml` and `.age-recipients` against the cached copies —
+  this check blocks the write pending a `[y/N]` answer (or `--yes`). It
+  also checks *opportunistically*, non-blockingly, in two places that
+  don't otherwise trigger it: on every vault unlock — session `use` and a
+  one-shot command's implicit unlock alike, the same hook "Sync model"'s
+  auto fetch+pull uses, so a plain `gage show`/`ls` surfaces the warning
+  too, not just whatever command happens to write next — and on `sync`
+  explicitly, since a sync that fast-forwards cleanly with no conflicting
+  entry never needs to unlock any identity at all and so wouldn't
+  otherwise pass through the unlock hook. Either way you see the warning
+  when you sit down (or run any command at all), not only at the moment
+  you're about to write.
 - **What a mismatch looks like — a plaintext diff, always.** `gage` never
   just says "recipients changed"; it shows exactly what changed, since
   the cached copy of `config.toml`:
