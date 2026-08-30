@@ -968,6 +968,19 @@ gage recipient verify [--use NAME]
     a removed party) and prints a clear warning that this revokes future
     access only — anything already read can't be unread.
 
+    --reencrypt is all-or-nothing: every entry is re-encrypted in the
+    working tree first, and the recipient-list files
+    (.age-recipients/config.toml) and every touched entry land in exactly
+    one commit together — nothing commits until all of it succeeds. If
+    the process is interrupted partway (crash, kill, power loss), HEAD is
+    untouched; the vault is exactly as it was before the command ran, and
+    re-running --reencrypt picks up cleanly from scratch. gage also
+    refuses to start any write against a dirty entries/ working tree it
+    didn't just create itself — the only thing that could leave one is an
+    interrupted --reencrypt, so it's reset to HEAD before the new
+    operation proceeds, rather than risking an unrelated write folding a
+    stale partial reencrypt into its own commit.
+
     `verify` checks that .age-recipients and .gage/config.toml's
     [[recipients]] list the same public keys. Needs no unlock — both files
     are plaintext — so it works before any identity is available and is
@@ -1225,6 +1238,21 @@ here" — by construction, nothing would replace it.
   Silently leaving stale ciphertext readable by a removed recipient is a
   worse failure mode than forcing the user to explicitly opt into the
   (slower) re-encryption pass.
+- **`--reencrypt` is all-or-nothing, on purpose, not incrementally
+  committed.** Re-encrypting hundreds of entries one commit at a time
+  (with a resumable progress marker) would handle huge vaults more
+  gracefully, but it means a genuinely inconsistent state — recipient
+  list says one thing, some entries' actual ciphertext says another —
+  could sit committed, and potentially pushed to a remote and pulled by
+  another device, until someone notices and resumes it. Staging every
+  entry in the working tree and committing exactly once, alongside the
+  recipient-list files, means that window never exists in durable
+  history at all: a crash mid-`--reencrypt` leaves HEAD untouched rather
+  than half-migrated. This is the same shape of problem the local trust
+  cache exists to catch (see "Local trust cache") — declared recipients
+  and actual ciphertext recipients disagreeing — just self-inflicted
+  instead of caused by a remote git-writer, so it gets the same
+  "never let it become committed truth" treatment.
 - **Sync is automatic except where auto-resolving would be dangerous.**
   Fast-forward pulls on `use` and pushes after every write happen without
   being asked, so `pull`/`push` aren't something to remember day-to-day.

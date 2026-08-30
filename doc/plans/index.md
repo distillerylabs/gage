@@ -522,6 +522,22 @@ naturally after single-user CRUD+sync are solid.
 - [ ] `gage recipient remove` without `--reencrypt` is rejected outright;
       with `--reencrypt` it re-encrypts every entry, excluding the
       removed key
+- [ ] A simulated crash/interruption partway through `--reencrypt` leaves
+      HEAD byte-identical to before the command ran — no partial commit,
+      no leftover dirty `entries/` once `gage` next starts
+- [ ] Retrying `--reencrypt` after such an interruption produces the same
+      correct end state as an uninterrupted run
+- [ ] A single entry failing during `--reencrypt` (simulated decrypt/
+      encrypt error) aborts the whole operation before any commit and
+      reports which entry failed; no entries are left partially migrated
+- [ ] `--reencrypt` lands the recipient-list files
+      (`.age-recipients`/`config.toml`) and every re-encrypted entry in
+      exactly one commit — never a commit containing only one side of
+      that pair
+- [ ] A dirty `entries/` working tree left by a simulated crash is reset
+      to HEAD before any subsequent write (`insert`/`edit`/`generate`/
+      `--reencrypt`) proceeds, rather than being folded into that write's
+      commit
 - [ ] `gage recipient verify` exits 0 and reports "in sync" when
       `.age-recipients` and `config.toml` agree; exits 1 and lists the
       specific differences when they don't
@@ -543,7 +559,14 @@ naturally after single-user CRUD+sync are solid.
 - [ ] `gage identity add/list` (reuses M1's passphrase identity-generation
       path for additional devices — each gets its own
       `$GAGE_DATA/identities/<vault>/<device>.age`)
-- [ ] `gage recipient add/remove --reencrypt`
+- [ ] `gage recipient add/remove --reencrypt`: stage every re-encrypted
+      entry in the working tree first; commit only after all entries
+      succeed, with the recipient-list files and every touched entry in
+      that same single commit
+- [ ] Precondition check on every write (`insert`/`edit`/`generate`/
+      `--reencrypt`): if `entries/` is unexpectedly dirty at start, reset
+      it to HEAD before proceeding — the only source of unexpected
+      dirtiness is an interrupted `--reencrypt`
 - [ ] `gage recipient verify`
 - [ ] Local trust cache (`known-config.toml`, diff + warning on `use`/encrypt)
 - [ ] `RecipientChangeWarning` (or similar) structured type returned by
