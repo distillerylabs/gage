@@ -643,6 +643,10 @@ milestone since it's the sharing story.
       adds a decryptable copy in the destination
 - [ ] `mv`/`cp --to-vault` succeeds even when the destination vault is not
       currently unlocked (encrypting to public keys needs no private key)
+- [ ] `mv`/`cp --to-vault` runs M8's trust-cache check against the
+      *destination* vault's cache (not the source's) before encrypting
+      there, and an unreviewed recipient change on the destination
+      triggers the same diff warning a same-vault write would
 - [ ] `gage clone` against a vault where the local device isn't yet a
       recipient reports that plainly and points at `gage identity add`
 
