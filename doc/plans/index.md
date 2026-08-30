@@ -37,16 +37,43 @@ so a future GUI/TUI is a new frontend on stable ground, not a refactor.
 Key dependencies, decided up front so later milestones don't reshuffle:
 - **[spf13/cobra](https://github.com/spf13/cobra)** for command
   structure/dispatch (used from M0 on, in both one-shot and session mode).
+- **[pelletier/go-toml](https://github.com/pelletier/go-toml)** (v2) for
+  all TOML read/write — global `$GAGE_CONFIG/config.toml` and each
+  vault's `.gage/config.toml` — TOML 1.0 compliant, struct-tag driven, no
+  CGo. First used in M0 itself (the global config round-trip test),
+  underpins M1's vault config from there.
 - **[go-git/go-git](https://github.com/go-git/go-git)** for all git
   operations (init, commit, fetch, pull, push) — native Go, no shelling
   out to a `git` binary. First used in M1 (`init`), exercised further in
   M3 (commit-per-write) and M7 (sync).
+- **[golang.org/x/term](https://pkg.go.dev/golang.org/x/term)** for
+  masked terminal input — the standard extended-stdlib package for
+  reading input without local echo, cross-platform (Linux/macOS/Windows).
+  First used in M1 (`Vault.Unlock`'s passphrase prompt via `Prompter`),
+  reused by M3's default `insert` prompt.
+- **[golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys)** (`unix` and
+  `windows` subpackages) for the cross-platform `memlock` package —
+  `mlock`/`munlock` on Linux/macOS, `VirtualLock`/`VirtualUnlock` on
+  Windows, behind one signature (see M1's "Local identity storage" and
+  memory-protection work). First used in M1.
+- **[google/uuid](https://github.com/google/uuid)** for entry filenames
+  (`entries/<uuid>.age`) — RFC 4122 UUIDv4 generation. First used in M2
+  (entry encrypt/decrypt round-trip).
 - **[FiloSottile/age](https://github.com/FiloSottile/age)** for all
   encryption/decryption — the reference Go implementation, and the same
   format the design relies on for `.age-recipients` interop with the
   stock `age`/`passage` CLIs. First used in M2 (entry encrypt/decrypt
   round-trip), underpins every command that touches ciphertext after
   that.
+- **[atotto/clipboard](https://github.com/atotto/clipboard)** for
+  `-c`/`--clip` — native syscalls on Windows, shells out to
+  `pbcopy`/`xclip`/`xsel` on macOS/Linux (a runtime dependency in the
+  same category as M7's `git` passthrough, not a build-time one — the
+  `gage` binary itself stays static). First used in M10.
+- **[mdp/qrterminal](https://github.com/mdp/qrterminal)** for `-q`/`--qr`
+  — renders a QR code directly as terminal block art, the
+  scan-with-camera workflow the design calls for, with no separate
+  image-to-terminal conversion step. First used in M10.
 
 ### Tests (write first)
 
