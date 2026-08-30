@@ -628,6 +628,9 @@ naturally after single-user CRUD+sync are solid.
       to HEAD before any subsequent write (`insert`/`edit`/`generate`/
       `--reencrypt`) proceeds, rather than being folded into that write's
       commit
+- [ ] `gage recipient list` prints every recipient's device name and
+      public key, matching `.gage/config.toml`'s `[[recipients]]` exactly,
+      and reflects an add/remove from the same test run
 - [ ] `gage recipient verify` exits 0 and reports "in sync" when
       `.age-recipients` and `config.toml` agree; exits 1 and lists the
       specific differences when they don't
@@ -641,6 +644,7 @@ naturally after single-user CRUD+sync are solid.
       entry in the working tree first; commit only after all entries
       succeed, with the recipient-list files and every touched entry in
       that same single commit
+- [ ] `gage recipient list`
 - [ ] Precondition check on every write (`insert`/`edit`/`generate`/
       `--reencrypt`): if `entries/` is unexpectedly dirty at start, reset
       it to HEAD before proceeding — the only source of unexpected
