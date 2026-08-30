@@ -195,9 +195,9 @@ config" below) rather than left implicit, so that:
   type rather than bolted onto fields that assume git.
 - **The vault-generic/type-specific split in the command reference is
   real, not just a mental model.** Commands that only make sense because
-  the backing store *is* git — setting a remote, dropping into raw `git`
-  for anything gage doesn't model — are namespaced under `gage git`, not
-  `gage vault` (see "Git-specific commands" below). Everything else —
+  the backing store *is* git — today, just setting a remote — are
+  namespaced under `gage git`, not `gage vault` (see "Git-specific
+  commands" below). Everything else —
   `init`, `clone`, `vault list/info/remove/set-default`, `use`, all entry
   CRUD, `identity`, `recipient` — talks about vaults in the abstract and
   would not need to change if a second type showed up.
@@ -1082,11 +1082,11 @@ Everything here only exists because the current (and only) vault type is
 `git` — none of it has an obvious equivalent under a different backing
 store, which is exactly why it's namespaced under `git` instead of
 `vault`: these are the commands that would need reworking, or would simply
-disappear, if a second vault type showed up.
+disappear, if a second vault type showed up. Today that's exactly one
+command:
 
 ```
 gage git set-remote <name> <url>     # sets/changes the git remote (origin) — see below
-gage git [--use NAME] -- <args...>   # passthrough for anything else (branches, tags, etc.)
 ```
 
 `--remote` on `init` is optional — a vault can start local-only (no sync
@@ -1094,11 +1094,24 @@ until you're ready) and gain a remote later, e.g. after creating an empty
 repo on GitHub. `gage git set-remote` is the command for that: it sets
 `origin` on the actual git repo (equivalent to `git remote add/set-url
 origin <url>`) *and* updates `vaults.<name>.git.origin` in the global
-config in the same step, so the two never drift apart. This is
-deliberately not left to `gage git -- remote add origin <url>` — that
-passthrough would touch git's remote config without gage's global config
-ever finding out, leaving `vault info` reporting a stale or missing remote
-for a vault that actually has one.
+config in the same step, so the two never drift apart. Doing this through
+`gage` rather than a raw `git remote add` matters specifically because it
+also has to touch gage's own global config — a plain passthrough would
+set git's remote without gage's config ever finding out, leaving `vault
+info` reporting a stale or missing remote for a vault that actually has
+one.
+
+**There's deliberately no generic `gage git -- <args...>` passthrough.**
+`gage` never shells out to a `git` binary for anything — every command
+above, `set-remote` included, goes through `go-git`. For git operations
+`gage` doesn't model at all (branch/tag management, `gc`, `fsck`, reflog
+inspection, and the rest of git's long tail), the vault is just a normal
+git repository sitting at a well-known path (`gage vault info` reports
+it) — `cd` there and use the real `git` CLI directly, with its actual
+help text and actual tab completion, rather than whatever would leak
+through a forwarding layer. This also means a second vault type never
+has to reckon with "what does an arbitrary-passthrough command even mean
+here" — by construction, nothing would replace it.
 
 ---
 

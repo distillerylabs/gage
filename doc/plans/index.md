@@ -67,9 +67,13 @@ Key dependencies, decided up front so later milestones don't reshuffle:
   that.
 - **[atotto/clipboard](https://github.com/atotto/clipboard)** for
   `-c`/`--clip` — native syscalls on Windows, shells out to
-  `pbcopy`/`xclip`/`xsel` on macOS/Linux (a runtime dependency in the
-  same category as M7's `git` passthrough, not a build-time one — the
-  `gage` binary itself stays static). First used in M10.
+  `pbcopy`/`xclip`/`xsel` on macOS/Linux. This is the one place `gage`
+  has a runtime dependency on an external binary being present — not a
+  build-time one, the `gage` binary itself still compiles as a single
+  static executable — worth flagging as the exception now that the git
+  side has none (see the design doc's "Git-specific commands": there's
+  deliberately no `git`-binary passthrough anywhere else in `gage`).
+  First used in M10.
 - **[mdp/qrterminal](https://github.com/mdp/qrterminal)** for `-q`/`--qr`
   — renders a QR code directly as terminal block art, the
   scan-with-camera workflow the design calls for, with no separate
@@ -463,8 +467,11 @@ session mode (see design doc's "Library architecture").
 
 Needs M5's session lifecycle to hook `use` into, and M3's
 commit-per-write already true. These commands stay vault-generic in the
-CLI (`sync`/`pull`/`push`/`git`) even though, per the design doc's "Vault
-types," they're entirely git-implemented today.
+CLI (`sync`/`pull`/`push`), even though, per the design doc's "Vault
+types," they're entirely git-implemented today. (`gage git set-remote` —
+the one git-*specific* command — was already implemented back in M1;
+there's no generic `gage git -- <args...>` passthrough — see the design
+doc's "Git-specific commands" for why.)
 
 ### Tests (write first)
 
@@ -481,8 +488,6 @@ types," they're entirely git-implemented today.
       resolved
 - [ ] `gage sync` surfaces both versions of a conflicting entry and
       requires an explicit choice before proceeding
-- [ ] `gage git -- <args...>` passthrough executes an arbitrary git
-      subcommand against the vault's git repo
 
 ### Implementation
 
@@ -490,9 +495,9 @@ types," they're entirely git-implemented today.
 - [ ] Auto push after writes (go-git `Push`)
 - [ ] Divergence detection
 - [ ] `gage sync` (conflict surfacing, both versions shown)
-- [ ] Manual `pull`/`push` via go-git; `gage git -- <args...>` passthrough
-      shells out to the real `git` binary (go-git doesn't cover the long
-      tail of arbitrary git subcommands the design promises here)
+- [ ] Manual `pull`/`push` via go-git (both already implemented purely in
+      go-git — no passthrough, no `git` binary dependency, anywhere in
+      `gage`)
 
 ## M8 — Identity/recipient management + trust cache
 
