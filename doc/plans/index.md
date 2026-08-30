@@ -100,6 +100,11 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 - [ ] `gittest.NewBareRemote` (or similar) creates an ephemeral local
       bare repo under `t.TempDir()` and returns its path; two calls
       produce independent, non-colliding repos
+- [ ] CI runs `make build`/`make test`/`make lint` on Linux, macOS, *and*
+      Windows runners — actual native execution, not cross-compilation,
+      since later milestones' Windows-specific claims (M1's `mlock`/
+      `VirtualLock`, M5's session/idle-timeout parity) rely on syscalls
+      that only run correctly on their native platform
 
 ### Implementation
 
@@ -109,6 +114,10 @@ Key dependencies, decided up front so later milestones don't reshuffle:
       right layer
 - [ ] `Makefile` with `build`, `test`, `lint`, `fmt`, `clean` targets
 - [ ] `.gitignore` (binaries, `dist/`, etc.)
+- [ ] CI workflow with a Linux/macOS/Windows runner matrix invoking
+      `make build`/`make test`/`make lint` on each — set up now so every
+      later milestone's cross-platform claims are actually verified,
+      rather than asserted on whatever OS the plan happens to be written on
 - [ ] Cobra root command + subcommand dispatch skeleton
 - [ ] skeleton `Prompter` (or similar) callback interface in
       `internal/gage` for interactive decisions (confirm, disambiguate,
