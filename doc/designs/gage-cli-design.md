@@ -123,9 +123,9 @@ once, uses the result for a single `Vault` call, and calls
 idle timeout, or process exit closes it (see "Session model" below).
 Neither mode is a special case of the other — both run the same
 `Unlock` → use → `Close` contract, just once per command versus once per
-session. `Identity.Close()` is the one place responsible for munlocking
-and zeroing the private key, invoked from exactly those two trigger
-points. The same rule extends to the in-session metadata index (see
+session. `Identity.Close()` is the one place responsible for releasing the page
+lock on and zeroing the private key, invoked from exactly those two
+trigger points. The same rule extends to the in-session metadata index (see
 "Addressing entries & the metadata index" below): it lives on `Session`,
 keyed alongside each vault's cached `Identity`, never on `Vault` — `Vault`
 stays a stateless, identity-agnostic operator over ciphertext in every
@@ -563,14 +563,27 @@ $
 ```
 
 The unlocked identity for each vault is held **only in this process's
-memory**, `mlock`'d so it can't be paged to swap, with core dumps disabled
-for the process. There is nothing to attach to from another terminal —
-that's the whole point. When the process exits (`exit`, `quit`, Ctrl-D, or
-the process being killed), the memory is zeroed and reclaimed by the OS;
-there is no cleanup step that can be skipped or forgotten. This is the
-same `Identity` `Vault.Unlock` returns in one-shot mode — `Session` just
-holds onto it across calls instead of closing it after one; see "Library
-architecture" above.
+memory**, page-locked the moment `Vault.Unlock` produces it so it can't
+be paged to swap — `mlock`/`munlock` on Linux and macOS,
+`VirtualLock`/`VirtualUnlock` on Windows — and the process itself has
+core dumps disabled at startup where the OS supports it
+(`setrlimit(RLIMIT_CORE, 0)` on Linux/macOS). Windows has no direct
+equivalent to a Unix core dump; `gage` does what a non-elevated process
+can (suppressing the Windows Error Reporting crash dialog via
+`SetErrorMode`) but can't fully guarantee no crash dump gets written the
+way `RLIMIT_CORE` does on POSIX — a documented gap, not a claimed
+guarantee it can't back. If page-locking itself fails (common under
+restricted `ulimit -l`/container defaults, or a locked-down Windows
+policy), `gage` warns once and proceeds without it rather than refusing
+to unlock — the same "warn and proceed" posture as an unreachable network
+in "Sync model": a weaker guarantee beats an unusable tool. There is
+nothing to attach to from another terminal — that's the whole point. When
+the process exits (`exit`, `quit`, Ctrl-D, or the process being killed),
+the memory is zeroed and reclaimed by the OS; there is no cleanup step
+that can be skipped or forgotten. This is the same `Identity`
+`Vault.Unlock` returns in one-shot mode — `Session` just holds onto it
+across calls instead of closing it after one; see "Library architecture"
+above.
 
 **Non-interactive session mode** exists too, for automation that wants the
 same "unlock once, do several things, then gone" property without a human
@@ -1138,6 +1151,19 @@ for a vault that actually has one.
   (register a fresh identity, get re-added by another recipient), not a
   backup problem — `gage` doesn't sync or back it up itself. See "Local
   identity storage."
+- **Memory page-locking is cross-platform, and Windows' crash-dump story
+  is honestly weaker than POSIX's.** `mlock`/`munlock` (Linux, macOS) and
+  `VirtualLock`/`VirtualUnlock` (Windows) protect the same thing — an
+  unlocked `Identity`'s key bytes never getting paged to swap — through
+  platform-appropriate syscalls behind one interface. Disabling core
+  dumps (`RLIMIT_CORE`) has no real Windows equivalent a non-elevated
+  process can rely on; `gage` suppresses the Windows Error Reporting
+  crash dialog but documents this as a narrower guarantee rather than
+  pretending parity with POSIX. If page-locking itself fails (restricted
+  `ulimit -l`, a locked-down container or Windows policy), `gage` warns
+  once and proceeds unlocked-but-unprotected rather than refusing to
+  work — the same "warn and proceed" posture as an unreachable network in
+  "Sync model."
 - **Session vaults are re-lockable without killing the process.** `lock
   <vault>` (or the idle timeout) drops that vault's key from memory while
   leaving other unlocked vaults and the shell itself intact — useful when

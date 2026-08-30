@@ -85,7 +85,7 @@ Key dependencies, decided up front so later milestones don't reshuffle:
       a second identity method later (deferred — see bottom of this doc)
       is additive rather than a breaking interface change
 - [ ] skeleton `Identity` type (wraps unlocked private key material) with
-      a `Close()` method that zeroes/munlocks it, and the
+      a `Close()` method that releases its page lock and zeroes it, and the
       `Vault.Unlock(Prompter) (Identity, error)` method signature — no
       real crypto behind either yet (that's M1/M2), but deciding the
       shape now is what lets every later CRUD method take `Identity` as
@@ -107,7 +107,10 @@ wrapped via age's scrypt passphrase recipient and written to
 `$GAGE_DATA/identities/<vault>/<device>.age` (see design doc's "Local
 identity storage") — with only the resulting public key going into
 `.age-recipients`/`config.toml`. Defer `clone` until there's something
-worth cloning.
+worth cloning. This milestone also establishes the cross-platform memory
+protection every later identity relies on — page-locking and core-dump
+disabling on Linux, macOS, and Windows — since it's the first point any
+private key material exists in process memory.
 
 ### Tests (write first)
 
@@ -132,8 +135,15 @@ worth cloning.
 - [ ] `Vault.Unlock` with the wrong passphrase returns a distinguishable
       typed error (not a generic error) — no partial or garbage key is
       ever produced
-- [ ] `Identity.Close()` zeroes/munlocks the key material; using the
-      `Identity` after `Close()` fails instead of silently succeeding
+- [ ] `Identity.Close()` releases the page lock and zeroes the key
+      material; using the `Identity` after `Close()` fails instead of
+      silently succeeding
+- [ ] The `memlock` package's `Lock`/`Unlock` round-trip succeeds on the
+      current platform (Linux/macOS/Windows, whichever CI runs on) for a
+      representative key-sized byte slice
+- [ ] A simulated page-lock failure doesn't abort `Vault.Unlock` — it
+      proceeds and returns a usable `Identity` after a single warning via
+      `Prompter`, rather than refusing to unlock
 - [ ] The public key derived from the generated identity matches exactly
       what's written to both `.age-recipients` and `.gage/config.toml`'s
       `[[recipients]]`
@@ -170,8 +180,23 @@ worth cloning.
       identity file back into a usable private key via the typed unlock
       exchange; returns distinguishable typed errors (wrong passphrase /
       corrupt identity file / no local identity registered for this
-      device); the only place a `Vault` ever obtains an identity
-- [ ] `Identity.Close()`: zeroes and munlocks the private key
+      device); the only place a `Vault` ever obtains an identity. The
+      returned `Identity`'s key bytes are page-locked immediately
+      (Linux/macOS/Windows — see below); if locking fails, `Unlock` warns
+      once via `Prompter` and proceeds unlocked-but-unprotected rather
+      than failing the whole operation
+- [ ] Cross-platform page-lock package (e.g. `internal/gage/memlock`):
+      `Lock([]byte) error`/`Unlock([]byte) error`, implemented with
+      build-tag-separated files — `mlock(2)`/`munlock(2)` on Linux and
+      macOS (`golang.org/x/sys/unix`), `VirtualLock`/`VirtualUnlock` on
+      Windows (`golang.org/x/sys/windows`) — behind one signature `Vault`
+      and `Session` both call unchanged regardless of OS
+- [ ] `Identity.Close()`: releases the page lock and zeroes the private
+      key, cross-platform, via the same `memlock` package
+- [ ] Process-wide core dump disabling at `cmd/gage` startup:
+      `setrlimit(RLIMIT_CORE, 0)` on Linux/macOS; on Windows, suppress the
+      Windows Error Reporting crash dialog via `SetErrorMode` (a narrower
+      guarantee than POSIX's — see design doc's "Session model")
 - [ ] `.gage/config.toml` read/write (`[vault]` section, incl. `type`)
 - [ ] `.age-recipients` read/write
 - [ ] `gage vault list/info/remove/set-default`
@@ -306,15 +331,23 @@ tmpfs/`$EDITOR` round trip — one CLI-layer helper, two call sites.
 ## M5 — Session mode
 
 The `Session` library type (see design doc's "Library architecture"):
-in-memory key holding with `mlock`, multi-vault `use`/`lock`/`status`, all
-M3/M4 commands working against a "current" vault. `Session.Use` calls the
-same `Vault.Unlock` from M1 and caches the resulting `Identity`;
-`Session.Lock`/idle-timeout call the same `Identity.Close()` from M1 — no
-M3/M4 `Vault` method signature changes, only how many times `Unlock`/
-`Close` run around them. The REPL (`use`, `lock`, `status`, `exit`) is
-`cmd/gage`'s terminal rendering of that type — tests below cover `Session`
-directly wherever possible, with a thinner REPL-wiring test on top. No
-metadata index yet — still decrypt-on-demand per command.
+holds one or more vaults' `Identity` values in memory for longer than a
+single command. The cross-platform page-locking and zeroing itself
+(`mlock`/`VirtualLock`, `Identity.Close()`) is M1's, established the
+moment any `Identity` exists — `Session` doesn't add new
+memory-protection mechanics here, it just changes how long an
+already-protected `Identity` survives before `Close()` runs. Multi-vault
+`use`/`lock`/`status`, all M3/M4 commands working against a "current"
+vault. `Session.Use` calls the same `Vault.Unlock` from M1 and caches the
+resulting `Identity`; `Session.Lock`/idle-timeout call the same
+`Identity.Close()` from M1 — no M3/M4 `Vault` method signature changes,
+only how many times `Unlock`/`Close` run around them. Windows is an
+explicit target here like every other platform: the REPL, idle timeout,
+and locking all need to work identically on Windows, Linux, and macOS.
+The REPL (`use`, `lock`, `status`, `exit`) is `cmd/gage`'s terminal
+rendering of that type — tests below cover `Session` directly wherever
+possible, with a thinner REPL-wiring test on top. No metadata index yet —
+still decrypt-on-demand per command.
 
 ### Tests (write first)
 
@@ -337,14 +370,23 @@ metadata index yet — still decrypt-on-demand per command.
 - [ ] the REPL is a thin wiring layer: it parses a typed line into the
       corresponding `Session` call and renders the result — one wiring
       test suffices here, not a re-test of `Session` behavior
+- [ ] The full M5 test suite passes unmodified on Windows, not just
+      Linux/macOS — `Session`'s locking/idle-timeout behavior doesn't
+      depend on any POSIX-only mechanism
 
 ### Implementation
 
-- [ ] `Session` library type: `Use`/`Lock`/`Status`, in-memory key holding
-      (`mlock`, no core dumps), idle timeout re-lock
+- [ ] `Session` library type: `Use`/`Lock`/`Status`, holding each vault's
+      `Identity` (already page-locked and core-dump-protected per M1)
+      across multiple calls; idle timeout re-lock calls `Identity.Close()`
+      the same as an explicit `Lock`
 - [ ] REPL loop in `cmd/gage`: thin terminal wiring over `Session`
       (`use`/`lock`/`status`/`exit`/`help`)
 - [ ] Entry commands ported to work against `Session`'s current vault
+- [ ] CI/test coverage on Windows in addition to Linux/macOS for this
+      milestone specifically — it's the first point session state (idle
+      timeout, multi-vault `Identity` caching) needs to be proven to
+      behave identically across all three, not just compile
 
 ## M6 — Metadata index
 
