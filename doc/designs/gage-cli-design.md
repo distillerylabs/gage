@@ -108,6 +108,45 @@ same data as a dialog or picker. The underlying decision logic (what
 counts as ambiguous, when a cache regenerates, what `--yes` skips) doesn't
 change — only which layer owns the pixels.
 
+**Identity is a parameter, not internal state.** `Vault`'s CRUD methods
+(`Get`, `Insert`, `Rm`, `Edit`, ...) never unlock anything themselves —
+each takes an already-produced `Identity` as an explicit argument and is
+otherwise stateless between calls. The only thing that produces an
+`Identity` is `Vault.Unlock(Prompter) (Identity, error)`, which runs the
+method-specific unlock flow (passphrase prompt and decrypt of the wrapped
+identity file, YubiKey touch, whatever the configured method needs — see
+"Local identity storage") and returns a value the caller threads through
+every subsequent call. One-shot mode's command handler calls `Unlock`
+once, uses the result for a single `Vault` call, and calls
+`Identity.Close()` before exiting; `Session.Use` calls the identical
+`Unlock` once and holds the result across many calls until `Lock`, an
+idle timeout, or process exit closes it (see "Session model" below).
+Neither mode is a special case of the other — both run the same
+`Unlock` → use → `Close` contract, just once per command versus once per
+session. `Identity.Close()` is the one place responsible for munlocking
+and zeroing the private key, invoked from exactly those two trigger
+points. The same rule extends to the in-session metadata index (see
+"Addressing entries & the metadata index" below): it lives on `Session`,
+keyed alongside each vault's cached `Identity`, never on `Vault` — `Vault`
+stays a stateless, identity-agnostic operator over ciphertext in every
+mode, and all "how long does this stay unlocked" bookkeeping belongs to
+`Session` alone.
+
+The `Prompter` exchange behind `Unlock` is method-agnostic for the same
+reason: it's one generic call, `Prompter.Unlock(req UnlockRequest)
+(UnlockResponse, error)`, not a passphrase-specific method. A
+passphrase-method vault's request carries `Kind: "passphrase"` and
+expects a string back; a future YubiKey-method vault's request would
+carry `Kind: "yubikey"` and expect nothing but a touch signal. Only the
+passphrase branch exists today, but a second `Kind` is additive to the
+interface, not a breaking change to it — the same "additive, not
+reworked" bar the rest of this document holds itself to. `Unlock` returns
+distinguishable typed errors (wrong passphrase, a corrupt identity file,
+no local identity registered for this device) rather than an opaque one,
+so retry policy — whether and how many times to re-prompt after a wrong
+passphrase — stays a decision `cmd/gage` makes, not one the library bakes
+in.
+
 **What's deliberately CLI-only.** Some things in the command reference are
 presentation choices, not library behavior, and won't have a direct GUI/TUI
 equivalent — they're mentioned here so it's clear they don't need to
@@ -341,7 +380,7 @@ where it looks out of place:
 | Role | Env var (if set, wins on any OS) | Linux default | macOS default | Windows default |
 |---|---|---|---|---|
 | Config | `XDG_CONFIG_HOME` | `~/.config` | `~/.config` | `%APPDATA%` |
-| Data (vaults) | `XDG_DATA_HOME` | `~/.local/share` | `~/.local/share` | `%LOCALAPPDATA%` |
+| Data (vaults, local identities) | `XDG_DATA_HOME` | `~/.local/share` | `~/.local/share` | `%LOCALAPPDATA%` |
 | State (history, trust cache) | `XDG_STATE_HOME` | `~/.local/state` | `~/.local/state` | `%LOCALAPPDATA%\state` |
 
 Every path `gage` owns is `<role root>/gage/...`. The rest of this doc
@@ -404,6 +443,72 @@ history file and, per-vault, `$GAGE_STATE/<vault>/known-config.toml` —
 the trust cache used to detect unreviewed recipient changes, see "Local
 trust cache").
 
+### Local identity storage
+
+Some methods need `gage` itself to persist private key material on this
+device; others don't. `ssh`, `yubikey`, and `secure-enclave` methods never
+give `gage` the private key at all — proving possession happens by asking
+ssh-agent, touching hardware, or prompting the OS keychain, and the key
+never leaves that external holder. `passphrase` and `age-key` methods are
+different: there's no external holder, so `gage` has to keep something on
+disk between invocations for the method's proof-of-possession step to have
+anything to check against.
+
+That something is a per-device, per-vault identity file:
+
+```
+$GAGE_DATA/identities/<vault>/<device>.age
+```
+
+— an age-encrypted file wrapping this device's X25519 private key (for
+`passphrase`, wrapped via age's own scrypt passphrase recipient; for
+`age-key`, the file *is* the raw key material, protected only by
+filesystem permissions). `<device>` is the same identity name registered
+via `gage identity add` and listed under `[[recipients]]` in
+`.gage/config.toml` — e.g. `$GAGE_DATA/identities/personal/laptop-1.age`.
+The directory is created `0700`, the file `0600`.
+
+This lives under `$GAGE_DATA`, not `$GAGE_STATE` or `$GAGE_CONFIG`, and
+that placement is deliberate, not just "closest available root":
+
+- **Not `$GAGE_STATE`.** That root is documented as local-only,
+  *disposable* device state (history file, trust cache) — explicitly
+  "not something to carry to a new machine." Losing the trust cache is a
+  non-event; losing your only copy of a device's identity file is not.
+  Filing it there would send the wrong signal about what's safe to lose.
+- **Not `$GAGE_CONFIG`.** That root is explicitly meant to be swept up by
+  dotfile managers (`chezmoi`/`yadm` sync `$XDG_CONFIG_HOME` by
+  convention). A wrapped private key riding along in a dotfiles sync —
+  often pushed to a git remote of its own, sometimes a public one — hands
+  an attacker the same offline, unlimited-attempt brute-force target that
+  keeping it *out* of the vault (below) was meant to avoid.
+- **Not inside `$GAGE_DATA/vaults/<name>/`.** Nesting it inside a vault's
+  own git-tracked tree risks it being `git add`ed by accident, and would
+  put a passphrase-wrapped private key inside the very repo that syncs to
+  remotes — reopening exactly the exposure keeping it device-local avoids:
+  anyone with *read* access to the vault (not write access — read) could
+  pull down the wrapped blob and brute-force the passphrase offline, at
+  whatever speed their hardware allows, with no rate limiting. That would
+  quietly weaken "can someone decrypt ciphertext that already exists" (see
+  "Trust boundaries") from "airtight, doesn't depend on git access at all"
+  down to "as strong as this passphrase, given unlimited guesses."
+  `identities/` is therefore a sibling of `vaults/` under `$GAGE_DATA`,
+  never a child of one.
+
+**Losing this file is a recovery problem, not a backup problem.** `gage`
+doesn't try to make this file un-losable, and deliberately doesn't offer
+to sync or back it up itself — the fix for "this device's identity file
+is gone" is the same fix as "this device is gone": generate a fresh
+identity (`gage identity add`) and have any *other* recipient add it
+(`gage recipient add`). This is why `gage init --recipient` and the
+`config.toml` example both show room for a `recovery-paper-key` alongside
+a device's own key — a vault that depends on exactly one identity file
+surviving forever has no real recovery story, regardless of where that
+file lives. A user is free to back up a device's wrapped identity file
+themselves (it's already passphrase-protected ciphertext, so copying it
+isn't unsafe), but that's a manual, user-owned choice, not something
+`gage` automates.
+
 ---
 
 ## Session model: `gage` as its own agent
@@ -423,7 +528,8 @@ shows the match, drops the key from memory, exits. Every invocation pays
 both the unlock cost (passphrase prompt / YubiKey touch) *and* the full
 decrypt-and-resolve cost, since there's no cache to reuse between
 invocations — see "Addressing entries" below. Best for scripting, one-off
-lookups, and composing with other unix tools.
+lookups, and composing with other unix tools. (`Vault.Unlock` and
+`Identity.Close`, called once each — see "Library architecture" above.)
 
 **2. Session mode** — running `gage` with no subcommand (or `gage shell`)
 drops you into an interactive prompt:
@@ -457,7 +563,10 @@ memory**, `mlock`'d so it can't be paged to swap, with core dumps disabled
 for the process. There is nothing to attach to from another terminal —
 that's the whole point. When the process exits (`exit`, `quit`, Ctrl-D, or
 the process being killed), the memory is zeroed and reclaimed by the OS;
-there is no cleanup step that can be skipped or forgotten.
+there is no cleanup step that can be skipped or forgotten. This is the
+same `Identity` `Vault.Unlock` returns in one-shot mode — `Session` just
+holds onto it across calls instead of closing it after one; see "Library
+architecture" above.
 
 **Non-interactive session mode** exists too, for automation that wants the
 same "unlock once, do several things, then gone" property without a human
@@ -760,8 +869,10 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
 
     Creates a new vault: for the git type (the only one today), this means
     git init, writes .gage/config.toml with type = "git" plus the chosen
-    method, generates or registers the first identity, and commits the
-    initial (empty) structure. --recipient can be repeated to add extra
+    method, generates or registers the first identity (writing its wrapped
+    identity file for passphrase/age-key methods — see "Local identity
+    storage" above), and commits the initial (empty) structure. --recipient
+    can be repeated to add extra
     recipients (e.g. a recovery key) at creation time. Without --dir, the
     vault is created at $GAGE_DATA/vaults/<name> and registered under that
     path in the global config. --type defaults to (and, today, can only be)
@@ -812,7 +923,12 @@ gage identity add --use NAME --method ssh|yubikey|passphrase|secure-enclave
 
     Registers this device's way of satisfying the vault's method, and prints
     the resulting public key so it can be added as a recipient (either by
-    you, if you're bootstrapping, or by an existing recipient).
+    you, if you're bootstrapping, or by an existing recipient). For
+    passphrase/age-key methods this also writes the device's wrapped
+    identity file to $GAGE_DATA/identities/<vault>/<device>.age (see "Local
+    identity storage"); ssh/yubikey/secure-enclave write nothing here,
+    since the private key never leaves external hardware, an agent, or the
+    OS keychain.
 
 gage identity list [--use NAME]
 ```
@@ -980,6 +1096,18 @@ for a vault that actually has one.
   YubiKey-based vault might have a laptop identity via NFC/USB touch and a
   phone identity via the Secure Enclave — same recipient list, different
   local mechanics.
+- **Local identity files live under `$GAGE_DATA`, never inside a vault.**
+  `passphrase`/`age-key` methods need `gage` to persist a wrapped private
+  key somewhere on this device (`ssh`/`yubikey`/`secure-enclave` don't —
+  the key never leaves external hardware, an agent, or a keychain). That
+  file is `$GAGE_DATA/identities/<vault>/<device>.age`, a sibling of
+  `$GAGE_DATA/vaults/`, not a child of it — putting it inside a vault's
+  git tree would let anyone with *read* access to the vault attempt an
+  offline brute-force of the passphrase, a strictly worse guarantee than
+  entry ciphertext already has. Losing the file is a recovery problem
+  (register a fresh identity, get re-added by another recipient), not a
+  backup problem — `gage` doesn't sync or back it up itself. See "Local
+  identity storage."
 - **Session vaults are re-lockable without killing the process.** `lock
   <vault>` (or the idle timeout) drops that vault's key from memory while
   leaving other unlocked vaults and the shell itself intact — useful when

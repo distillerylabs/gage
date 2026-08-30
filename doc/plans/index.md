@@ -63,6 +63,9 @@ Key dependencies, decided up front so later milestones don't reshuffle:
       on Windows
 - [ ] Global `config.toml` round-trip: write a `vaults.*`/`current` struct,
       read it back, fields match exactly
+- [ ] Local identity path resolves to `$GAGE_DATA/identities/<vault>/<device>.age`
+      — a sibling of `$GAGE_DATA/vaults/`, never nested inside a vault's own
+      directory
 
 ### Implementation
 
@@ -74,10 +77,23 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 - [ ] `.gitignore` (binaries, `dist/`, etc.)
 - [ ] Cobra root command + subcommand dispatch skeleton
 - [ ] skeleton `Prompter` (or similar) callback interface in
-      `internal/gage` for interactive decisions (unlock, confirm,
-      disambiguate) — implemented against stdin/stdout by `cmd/gage`,
-      satisfied by a fake in library tests
+      `internal/gage` for interactive decisions (confirm, disambiguate,
+      and unlock) — implemented against stdin/stdout by `cmd/gage`,
+      satisfied by a fake in library tests. The unlock exchange is typed
+      and method-agnostic (`UnlockRequest`/`UnlockResponse` carrying a
+      `Kind`, e.g. `"passphrase"`), not a passphrase-specific method, so
+      a second identity method later (deferred — see bottom of this doc)
+      is additive rather than a breaking interface change
+- [ ] skeleton `Identity` type (wraps unlocked private key material) with
+      a `Close()` method that zeroes/munlocks it, and the
+      `Vault.Unlock(Prompter) (Identity, error)` method signature — no
+      real crypto behind either yet (that's M1/M2), but deciding the
+      shape now is what lets every later CRUD method take `Identity` as
+      an explicit parameter instead of unlocking internally, so M5's
+      `Session` can cache one across calls without reworking M3/M4
 - [ ] XDG path resolution (config/data/state, with Windows mapping)
+- [ ] Local identity path helper: `$GAGE_DATA/identities/<vault>/<device>.age`
+      (directory `0700`, file `0600`)
 - [ ] Global `$GAGE_CONFIG/config.toml` read/write
 
 ## M1 — Vault lifecycle, single method
@@ -85,8 +101,13 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 `gage init` with **one** method only (passphrase — simplest, no external
 plugin dependency) and **one** vault type only (`git` — the only type
 that exists). Writes `.gage/config.toml` (with `type = "git"`),
-`.age-recipients`, git-inits, registers in global config. Defer `clone`
-until there's something worth cloning.
+`.age-recipients`, git-inits, registers in global config. Also generates
+the first device's identity — a fresh X25519 keypair, private half
+wrapped via age's scrypt passphrase recipient and written to
+`$GAGE_DATA/identities/<vault>/<device>.age` (see design doc's "Local
+identity storage") — with only the resulting public key going into
+`.age-recipients`/`config.toml`. Defer `clone` until there's something
+worth cloning.
 
 ### Tests (write first)
 
@@ -103,6 +124,19 @@ until there's something worth cloning.
       creating any files, and lists `git` as the only accepted value
 - [ ] `.age-recipients` round-trip: one public key per line, no gage-only
       framing, so a stock `age`/`passage` CLI could use it as-is
+- [ ] `gage init` writes the device's wrapped identity file to
+      `$GAGE_DATA/identities/<vault>/<device>.age`, directory `0700` and
+      file `0600`
+- [ ] `Vault.Unlock` with the correct passphrase returns an `Identity`
+      that decrypts an entry encrypted to its public key
+- [ ] `Vault.Unlock` with the wrong passphrase returns a distinguishable
+      typed error (not a generic error) — no partial or garbage key is
+      ever produced
+- [ ] `Identity.Close()` zeroes/munlocks the key material; using the
+      `Identity` after `Close()` fails instead of silently succeeding
+- [ ] The public key derived from the generated identity matches exactly
+      what's written to both `.age-recipients` and `.gage/config.toml`'s
+      `[[recipients]]`
 - [ ] `gage vault list` includes a freshly-`init`'d vault
 - [ ] `gage vault info <name>` reports the correct type, method, recipient
       count, and (for `git`) remote + clean/dirty state
@@ -129,6 +163,15 @@ until there's something worth cloning.
       `git.PlainInit` + initial commit); passphrase entry goes through the
       library's `Prompter` interface, not a direct stdin read in library
       code
+- [ ] Passphrase-method identity generation: fresh X25519 keypair, private
+      half wrapped via age's scrypt passphrase recipient, written to
+      `$GAGE_DATA/identities/<vault>/<device>.age`
+- [ ] `Vault.Unlock(Prompter) (Identity, error)`: decrypts the wrapped
+      identity file back into a usable private key via the typed unlock
+      exchange; returns distinguishable typed errors (wrong passphrase /
+      corrupt identity file / no local identity registered for this
+      device); the only place a `Vault` ever obtains an identity
+- [ ] `Identity.Close()`: zeroes and munlocks the private key
 - [ ] `.gage/config.toml` read/write (`[vault]` section, incl. `type`)
 - [ ] `.age-recipients` read/write
 - [ ] `gage vault list/info/remove/set-default`
@@ -168,7 +211,12 @@ anything else depends on it.
 `insert`, `cat` (by UUID or exact title match only — no fuzzy/ambiguous
 resolution yet), `rm`, `ls`. Every write is a git commit (no push yet).
 First end-to-end usable slice: store and retrieve an entry from the
-command line, decrypting everything every time (no cache).
+command line, decrypting everything every time (no cache). Each of these
+`Vault` methods takes the `Identity` from M1's `Vault.Unlock` as an
+explicit parameter and never unlocks internally — `cmd/gage`'s one-shot
+handler is what calls `Unlock` → the CRUD method → `Identity.Close()` for
+each invocation. M5 reuses these same methods unchanged by caching the
+`Identity` across calls instead of closing it after one.
 
 ### Tests (write first)
 
@@ -226,16 +274,22 @@ Upgrade addressing from "exact UUID/title" to the full resolution order
 
 The `Session` library type (see design doc's "Library architecture"):
 in-memory key holding with `mlock`, multi-vault `use`/`lock`/`status`, all
-M3/M4 commands working against a "current" vault. The REPL (`use`, `lock`,
-`status`, `exit`) is `cmd/gage`'s terminal rendering of that type — tests
-below cover `Session` directly wherever possible, with a thinner
-REPL-wiring test on top. No metadata index yet — still decrypt-on-demand
-per command.
+M3/M4 commands working against a "current" vault. `Session.Use` calls the
+same `Vault.Unlock` from M1 and caches the resulting `Identity`;
+`Session.Lock`/idle-timeout call the same `Identity.Close()` from M1 — no
+M3/M4 `Vault` method signature changes, only how many times `Unlock`/
+`Close` run around them. The REPL (`use`, `lock`, `status`, `exit`) is
+`cmd/gage`'s terminal rendering of that type — tests below cover `Session`
+directly wherever possible, with a thinner REPL-wiring test on top. No
+metadata index yet — still decrypt-on-demand per command.
 
 ### Tests (write first)
 
 - [ ] `Session.Use(vault)` unlocks once; subsequent entry calls against
       the same session don't re-prompt for the passphrase
+- [ ] Entry commands routed through `Session` (`show`, `insert`, ...)
+      call the exact same `Vault` methods as one-shot mode — no method
+      gained a session-only signature or a duplicate implementation
 - [ ] `Session.Lock(vault)` drops that vault's key; the next entry call
       against it re-prompts, while other unlocked vaults in the same
       session are unaffected
@@ -263,7 +317,10 @@ per command.
 
 In-session decrypt-once cache for `ls`/`search`/`show` resolution,
 incremental updates on insert/edit/rm. Pure performance/UX layer on top of
-M5 — correctness doesn't change.
+M5 — correctness doesn't change. The index lives on `Session` alongside
+each vault's cached `Identity`, never on `Vault` itself — `Vault` stays a
+stateless, identity-agnostic operator over ciphertext in both one-shot and
+session mode (see design doc's "Library architecture").
 
 ### Tests (write first)
 
@@ -328,6 +385,13 @@ naturally after single-user CRUD+sync are solid.
 ### Tests (write first)
 
 - [ ] `gage identity add` registers a device and prints a public key
+- [ ] Each device registered via `gage identity add` gets its own wrapped
+      identity file at `$GAGE_DATA/identities/<vault>/<device>.age`;
+      deleting one device's file doesn't affect another device's ability
+      to decrypt
+- [ ] Recovering from a lost identity file needs no file restore: a fresh
+      `gage identity add` on the affected device plus `gage recipient add`
+      from any surviving recipient restores access under a new identity
 - [ ] `gage recipient add` (no `--reencrypt`) affects only future writes —
       entries that existed before the add remain undecryptable by the new
       recipient's key
@@ -354,7 +418,9 @@ naturally after single-user CRUD+sync are solid.
 
 ### Implementation
 
-- [ ] `gage identity add/list`
+- [ ] `gage identity add/list` (reuses M1's passphrase identity-generation
+      path for additional devices — each gets its own
+      `$GAGE_DATA/identities/<vault>/<device>.age`)
 - [ ] `gage recipient add/remove --reencrypt`
 - [ ] `gage recipient verify`
 - [ ] Local trust cache (`known-config.toml`, diff + warning on `use`/encrypt)
@@ -441,3 +507,10 @@ parallelize or reorder freely, safe to defer individually.
   interactive-decision interface (`Prompter`, structured warnings/candidate
   lists) is proven by the CLI through M8, a GUI/TUI is a new consumer of
   existing methods, not new core logic.
+- **Identity file backup/export tooling.** The recovery story is
+  multi-recipient (see M8's lost-identity-file test), not device-key
+  backup — `gage` doesn't sync or back up `$GAGE_DATA/identities/` itself.
+  A user can copy a device's wrapped identity file manually for extra
+  insurance (it's already passphrase-protected ciphertext, so copying it
+  isn't unsafe), but that stays a manual, user-owned choice outside
+  `gage`, not a command to build.
