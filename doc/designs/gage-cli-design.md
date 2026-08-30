@@ -183,39 +183,67 @@ automatically; `gage edit` opens the full YAML in `$EDITOR` and re-stamps
 
 ## Global config
 
-`~/.gage/config.toml` tracks known repos and shell preferences:
+Everything outside a vault's own git repo follows the XDG Base Directory
+conventions — config, data, and state get their own root instead of one
+`~/.gage/` catch-all. On Linux and macOS that's the familiar
+`$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` / `$XDG_STATE_HOME` split; those
+environment variables don't exist natively on Windows, so `gage` maps
+the same three roles onto the per-user directories Windows already
+provides, rather than transplanting a Unix dotfolder onto a platform
+where it looks out of place:
+
+| Role | Env var (if set, wins on any OS) | Linux default | macOS default | Windows default |
+|---|---|---|---|---|
+| Config | `XDG_CONFIG_HOME` | `~/.config` | `~/.config` | `%APPDATA%` |
+| Data (vaults) | `XDG_DATA_HOME` | `~/.local/share` | `~/.local/share` | `%LOCALAPPDATA%` |
+| State (history, trust cache) | `XDG_STATE_HOME` | `~/.local/state` | `~/.local/state` | `%LOCALAPPDATA%\state` |
+
+Every path `gage` owns is `<role root>/gage/...`. The rest of this doc
+writes those as `$GAGE_CONFIG`, `$GAGE_DATA`, `$GAGE_STATE` — e.g.
+`$GAGE_CONFIG` resolves to `~/.config/gage` on Linux/macOS and
+`%APPDATA%\gage` on Windows.
+
+`$GAGE_CONFIG/config.toml` tracks known repos and shell preferences:
 
 ```toml
 current = "personal"
 
 [repos.personal]
-path = "~/.gage/vaults/personal"
+path = "$GAGE_DATA/vaults/personal"
 remote = "git@github.com:you/personal-vault.git"
 
 [repos.work]
-path = "~/.gage/vaults/work"
+path = "$GAGE_DATA/vaults/work"
 remote = "git@internal:secrets/work-vault.git"
 
 [shell]
 prompt = "[{repo}{lock}] gage> "     # {repo}, {lock} (🔓/🔒), {dirty} tokens available
 idle_timeout = "10m"                 # auto re-lock a session repo after inactivity
-history_file = "~/.gage/state/history"   # command names/paths only, never values
+history_file = "$GAGE_STATE/history"   # command names/paths only, never values
 ```
 
-Everything `gage` owns lives under one root, `~/.gage/`, rather than
-spread across the XDG-standard split (`~/.config`, `~/.local/share`,
-`~/.local/state`). For a single-user tool, "back up or move one folder"
-is worth more than XDG purity here — and since `~/.gage/` is its own
-top-level directory rather than nested inside `~/.config`, it won't get
-swept into a dotfiles-sync of `~/.config` by accident. It still keeps a
-light substructure rather than dumping everything flat: `vaults/` holds
-actual git repos, `state/` holds local-only, never-synced device state
-(the history file and, per-repo, `known-config.toml` — the trust cache
-used to detect unreviewed recipient changes, see "Local trust cache").
-That last distinction matters even within one root: state reflects this
-device's own history and prior human review, so it's not something you'd
-want a dotfiles manager or backup tool copying to a new machine the same
-way `config.toml` or a vault itself would be.
+Splitting config/data/state across the three XDG roots instead of one
+flat directory buys two things a single root can't:
+
+- **Dotfile managers already expect this shape.** `config.toml` is
+  small, plaintext, and worth version-controlling alongside the rest of
+  a user's dotfiles — tools like `chezmoi`/`yadm` sync `$XDG_CONFIG_HOME`
+  by convention, and now they pick up exactly that file. Vaults (actual
+  git repos, synced by `gage` itself via their own remotes) and state
+  (this device's own history and trust cache — explicitly *not*
+  something to carry to a new machine, see "Local trust cache") land in
+  `$XDG_DATA_HOME`/`$XDG_STATE_HOME` instead, so a dotfiles sync of
+  `~/.config` can't accidentally sweep up either.
+- **Windows gets a layout that looks native, not ported.**
+  `%APPDATA%`/`%LOCALAPPDATA%` are where Windows users already expect a
+  well-behaved CLI tool's files to live.
+
+Within each root the substructure is unchanged in spirit from the old
+single-root design: `$GAGE_DATA/vaults/` holds actual git repos,
+`$GAGE_STATE/` holds local-only, never-synced device state (the history
+file and, per-repo, `$GAGE_STATE/<repo>/known-config.toml` — the trust
+cache used to detect unreviewed recipient changes, see "Local trust
+cache").
 
 ---
 
@@ -467,7 +495,7 @@ The mechanism behind "change detection" above:
 
 - **What's cached.** The first time a device successfully uses a repo,
   `gage` writes a verbatim copy of `.gage/config.toml` to
-  `~/.gage/state/<repo>/known-config.toml`, plus the content hash of
+  `$GAGE_STATE/<repo>/known-config.toml`, plus the content hash of
   `.age-recipients` at that same moment, both local, uncommitted, never
   synced. `config.toml` is the file diffed and shown to the user (device
   names alongside pubkeys make for a legible warning; a bare `age1...`
@@ -550,13 +578,13 @@ gage init <name> [--dir PATH] [--remote URL]
     method, generates or registers the first identity, commits the initial
     (empty) structure. --recipient can be repeated to add extra recipients
     (e.g. a recovery key) at creation time. Without --dir, the repo is
-    created at ~/.gage/vaults/<name> and registered under that path in
+    created at $GAGE_DATA/vaults/<name> and registered under that path in
     the global config.
 
 gage clone <remote-url> [--name NAME] [--dir PATH]
 
     git clones the repo and reads .gage/config.toml to learn the required
-    method. Without --dir, clones to ~/.gage/vaults/<name> — same default
+    method. Without --dir, clones to $GAGE_DATA/vaults/<name> — same default
     as `init` — inferring <name> from the remote URL unless --name overrides
     it. Does NOT grant you access — if your device isn't already a
     recipient, gage tells you to run `gage identity add` to generate your
