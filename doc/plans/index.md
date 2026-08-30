@@ -287,8 +287,9 @@ anything else depends on it.
 
 ## M3 — Dumbest possible CRUD (one-shot mode)
 
-`insert`, `cat` (by UUID or exact title match only — no fuzzy/ambiguous
-resolution yet), `rm`, `ls`. Every write is a git commit (no push yet).
+`insert`, `cat`, `rm`, `ls` — `cat` and `rm` addressed by UUID or exact
+title match only for now (no fuzzy/ambiguous resolution yet; M4 upgrades
+both onto the shared resolver). Every write is a git commit (no push yet).
 First end-to-end usable slice: store and retrieve an entry from the
 command line, decrypting everything every time (no cache). Each of these
 `Vault` methods takes the `Identity` from M1's `Vault.Unlock` as an
@@ -337,11 +338,14 @@ to share.
 ## M4 — Query resolution
 
 Upgrade addressing from "exact UUID/title" to the full resolution order
-(prefix → exact → unique substring → ambiguous prompt/fail). Wire `show`,
-`edit`, `rename`, `generate` on top of it. Also adds `-e|--edit` to
-`gage insert` (deferred from M3), since it shares `gage edit`'s
-`$EDITOR`-on-scratch-file round trip — one CLI-layer helper, two call
-sites.
+(prefix → exact → unique substring → ambiguous prompt/fail), and move
+every query-taking command onto it — `cat` and `rm` (both stuck on M3's
+exact-match-only behavior) alongside the three commands new to this
+milestone: `show`, `edit`, `rename`, `generate`. No command should be left
+on the old exact-only matching once this milestone is done. Also adds
+`-e|--edit` to `gage insert` (deferred from M3), since it shares `gage
+edit`'s `$EDITOR`-on-scratch-file round trip — one CLI-layer helper, two
+call sites.
 
 ### Tests (write first)
 
@@ -351,6 +355,12 @@ sites.
 - [ ] A unique (non-exact) substring match resolves correctly
 - [ ] An ambiguous substring match lists all candidates and, in one-shot
       mode, fails with nonzero exit instead of prompting
+- [ ] `gage cat` and `gage rm` resolve prefix/exact/substring matches
+      exactly like `show` — no longer limited to M3's UUID-or-exact-title-
+      only matching
+- [ ] An ambiguous query given to `cat` or `rm` lists candidates and fails
+      in one-shot mode, exactly like `show` — neither command silently
+      acts on the first match or falls back to M3's stricter matching
 - [ ] `gage edit` re-stamps `updated`/`updated_by` on save, leaves other
       fields untouched if unedited, and produces a new commit
 - [ ] `gage insert -e` opens a template (`title`/`description`
@@ -380,6 +390,8 @@ sites.
 - [ ] Query resolver (prefix/exact/substring/ambiguous), returning a
       resolved entry or a candidate list as a value — never printed text;
       the CLI layer decides whether to prompt (session) or fail (one-shot)
+- [ ] `gage cat`/`gage rm` re-wired onto the shared resolver, replacing
+      M3's exact-UUID/title-only matching
 - [ ] `gage show`
 - [ ] Cross-platform scratch-file location for `editYAML`: on Linux,
       verify (via `statfs`) and prefer a tmpfs-backed directory

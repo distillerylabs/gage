@@ -617,8 +617,8 @@ session (it'll prompt to unlock if you haven't touched it yet).
 ### Addressing entries & the metadata index
 
 With opaque UUID filenames, there's no more "path" to type. Instead, `show`,
-`edit`, `rm`, `mv`, `cp`, and `generate` all take a **query** that's matched
-against decrypted `title`s:
+`cat`, `edit`, `rm`, `mv`, `cp`, and `generate` all take a **query** that's
+matched against decrypted `title`s:
 
 ```
 [personal🔓] gage> show protonmail
