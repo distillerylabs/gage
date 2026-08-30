@@ -97,6 +97,9 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 - [ ] Local identity path resolves to `$GAGE_DATA/identities/<vault>/<device>.age`
       — a sibling of `$GAGE_DATA/vaults/`, never nested inside a vault's own
       directory
+- [ ] `gittest.NewBareRemote` (or similar) creates an ephemeral local
+      bare repo under `t.TempDir()` and returns its path; two calls
+      produce independent, non-colliding repos
 
 ### Implementation
 
@@ -126,6 +129,11 @@ Key dependencies, decided up front so later milestones don't reshuffle:
 - [ ] Local identity path helper: `$GAGE_DATA/identities/<vault>/<device>.age`
       (directory `0700`, file `0600`)
 - [ ] Global `$GAGE_CONFIG/config.toml` read/write
+- [ ] `internal/gage/gittest` test-helper package: `NewBareRemote(t)
+      string` wraps `t.TempDir()` + `git.PlainInit(path, true)` to create
+      an ephemeral local bare repo for use as a fake remote in later
+      milestones' tests (first real use: M1's `git set-remote` tests; the
+      full sync-testing harness built on top of it lands in M7)
 
 ## M1 — Vault lifecycle, single method
 
@@ -473,6 +481,19 @@ the one git-*specific* command — was already implemented back in M1;
 there's no generic `gage git -- <args...>` passthrough — see the design
 doc's "Git-specific commands" for why.)
 
+Test harness for this milestone: real fetch/push/pull/divergence
+behavior is tested against ephemeral local bare repos, extending M0's
+`gittest.NewBareRemote` with a second-clone helper that simulates
+another device pushing independent commits (for the divergence tests) —
+no sockets, no real network, satisfying M0's "no network access" test
+constraint while still exercising go-git's actual code paths. The one
+exception is "network unreachable": `Vault`'s sync methods call through a
+small `RemoteSyncer` interface (`Fetch`/`Push` against go-git in
+production) so that one test can inject a fake returning a deterministic
+unreachable-style error, rather than depending on a real timeout or a
+missing-path error that wouldn't exercise the same code path gage's real
+offline-handling logic runs.
+
 ### Tests (write first)
 
 - [ ] `use` performs a fetch + fast-forward-only pull when the remote has
@@ -488,9 +509,25 @@ doc's "Git-specific commands" for why.)
       resolved
 - [ ] `gage sync` surfaces both versions of a conflicting entry and
       requires an explicit choice before proceeding
+- [ ] `gittest`'s second-clone helper pushes an independent commit to a
+      shared bare remote, producing real divergence when the vault under
+      test also has an unpushed local commit
+- [ ] The fake `RemoteSyncer` injected in the offline test returns
+      exactly the error `Vault`'s sync logic treats as "unreachable" —
+      proving the warn-and-proceed path is reachable without depending on
+      a real network failure
 
 ### Implementation
 
+- [ ] `RemoteSyncer` interface (`Fetch(ctx) error`/`Push(ctx) error`)
+      between `Vault`'s sync logic and go-git — real go-git-backed
+      implementation in production and in the realistic bare-repo tests,
+      a fake in the one offline-handling test where a deterministic
+      injected error matters more than a real network failure
+- [ ] `gittest` package extended with a second-clone helper: clone a
+      `NewBareRemote` repo into a second temp dir, commit there, push
+      back — a throwaway stand-in for "another device," used to produce
+      real divergence in tests
 - [ ] Auto fetch + fast-forward pull on `use` (go-git `Fetch`/`Pull`, ff-only)
 - [ ] Auto push after writes (go-git `Push`)
 - [ ] Divergence detection
