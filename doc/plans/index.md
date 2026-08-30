@@ -73,11 +73,11 @@ Key dependencies, decided up front so later milestones don't reshuffle:
   static executable — worth flagging as the exception now that the git
   side has none (see the design doc's "Git-specific commands": there's
   deliberately no `git`-binary passthrough anywhere else in `gage`).
-  First used in M10.
+  First used in M11.
 - **[mdp/qrterminal](https://github.com/mdp/qrterminal)** for `-q`/`--qr`
   — renders a QR code directly as terminal block art, the
   scan-with-camera workflow the design calls for, with no separate
-  image-to-terminal conversion step. First used in M10.
+  image-to-terminal conversion step. First used in M11.
 
 ### Tests (write first)
 
@@ -373,7 +373,7 @@ sites.
       bumps `updated`
 - [ ] `gage generate` inserts a new entry with a randomly generated
       `value` of a sane default length — `-l`/`--no-symbols` customization
-      is deferred to M10, tested there
+      is deferred to M11, tested there
 
 ### Implementation
 
@@ -397,7 +397,7 @@ sites.
       decrypted one)
 - [ ] `gage rename`
 - [ ] `gage generate` (default-length/character-set value only; `-l`/
-      `--no-symbols` land in M10)
+      `--no-symbols` land in M11)
 
 ## M5 — Session mode
 
@@ -561,7 +561,7 @@ offline-handling logic runs.
       go-git — no passthrough, no `git` binary dependency, anywhere in
       `gage`)
 
-## M8 — Identity/recipient management + trust cache
+## M8 — Identity/recipient management + atomic reencrypt
 
 First place multi-device/multi-recipient scenarios become testable —
 naturally after single-user CRUD+sync are solid.
@@ -603,6 +603,33 @@ naturally after single-user CRUD+sync are solid.
 - [ ] `gage recipient verify` exits 0 and reports "in sync" when
       `.age-recipients` and `config.toml` agree; exits 1 and lists the
       specific differences when they don't
+
+### Implementation
+
+- [ ] `gage identity add/list` (reuses M1's passphrase identity-generation
+      path for additional devices — each gets its own
+      `$GAGE_DATA/identities/<vault>/<device>.age`)
+- [ ] `gage recipient add/remove --reencrypt`: stage every re-encrypted
+      entry in the working tree first; commit only after all entries
+      succeed, with the recipient-list files and every touched entry in
+      that same single commit
+- [ ] Precondition check on every write (`insert`/`edit`/`generate`/
+      `--reencrypt`): if `entries/` is unexpectedly dirty at start, reset
+      it to HEAD before proceeding — the only source of unexpected
+      dirtiness is an interrupted `--reencrypt`
+- [ ] `gage recipient verify`
+
+## M9 — Local trust cache
+
+Builds on M8's recipient add/remove — needs recipient-list changes to
+exist to detect changes against — but only needs those files to differ
+from a locally-cached copy, not `--reencrypt`'s crash-safety machinery
+specifically. Kept as its own milestone so that atomicity work stays
+isolated from this one's detection/UX logic, the same way M2 isolates
+crypto risk and M7 isolates sync risk.
+
+### Tests (write first)
+
 - [ ] After a device's first successful use of a vault, `known-config.toml`
       is written to local state; a subsequent unreviewed recipient change
       triggers a diff warning before the next encrypt
@@ -622,18 +649,6 @@ naturally after single-user CRUD+sync are solid.
 
 ### Implementation
 
-- [ ] `gage identity add/list` (reuses M1's passphrase identity-generation
-      path for additional devices — each gets its own
-      `$GAGE_DATA/identities/<vault>/<device>.age`)
-- [ ] `gage recipient add/remove --reencrypt`: stage every re-encrypted
-      entry in the working tree first; commit only after all entries
-      succeed, with the recipient-list files and every touched entry in
-      that same single commit
-- [ ] Precondition check on every write (`insert`/`edit`/`generate`/
-      `--reencrypt`): if `entries/` is unexpectedly dirty at start, reset
-      it to HEAD before proceeding — the only source of unexpected
-      dirtiness is an interrupted `--reencrypt`
-- [ ] `gage recipient verify`
 - [ ] Local trust cache (`known-config.toml`, diff + warning): the check
       lives on the `Vault` methods that encrypt (`insert`/`edit`/
       `generate`/`rename`/`mv`/`cp`) plus an opportunistic check on
@@ -643,7 +658,7 @@ naturally after single-user CRUD+sync are solid.
       the library on a trust-cache mismatch; `cmd/gage` renders it as the
       terminal diff + `[y/N]` prompt
 
-## M9 — Cross-vault sharing
+## M10 — Cross-vault sharing
 
 Just M2's encrypt primitive pointed at a second vault's recipients —
 trivial once M1–M2 exist for two vaults, but distinct enough to be its own
@@ -658,7 +673,7 @@ milestone since it's the sharing story.
       adds a decryptable copy in the destination
 - [ ] `mv`/`cp --to-vault` succeeds even when the destination vault is not
       currently unlocked (encrypting to public keys needs no private key)
-- [ ] `mv`/`cp --to-vault` runs M8's trust-cache check against the
+- [ ] `mv`/`cp --to-vault` runs M9's trust-cache check against the
       *destination* vault's cache (not the source's) before encrypting
       there, and an unreviewed recipient change on the destination
       triggers the same diff warning a same-vault write would
@@ -671,7 +686,7 @@ milestone since it's the sharing story.
 - [ ] `gage cp --to-vault`
 - [ ] `gage clone` (go-git `PlainClone`)
 
-## M10 — Polish / output modes
+## M11 — Polish / output modes
 
 Independent of each other and of the trust model — good candidates to
 parallelize or reorder freely, safe to defer individually.
@@ -719,13 +734,13 @@ parallelize or reorder freely, safe to defer individually.
   exercised by real implementation, not just designed on paper.
 - **Signed recipient changes** — design doc calls this out as "reserve
   for high-stakes repos," not a default.
-- **`gage clone` against a real remote** — folded into M9, but only
+- **`gage clone` against a real remote** — folded into M10, but only
   really testable once there's an actual remote to clone from.
 - **A GUI and/or TUI frontend.** The library/CLI split (see design doc's
   "Library architecture") is *not* deferred — it's built in from M0 — but
   actually writing a second frontend is. Once the library's
   interactive-decision interface (`Prompter`, structured warnings/candidate
-  lists) is proven by the CLI through M8, a GUI/TUI is a new consumer of
+  lists) is proven by the CLI through M9, a GUI/TUI is a new consumer of
   existing methods, not new core logic.
 - **Identity file backup/export tooling.** The recovery story is
   multi-recipient (see M8's lost-identity-file test), not device-key
