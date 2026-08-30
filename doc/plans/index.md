@@ -189,9 +189,9 @@ private key material exists in process memory.
 - [ ] The `memlock` package's `Lock`/`Unlock` round-trip succeeds on the
       current platform (Linux/macOS/Windows, whichever CI runs on) for a
       representative key-sized byte slice
-- [ ] A simulated page-lock failure doesn't abort `Vault.Unlock` — it
-      proceeds and returns a usable `Identity` after a single warning via
-      `Prompter`, rather than refusing to unlock
+- [ ] A page-lock failure injected via a fake `Locker` doesn't abort
+      `Vault.Unlock` — it proceeds and returns a usable `Identity` after a
+      single warning via `Prompter`, rather than refusing to unlock
 - [ ] The public key derived from the generated identity matches exactly
       what's written to both `.age-recipients` and `.gage/config.toml`'s
       `[[recipients]]`
@@ -239,6 +239,12 @@ private key material exists in process memory.
       macOS (`golang.org/x/sys/unix`), `VirtualLock`/`VirtualUnlock` on
       Windows (`golang.org/x/sys/windows`) — behind one signature `Vault`
       and `Session` both call unchanged regardless of OS
+- [ ] `Locker` interface (`Lock([]byte) error`/`Unlock([]byte) error`)
+      between `Vault.Unlock`/`Identity.Close` and the `memlock` package —
+      the real `memlock`-backed implementation in production and in every
+      realistic test, a fake returning a deterministic failure in the one
+      page-lock-failure test; the same injectable-seam pattern M7 uses for
+      `RemoteSyncer`
 - [ ] `Identity.Close()`: releases the page lock and zeroes the private
       key, cross-platform, via the same `memlock` package
 - [ ] Process-wide core dump disabling at `cmd/gage` startup:
