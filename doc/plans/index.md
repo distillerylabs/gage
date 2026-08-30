@@ -356,8 +356,9 @@ sites.
       edited content fails to parse back into an `Entry`
 - [ ] `gage rename` changes only the title (not `value`/`fields`) and
       bumps `updated`
-- [ ] `gage generate` inserts a new entry whose `value` matches the
-      requested length/character-set constraints
+- [ ] `gage generate` inserts a new entry with a randomly generated
+      `value` of a sane default length — `-l`/`--no-symbols` customization
+      is deferred to M10, tested there
 
 ### Implementation
 
@@ -380,7 +381,8 @@ sites.
 - [ ] `gage insert -e` (`editYAML` seeded with a stub entry instead of a
       decrypted one)
 - [ ] `gage rename`
-- [ ] `gage generate`
+- [ ] `gage generate` (default-length/character-set value only; `-l`/
+      `--no-symbols` land in M10)
 
 ## M5 — Session mode
 
@@ -498,6 +500,11 @@ offline-handling logic runs.
 
 - [ ] `use` performs a fetch + fast-forward-only pull when the remote has
       commits the local vault lacks
+- [ ] A one-shot command (e.g. `gage show`) against a vault with unpulled
+      remote commits performs the same fetch + fast-forward-only pull on
+      its implicit unlock, with no session `use` step involved — the
+      design ties this to every vault unlock, not to the `use` verb
+      specifically
 - [ ] `use` with no network reachable warns once and proceeds with the
       local copy instead of blocking or failing
 - [ ] A write command triggers a push; when nothing has diverged, it
@@ -528,7 +535,10 @@ offline-handling logic runs.
       `NewBareRemote` repo into a second temp dir, commit there, push
       back — a throwaway stand-in for "another device," used to produce
       real divergence in tests
-- [ ] Auto fetch + fast-forward pull on `use` (go-git `Fetch`/`Pull`, ff-only)
+- [ ] Auto fetch + fast-forward pull on every vault unlock — session
+      `use` and a one-shot command's implicit unlock alike (go-git
+      `Fetch`/`Pull`, ff-only), so the logic lives where both paths call
+      through it rather than being wired into the `use` REPL command only
 - [ ] Auto push after writes (go-git `Push`)
 - [ ] Divergence detection
 - [ ] `gage sync` (conflict surfacing, both versions shown)
@@ -662,7 +672,8 @@ parallelize or reorder freely, safe to defer individually.
 - [ ] `--clip` (clipboard, auto-clear)
 - [ ] `--qr` (terminal QR, `--field` scoped)
 - [ ] `--field NAME` extraction
-- [ ] `generate` password-generation logic
+- [ ] `generate`'s `-l LENGTH`/`--no-symbols` password-generation logic
+      (command itself already exists from M4)
 - [ ] `gage log`
 - [ ] `gage history --decrypt`
 - [ ] Non-interactive session (`--script`, `--stdin`)
