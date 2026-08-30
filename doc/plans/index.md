@@ -165,6 +165,10 @@ private key material exists in process memory.
 - [ ] `gage init` on an empty temp dir creates `.gage/config.toml`,
       `.age-recipients`, `entries/`, `.gitignore`, and a git repo with
       exactly one commit
+- [ ] The generated `.gitignore` contains the standard OS-cruft patterns
+      (`.DS_Store`, `Thumbs.db`) and nothing `gage`-state-specific — there's
+      nothing else to ignore, since the trust cache and identity files
+      live outside the vault by design (see design doc's "On-disk layout")
 - [ ] `gage init` into a non-empty, non-gage directory fails cleanly
       without touching existing files
 - [ ] `.gage/config.toml` round-trip: `[vault]` (including `type = "git"`)

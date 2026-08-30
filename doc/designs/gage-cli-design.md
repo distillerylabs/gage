@@ -265,6 +265,20 @@ Two things live at the vault root instead of nested, and one thing doesn't
   markers, migration state) without cluttering the root or claiming a
   generic name like `config.toml` at the top level.
 
+**`.gitignore` has deliberately little to do.** By construction, nothing
+`gage` itself ever writes into a vault's working tree that isn't meant to
+be committed: the trust cache lives under `$GAGE_STATE`, identity files
+under `$GAGE_DATA/identities/` (see "Local identity storage"), and the
+`$EDITOR` scratch file lives outside the repo entirely (see "A few
+decisions worth calling out"). So the vault's `.gitignore` isn't hiding
+any `gage`-generated state — it's just the standard OS-cruft
+list (`.DS_Store`, `Thumbs.db`) any git repo carries, there so a
+vault directory browsed in a Finder/Explorer window doesn't get one of
+those accidentally committed. If a future vault type's own workflow ever
+needs to stage a real gage-owned file it shouldn't commit, that's the
+one thing that would grow this list — not a reason to invent one for the
+`git` type today.
+
 `.gage/config.toml` (plaintext, committed — it names the vault's type,
 method, and public keys, never secret material):
 
