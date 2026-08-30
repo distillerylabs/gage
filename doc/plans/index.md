@@ -591,6 +591,10 @@ naturally after single-user CRUD+sync are solid.
 - [ ] After a device's first successful use of a vault, `known-config.toml`
       is written to local state; a subsequent unreviewed recipient change
       triggers a diff warning before the next encrypt
+- [ ] The warning fires the same way for a one-shot `insert`/`edit`/
+      `generate` as for a session-mode one — the cache check hooks the
+      `Vault` methods that encrypt, not `Session.Use`, since one-shot mode
+      never calls `Session.Use` at all
 - [ ] Confirming a *routine* recipient change (files agree) regenerates
       the cache and stops warning; confirming a *mismatched* change
       (`.age-recipients` and `config.toml` disagree) does not silently
@@ -615,7 +619,11 @@ naturally after single-user CRUD+sync are solid.
       it to HEAD before proceeding — the only source of unexpected
       dirtiness is an interrupted `--reencrypt`
 - [ ] `gage recipient verify`
-- [ ] Local trust cache (`known-config.toml`, diff + warning on `use`/encrypt)
+- [ ] Local trust cache (`known-config.toml`, diff + warning): the check
+      lives on the `Vault` methods that encrypt (`insert`/`edit`/
+      `generate`/`rename`/`mv`/`cp`) plus an opportunistic check on
+      `use`/`sync`, so it fires identically whether the caller is a
+      one-shot command or a session
 - [ ] `RecipientChangeWarning` (or similar) structured type returned by
       the library on a trust-cache mismatch; `cmd/gage` renders it as the
       terminal diff + `[y/N]` prompt
