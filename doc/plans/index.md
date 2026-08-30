@@ -638,6 +638,11 @@ naturally after single-user CRUD+sync are solid.
 - [ ] `gage recipient verify` exits 0 and reports "in sync" when
       `.age-recipients` and `config.toml` agree; exits 1 and lists the
       specific differences when they don't
+- [ ] `gage recipient verify` succeeds against a vault where the local
+      device has no identity file at all (e.g. right after `clone`, before
+      `gage identity add`) — no `Vault.Unlock`, no `Prompter` interaction,
+      proving the "needs no unlock, safe to run in CI" claim rather than
+      just asserting it
 
 ### Implementation
 
@@ -653,7 +658,9 @@ naturally after single-user CRUD+sync are solid.
       `--reencrypt`): if `entries/` is unexpectedly dirty at start, reset
       it to HEAD before proceeding — the only source of unexpected
       dirtiness is an interrupted `--reencrypt`
-- [ ] `gage recipient verify`
+- [ ] `gage recipient verify`: reads `.age-recipients` and
+      `.gage/config.toml` directly — both plaintext — and never calls
+      `Vault.Unlock`/`Prompter`, so it needs no identity to run
 
 ## M9 — Local trust cache
 
