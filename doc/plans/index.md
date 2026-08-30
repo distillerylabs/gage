@@ -324,12 +324,21 @@ to share.
       nonzero exit code
 - [ ] Inserting a duplicate title without `-f|--force` is rejected;
       `-f|--force` allows it
+- [ ] With two vaults registered in global config, `gage insert --use
+      <other>` / `gage cat --use <other>` write to and read from that named
+      vault specifically, not the default one
+- [ ] With two vaults registered, an entry command given with no `--use`
+      flag operates against `current` from global config, not the other
+      registered vault — the one-shot counterpart to `vault set-default`
 
 ### Implementation
 
 - [ ] `gage insert`: masked `Prompter` prompt (default), `--value-stdin`
       (read + trim), or `-m|--multiline` (terminal capture until EOF) for
       the value; mutually exclusive, validated before any I/O happens
+- [ ] One-shot `-u|--use NAME` flag, resolved on every entry command
+      against global config's registered vaults; omitted, it falls back to
+      `current` — same resolution `vault set-default` (M1) writes into
 - [ ] `gage cat` (exact UUID/title only)
 - [ ] `gage rm`
 - [ ] `gage ls`
@@ -439,6 +448,11 @@ still decrypt-on-demand per command.
 - [ ] Entry commands routed through `Session` (`show`, `insert`, ...)
       call the exact same `Vault` methods as one-shot mode — no method
       gained a session-only signature or a duplicate implementation
+- [ ] An ambiguous query resolved through `Session` invokes `Prompter`'s
+      candidate-list callback (a fake in tests) and returns the entry
+      selected from it — the session-mode counterpart to M4's one-shot
+      ambiguous-fails behavior, proven at the `Session` level rather than
+      by driving a real terminal
 - [ ] `Session.Lock(vault)` drops that vault's key; the next entry call
       against it re-prompts, while other unlocked vaults in the same
       session are unaffected
@@ -464,7 +478,9 @@ still decrypt-on-demand per command.
       across multiple calls; idle timeout re-lock calls `Identity.Close()`
       the same as an explicit `Lock`
 - [ ] REPL loop in `cmd/gage`: thin terminal wiring over `Session`
-      (`use`/`lock`/`status`/`exit`/`help`)
+      (`use`/`lock`/`status`/`exit`/`help`), including rendering an
+      ambiguous-query candidate list as the `[1-2]` prompt shown in the
+      design doc — the one place this wiring is more than plain dispatch
 - [ ] Entry commands ported to work against `Session`'s current vault
 - [ ] CI/test coverage on Windows in addition to Linux/macOS for this
       milestone specifically — it's the first point session state (idle
