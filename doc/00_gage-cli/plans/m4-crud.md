@@ -1,0 +1,139 @@
+# M4 — CRUD (one-shot mode)
+
+[← M3](m3-entry-format.md) · [plan index](index.md) · next: [M5 — Query resolution](m5-query-resolution.md)
+
+## Goal
+
+`insert`, `cat`, `rm`, `ls` — the first end-to-end usable slice: store and
+retrieve an entry from the command line, decrypting everything every time
+(no cache). `cat` and `rm` are addressed by UUID or exact title match only
+for now; M5 upgrades both onto the shared resolver.
+
+Every write is a git commit (no push yet), **held under M0's vault lock**
+for the whole read-modify-commit sequence. This is the first milestone
+where two `gage` processes could corrupt each other, and the design
+actively encourages multiple processes — see
+["Trade-off vs. a shared agent"](../tdds/gage-cli-design.md).
+
+Each `Vault` method takes the `Identity` from M2's `Vault.Unlock` as an
+explicit parameter and never unlocks internally — `cmd/gage`'s one-shot
+handler is what calls `Unlock` → the CRUD method → `Identity.Close()` for
+each invocation. M6 reuses these same methods unchanged by caching the
+`Identity` across calls instead of closing it after one.
+
+`gage insert`'s value comes from a masked prompt (default),
+`--value-stdin`, or `-m|--multiline`; `-e|--edit` (a full `$EDITOR`
+template) is deferred to M5, once `gage edit`'s `$EDITOR`-on-scratch-file
+round trip exists for it to share.
+
+## Depends on
+
+- **M0** — `vaultlock`, exit codes, the in-process CLI test harness.
+- **M2** — `Unlock`/`Identity`/`Close`, and the recorded device name for
+  `updated_by`.
+- **M3** — entry read/write and enumeration.
+
+## Design references
+
+- ["Entry CRUD"](../tdds/gage-cli-design.md) — the command surface and
+  the notes on `insert`'s mutually exclusive input modes
+- ["Sync model"](../tdds/gage-cli-design.md) — "commit is local, instant,
+  and always happens"; push is M8's problem
+- ["Session model"](../tdds/gage-cli-design.md) — one-shot mode's
+  unlock-use-close contract
+
+## Decisions to make first
+
+- **Commit message format.** Every write is a commit and the messages are
+  permanent, greppable history. They must not leak entry titles —
+  filenames are opaque UUIDs precisely so someone with read access learns
+  nothing, and a commit message reading `insert: ProtonMail` would undo
+  that entirely. Recommend UUID-only messages (`insert 4b9d7710`).
+  **This is a confidentiality decision, not a cosmetic one.**
+- **Commit author identity.** go-git requires a name/email on the commit
+  object. Using the user's git config leaks their identity into a vault
+  that may be shared; using a fixed `gage <gage@localhost>` doesn't.
+  Decide, and note it interacts with `updated_by` (which is already
+  inside the ciphertext, where it's safe).
+- **`ls` output format** — sort order and columns; whether it prints
+  UUIDs alongside titles.
+
+## Tests (write first)
+
+- [ ] `gage insert` followed by `gage cat` round-trips the value through
+      the actual CLI (not just the library)
+- [ ] `gage insert --value-stdin` reads the value from stdin (one
+      trailing newline trimmed) and round-trips through `cat` identically
+      to the default prompt path
+- [ ] `gage insert -m` captures multiple lines from the terminal until
+      EOF and round-trips through `cat` byte-for-byte (PTY-driven)
+- [ ] With none of `-m`/`--value-stdin` given, `gage insert` prompts once
+      for `value` via the library's `Prompter` (a fake in tests) rather
+      than reading stdin directly
+- [ ] Passing more than one of `-m`/`--value-stdin` is rejected with a
+      usage error before any prompt or read happens
+- [ ] `gage insert --description TEXT` stores the description, and `cat`
+      shows it
+- [ ] `gage insert` produces exactly one new git commit
+- [ ] The commit message contains no entry title or other plaintext
+      metadata — only the UUID (or whatever the decision above settles on)
+- [ ] `gage insert` sets `created`, `updated`, and `updated_by`;
+      `updated_by` matches the device name recorded in M2
+- [ ] `gage ls` lists the inserted entry's title
+- [ ] `gage ls` on an empty vault succeeds with no output and exit 0 —
+      not an error
+- [ ] `gage rm` deletes the file under `entries/` and commits the deletion; a
+      subsequent `cat`/`ls` no longer shows the entry
+- [ ] `gage cat` on an unknown title/UUID fails with a clear error and the
+      not-found exit code from M0's taxonomy
+- [ ] Inserting a duplicate title without `-f|--force` is rejected;
+      `-f|--force` allows it
+- [ ] With two vaults registered in global config, `gage insert --use
+      <other>` / `gage cat --use <other>` write to and read from that named
+      vault specifically, not the default one
+- [ ] With two vaults registered, an entry command given with no `--use`
+      flag operates against `current` from global config, not the other
+      registered vault — the one-shot counterpart to `vault set-default`
+- [ ] `--use <unregistered-name>` fails with a clear error before
+      prompting for a passphrase
+- [ ] A write holds the vault lock across the whole read-modify-commit
+      sequence: a second process attempting a concurrent write observes
+      contention rather than interleaving, and neither commit is lost
+- [ ] A read-only command (`cat`/`ls`) does not block on a lock held by
+      another read-only command
+- [ ] The one-shot handler calls `Identity.Close()` on every exit path,
+      including when the CRUD method returns an error
+
+## Implementation
+
+- [ ] `gage insert`: masked `Prompter` prompt (default), `--value-stdin`
+      (read + trim), or `-m|--multiline` (terminal capture until EOF) for
+      the value; mutually exclusive, validated before any I/O happens.
+      `--description TEXT`, `-f|--force`
+- [ ] One-shot `-u|--use NAME` flag, resolved on every entry command
+      against global config's registered vaults; omitted, it falls back to
+      `current` — same resolution `vault set-default` (M1) writes into
+- [ ] `gage cat` (exact UUID/title only)
+- [ ] `gage rm`
+- [ ] `gage ls`
+- [ ] Commit-per-write (go-git worktree add + commit), with the commit
+      message and author policy decided above
+- [ ] Vault lock acquisition around every write, using M0's `vaultlock`;
+      released on every exit path
+- [ ] One-shot command handler in `cmd/gage`: `Unlock` → CRUD method →
+      `Identity.Close()`, with `Close` guaranteed on error paths
+
+## Definition of done
+
+Full test list green on all three CI platforms. `gage` is a usable, if
+minimal, single-device secrets manager: insert, list, read, delete, all
+committed, all locked against concurrent writers.
+
+## Affects later milestones
+
+- Commit-per-write under the lock is what M8's auto-push sits on and what
+  M9's single-commit `--reencrypt` has to preserve.
+- The `Unlock` → use → `Close` handler is the shape M6's `Session`
+  deliberately *doesn't* change — it only holds the `Identity` longer.
+- `cat` and `rm`'s exact-match-only addressing is temporary; M5 must
+  leave neither behind on it.
