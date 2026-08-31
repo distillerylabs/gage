@@ -8,6 +8,29 @@ import (
 	"testing"
 )
 
+// statFile returns path's identity via an open handle rather than
+// os.Stat(path) alone. On Windows, os.Stat defers fetching the file-index
+// fields SameFile compares until SameFile is first called on the result,
+// and resolves them by reopening the *path* at that time — so two
+// os.Stat results for the same path, taken before and after a
+// rename-replace, both resolve to whatever now lives at that path and
+// compare equal regardless of whether the underlying file object
+// changed. An already-open handle's Stat resolves the file index
+// immediately, at open time, avoiding that.
+func statFile(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
 func TestRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 
@@ -74,18 +97,12 @@ func TestGlobalConfigWriteIsAtomic(t *testing.T) {
 	if err := Write(path, good); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := statFile(t, path)
 
 	if err := Write(path, Global{Current: "work"}); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := statFile(t, path)
 
 	if os.SameFile(before, after) {
 		t.Error("config.Write wrote config.toml in place; an interrupted write could truncate it and lose every registered vault")

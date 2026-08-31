@@ -4,10 +4,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 )
+
+// exeName returns name with the platform's executable extension, so a
+// binary built with `go build -o <explicit path>` (which does not
+// auto-append .exe the way `go build -o <dir>` does) can still be found
+// by exec.Command on Windows.
+func exeName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
 
 // TestMain in-process (via Run, in session_test.go) proves the dispatch
 // *decision*, using an injected IsTerminal. This file goes one step
@@ -51,7 +63,7 @@ func builtGageBinary(t *testing.T) string {
 			return
 		}
 		binDir = dir
-		binPath = filepath.Join(dir, "gage")
+		binPath = filepath.Join(dir, exeName("gage"))
 		cmd := exec.Command("go", "build", "-o", binPath, ".")
 		cmd.Dir = "."
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -115,7 +127,7 @@ func TestLinkTimeVersionInjection(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
-	bin := filepath.Join(dir, "gage")
+	bin := filepath.Join(dir, exeName("gage"))
 	const wantVersion = "v9.9.9-testtag"
 	const wantCommit = "cafef00"
 
