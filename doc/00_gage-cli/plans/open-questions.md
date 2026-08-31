@@ -19,9 +19,116 @@ the entry, record the answer).
 
 ## Open decisions
 
-### `[~]` Q-GIT-AUTH — How does `gage` authenticate to remotes? {#q-git-auth}
+### `[x]` Q-GIT-AUTH — How does `gage` authenticate to remotes? {#q-git-auth}
 
-**Blocks:** M8. **Could invalidate:** the go-git choice in M0.
+**Resolved 2026-08-30 — HTTPS with a token, any host.** go-git stays;
+nothing in M0 is invalidated. Applied as A6.
+
+**The reframe that decided it: this is an SSH problem, not a GitHub
+problem.** Every limitation driving the question — `~/.ssh/config` host
+aliases, `IdentityFile`, `ProxyCommand`, credential helpers,
+`insteadOf` — belongs to SSH transport. Token-over-HTTPS has none of
+them and works identically against GitHub, GitLab, Gitea, Bitbucket, and
+self-hosted. Restricting to GitHub would have fixed the same problem by
+giving up much more than the problem required, including the self-hosted
+remotes the design doc explicitly names.
+
+**What this means concretely:**
+
+- New `gage auth login/status/logout [--host HOST]`, namespaced under
+  `git` because a token for a git host has no meaning under a different
+  backing store. Per-*host*, not per-vault — two vaults on one host
+  share a token.
+- Tokens at `$GAGE_STATE/tokens/<host>`, `0600`. That root is documented
+  as disposable local state, which is exactly right for something
+  re-acquirable by logging in again. Not `$GAGE_CONFIG` — dotfile
+  managers sync it, same reasoning that keeps identity files out.
+- `gage auth login` steers toward narrowly-scoped tokens (on GitHub, a
+  fine-grained PAT limited to the one repository rather than a classic
+  `repo`-scoped token reaching everything you own).
+- **go-github is added, but only for conveniences** on recognized hosts:
+  OAuth device-flow login instead of a pasted token, and creating the
+  private repo during `gage init --remote`. The transport is go-git
+  either way; elsewhere the same commands ask for a token. Mechanism
+  identical, acquisition friendlier.
+- **SSH remotes stay best-effort**: used when ssh-agent has a usable key,
+  but `~/.ssh/config` is never interpreted, so an alias-dependent remote
+  fails with a message saying so and pointing at the HTTPS spelling.
+  Same posture as the Windows core-dump gap — a narrow guarantee stated
+  honestly. If this proves more trouble than it's worth in M8, dropping
+  SSH entirely is a clean narrowing.
+- The design doc's example remotes were SSH-spelled (`git@github.com:...`,
+  `git@internal:...`) — the second one specifically depended on a
+  `~/.ssh/config` alias. Both rewritten as HTTPS.
+
+**Reading B — GitHub as the storage layer** (Contents API instead of git
+transport) was considered and rejected. It breaks "commit is local,
+instant, and always happens," breaks offline reads, makes
+`--reencrypt`'s single-commit atomicity impossible without dropping to
+the Git Data API, makes rate limits a correctness concern rather than a
+speed one, and forfeits the "it's just a git repo, `cd` there and use
+real git" escape hatch. Recorded so it isn't re-proposed without those
+costs attached.
+
+Leaves Q-OAUTH-APP below genuinely open.
+
+---
+
+### `[x]` Q-OAUTH-APP — Does the project register a GitHub OAuth App?
+
+**Resolved 2026-08-30 — no, and not later either.** Users generate their
+own fine-grained PAT and `gage auth login` stores it. No OAuth App, no
+device flow, no shipped client ID.
+
+**The reason is scope, not effort.** This design already steers users
+toward "a fine-grained PAT limited to the vault's repository, not a
+classic `repo`-scoped one that reaches every repository you own."
+**An OAuth App cannot honor that.** OAuth App authorizations are
+scope-based — `repo` means full control of *all* private repositories,
+with no per-repository selection. Device flow would therefore hand
+`gage` broader access than the path it replaces, and asking a secrets
+manager's users to grant access to every private repo they own is a bad
+thing to normalize.
+
+A **GitHub App** could match PAT scoping — user-to-server device flow
+needs only a public client ID, and the token is limited to repos where
+the app is installed — but it adds an app-installation step for the user
+*and* the same permanent registration commitment, to reach the scoping a
+fine-grained PAT already provides with neither. So it doesn't rescue the
+idea.
+
+Two supporting reasons:
+
+- **It only helps one host.** Every other host still pastes a token, so
+  device flow reintroduces exactly the GitHub-specialness that resolving
+  Q-GIT-AUTH removed on the grounds that the problem was never
+  GitHub-shaped.
+- **A shipped client ID is a permanent liability for a convenience.** It
+  can lapse, be revoked, or be rate-limited, breaking login for every
+  installed copy — including old versions no longer under anyone's
+  control.
+
+**The one real cost, and it's an error-message problem:** PATs expire.
+An expired token must fail legibly ("your token for github.com expired,
+run `gage auth login`") rather than as an opaque 403 from the transport.
+Covered by an M8 test.
+
+**Consequence: go-github is dropped entirely.** With device flow gone,
+its only remaining job was creating the private repo during `gage init
+--remote`, and the design doc already assumes manual repo creation ("a
+vault can start local-only and gain a remote later, e.g. after creating
+an empty repo on GitHub"). Dropping it removes the last host-specific
+code path from an otherwise host-neutral design.
+
+*Recorded so this isn't revisited as a "nice UX improvement": the
+objection is that device flow is a **downgrade in scope**, not that it's
+extra work.*
+
+---
+
+### `[x]` Q-GIT-AUTH-ORIGINAL — the original framing, for the record
+
+**Blocked:** M8. **Could have invalidated:** the go-git choice in M0.
 
 go-git does not read `~/.ssh/config` (host aliases, `IdentityFile`,
 `ProxyCommand`, `Port`), does not use git credential helpers, and does
@@ -59,8 +166,8 @@ it may belong under the design doc's "Vault types" section rather than
 replacing the `git` type outright. Worth deciding whether it's
 `type = "github"` alongside `type = "git"`, or a replacement.
 
-Nothing before M8 depends on the answer, so this can stay open through
-M7 without blocking work.
+Nothing before M8 depended on the answer, so it stayed open through M7
+without blocking work.
 
 ---
 
@@ -363,9 +470,20 @@ forward-compat marker that isn't enforced from v1 is worse than none —
 an old binary will half-parse a v2 config. State that an unrecognized
 `format_version` is a clean refusal, not a best-effort parse.
 
-### `[ ]` A6 — Document git remote auth limitations
+### `[x]` A6 — Document git remote auth
 
-Follows whatever Q-GIT-AUTH resolves to.
+Per Q-GIT-AUTH. New "Remote authentication: HTTPS and a token"
+subsection under the sync model, stating go-git's limitations outright
+(no `~/.ssh/config`, no credential helpers, no `insteadOf`), the token
+storage location and scoping guidance, GitHub's friendlier acquisition
+step, and SSH's best-effort status. `gage auth login/status/logout`
+added to the git-specific command list, with a note on why it's
+namespaced there and why it's per-host rather than per-vault.
+
+Also rewrote both example remotes from SSH to HTTPS — the `work` one
+(`git@internal:secrets/work-vault.git`) was itself an instance of the
+problem, depending on a `~/.ssh/config` host alias that go-git would
+never resolve.
 
 ### `[x]` A7 — Note that the metadata index is invalidated by sync
 

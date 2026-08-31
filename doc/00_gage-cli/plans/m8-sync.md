@@ -36,11 +36,6 @@ test harness this milestone already builds for divergence testing.
 
 ## Decisions to make first
 
-- **[Q-GIT-AUTH](open-questions.md) — blocks this milestone.** go-git
-  doesn't read `~/.ssh/config`, credential helpers, or `insteadOf`. Four
-  options are on the table including a GitHub-API-backed store; this must
-  be resolved before real remote work starts, and it could still change
-  the backing-store library choice.
 - **[Q-SYNC-CONFLICT](open-questions.md) — blocks this milestone.**
   "Surfaces both versions and requires an explicit choice" is the entire
   specification today. What the choices are, what history results, which
@@ -119,6 +114,31 @@ offline-handling logic runs.
 - [ ] A divergence with no *entry-level* conflict (both sides touched
       different entries) resolves without prompting
 
+**Authentication**
+
+- [ ] `gage auth login` stores a user-supplied token at
+      `$GAGE_STATE/tokens/<host>`, created `0600`, and `auth status`
+      reports the host as configured
+- [ ] An expired or revoked token fails with a message naming the host
+      and `gage auth login` — not a bare 403 or transport error
+      (Q-OAUTH-APP: this is the one real cost of user-supplied tokens,
+      so it's the one that gets a test)
+- [ ] `gage auth logout` removes it, and a subsequent push fails with a
+      not-authenticated error naming `gage auth login` rather than an
+      opaque transport error
+- [ ] A fetch/push against an HTTPS remote uses the stored token for that
+      host; two vaults on the same host share one token
+- [ ] `--host` defaults to the host of the current vault's `origin`
+- [ ] A token file with permissions looser than `0600` is refused rather
+      than used
+- [ ] An SSH-spelled remote that depends on a `~/.ssh/config` host alias
+      fails with a message saying `~/.ssh/config` is not consulted and
+      pointing at the HTTPS spelling — not a generic connection error
+- [ ] An SSH-spelled remote that ssh-agent can satisfy directly works,
+      confirming best-effort SSH is genuinely best-effort and not absent
+- [ ] No token value appears in any error message, log line, or the
+      session history file
+
 **`clone`**
 
 - [ ] `gage clone` against a `gittest.NewBareRemote` produces a working
@@ -143,7 +163,20 @@ offline-handling logic runs.
       implementation in production and in the realistic bare-repo tests,
       a fake in the one offline-handling test where a deterministic
       injected error matters more than a real network failure
-- [ ] Remote authentication, per Q-GIT-AUTH
+- [ ] Remote authentication (Q-GIT-AUTH): HTTPS + token via go-git's
+      `BasicAuth`, tokens stored per-host at `$GAGE_STATE/tokens/<host>`
+      (`0600`) through M0's atomic-write helper; best-effort ssh-agent
+      for SSH remotes, with a specific error when a remote depends on
+      `~/.ssh/config`
+- [ ] `gage auth login/status/logout [--host HOST]`, registered in M0's
+      command registry under the git group, available in both modes.
+      `login` prompts for a token the user issued themselves and points
+      at fine-grained, single-repository scoping; it never brokers one
+      (Q-OAUTH-APP)
+- [ ] No host-specific code paths and no host-specific dependencies —
+      no `go-github`, no device flow, no shipped client ID. `gage init
+      --remote URL` against a repository that doesn't exist fails with a
+      message saying to create it, rather than creating it for you
 - [ ] `gittest` package extended with a second-clone helper: clone a
       `NewBareRemote` repo into a second temp dir, commit there, push
       back — a throwaway stand-in for "another device," used to produce

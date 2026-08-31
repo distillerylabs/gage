@@ -479,7 +479,7 @@ method = "passphrase"     # how THIS device unlocks it — see "Decryption
                           # methods are per-device"
 
 [vaults.personal.git]
-origin = "git@github.com:you/personal-vault.git"
+origin = "https://github.com/you/personal-vault.git"
 
 [vaults.work]
 path = "$GAGE_DATA/vaults/work"
@@ -488,7 +488,7 @@ device = "laptop-1"
 method = "passphrase"
 
 [vaults.work.git]
-origin = "git@internal:secrets/work-vault.git"
+origin = "https://git.internal.example/secrets/work-vault.git"
 
 [shell]
 prompt = "[{vault}{lock}] gage> "    # {vault}, {lock} (🔓/🔒), {dirty} tokens available
@@ -967,6 +967,63 @@ versions so you choose — gage never guesses on your behalf. `pull`, `push`,
 and `git` remain as the manual override / scripting / CI control surface,
 but day-to-day they're a fallback, not something to remember every session.
 
+### Remote authentication: HTTPS and a token
+
+`gage` speaks to remotes through go-git, never a `git` binary (see
+"Git-specific commands"), and that has one consequence worth stating
+plainly rather than discovering: **go-git does not read `~/.ssh/config`,
+git credential helpers, or `insteadOf` rewrites.** SSH host aliases,
+`IdentityFile`, `ProxyCommand` — none of it applies. A remote spelled
+`git@internal:secrets/work-vault.git`, relying on a `Host internal` block
+to resolve, simply won't connect.
+
+So the supported path is **HTTPS with a token**:
+
+```
+gage auth login  [--host HOST]     # store a token for a git host
+gage auth status [--host HOST]     # which hosts have a token, and whether it works
+gage auth logout [--host HOST]     # forget it
+```
+
+This isn't a GitHub decision — it's an SSH one. Every limitation above
+belongs to SSH transport; token-over-HTTPS has none of them and works
+identically against GitHub, GitLab, Gitea, Bitbucket, and self-hosted
+installs. Narrowing to one host would have solved the same problem by
+giving up far more than the problem required.
+
+- **Tokens live in `$GAGE_STATE/tokens/<host>`, `0600`.** That root is
+  documented as local-only, disposable device state, which is exactly
+  what a token is: re-acquirable at any time by logging in again, unlike
+  an identity file. Deliberately *not* `$GAGE_CONFIG`, which dotfile
+  managers sync by convention — the same reasoning that keeps identity
+  files out of it.
+- **Scope the token as narrowly as the host allows.** On GitHub that
+  means a fine-grained PAT limited to the vault's repository, not a
+  classic `repo`-scoped one that reaches every repository you own.
+  `gage auth login` says so at the prompt.
+- **You bring the token; `gage` never brokers one.** There's no OAuth
+  device flow and no client ID shipped in the binary, and that's a
+  deliberate choice rather than a missing feature. GitHub's OAuth App
+  authorizations are scope-based — `repo` grants full control of *every*
+  private repository you own, with no per-repository selection — so a
+  device-flow login would acquire strictly broader access than the
+  fine-grained PAT recommended just above. For a secrets manager,
+  normalizing "grant this tool access to all your private repos" is the
+  wrong trade for a smoother first run. It would also help exactly one
+  host while every other host still pasted a token, reintroducing the
+  host-specialness this whole section exists to avoid.
+- **An expired token fails legibly.** PATs expire; when one does, `gage`
+  says so and names `gage auth login`, rather than surfacing a bare 403
+  from the transport layer.
+- **SSH remotes still work when they're simple.** If a remote is
+  SSH-spelled and ssh-agent has a usable key, `gage` will use it. What
+  it won't do is interpret `~/.ssh/config` to figure out what the remote
+  really means — so an SSH remote that depends on a host alias fails
+  with a message saying exactly that, and pointing at the HTTPS
+  equivalent. Best-effort, documented as such, in the same spirit as the
+  Windows core-dump gap: a narrower guarantee stated honestly beats a
+  broad one that doesn't hold.
+
 ---
 
 ## Trust boundaries
@@ -1361,12 +1418,22 @@ Everything here only exists because the current (and only) vault type is
 `git` — none of it has an obvious equivalent under a different backing
 store, which is exactly why it's namespaced under `git` instead of
 `vault`: these are the commands that would need reworking, or would simply
-disappear, if a second vault type showed up. Today that's exactly one
-command:
+disappear, if a second vault type showed up. Today that's these:
 
 ```
 gage git set-remote <name> <url>     # sets/changes the git remote (origin) — see below
+
+gage auth login  [--host HOST]       # store a token for a git host — see
+gage auth status [--host HOST]       # "Remote authentication" above
+gage auth logout [--host HOST]
 ```
+
+`auth` is namespaced here rather than at the top level because a token
+for a git host is exactly the kind of thing that has no meaning under a
+different backing store — a future type would authenticate its own way,
+or not at all. It's also per-*host*, not per-vault: two vaults on the
+same host share one token, and `--host` defaults to the host of the
+current vault's `origin`.
 
 `--remote` on `init` is optional — a vault can start local-only (no sync
 until you're ready) and gain a remote later, e.g. after creating an empty

@@ -119,11 +119,20 @@ static executable. Worth flagging as the exception, since the git side
 deliberately has none — see the design doc's "Git-specific commands" for
 why there's no `git`-binary passthrough anywhere in `gage`.
 
-**Not yet locked: git remote authentication.** go-git does not read
-`~/.ssh/config`, git credential helpers, or `insteadOf` rewrites. This is
-unresolved and tracked in [open-questions.md](open-questions.md#q-git-auth);
-it could still change the choice of backing-store library before M8.
-Nothing before M8 depends on the answer.
+**Git remote authentication is HTTPS with a user-supplied token** —
+go-git reads none of `~/.ssh/config`, credential helpers, or
+`insteadOf`, and every one of those limitations is specific to SSH
+transport rather than to any particular host. Tokens live at
+`$GAGE_STATE/tokens/<host>` (`0600`) and are managed by `gage auth
+login/status/logout`. SSH remotes are best-effort via ssh-agent and fail
+with a clear message when they depend on a host alias.
+
+**There are no host-specific code paths and no host-specific
+dependencies.** No OAuth device flow, no shipped client ID, no
+`go-github` — `gage` never brokers a credential, because a brokered
+OAuth token would be *broader* than the fine-grained, single-repository
+PAT a user can issue themselves. See
+[open-questions.md](open-questions.md#q-git-auth) and Q-OAUTH-APP.
 
 ---
 
