@@ -1038,7 +1038,7 @@ results those methods return.
 
 ```
 gage init <name> [--dir PATH] [--remote URL] [--type git]
-                  --method passphrase|age-key|ssh|yubikey|secure-enclave|plugin:<name>
+                  [--method passphrase]
                   [--recipient PUBKEY ...]
 
     Creates a new vault: for the git type (the only one today), this means
@@ -1047,7 +1047,13 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
     identity file for passphrase/age-key methods — see "Local identity
     storage" above), and commits the initial (empty) structure. --recipient
     can be repeated to add extra
-    recipients (e.g. a recovery key) at creation time. Without --dir, the
+    recipients (e.g. a recovery key) at creation time. --method gets the
+    same treatment as --type: it defaults to (and, today, can only be)
+    passphrase, validated against a single-value allowlist, so the
+    additional methods named elsewhere in this document — age-key, ssh,
+    yubikey, secure-enclave, plugin:<name> — arrive later as new accepted
+    values rather than as a flag introduced for the first time on configs
+    and scripts that predate it. Without --dir, the
     vault is created at $GAGE_DATA/vaults/<name> and registered under that
     path in the global config. --type defaults to (and, today, can only be)
     git; it's accepted now, validated against a single-value allowlist, so

@@ -154,17 +154,73 @@ list is currently entry-commands-only.
 
 ---
 
-### `[ ]` Q-METHOD-FLAG — Is `--method` required, and how is it validated?
+### `[x]` Q-METHOD-FLAG — Is `--method` required, and how is it validated?
 
-**Blocks:** M1.
+**Resolved 2026-08-30.** `--method` gets exactly the same treatment as
+`--type`: **optional, defaulting to `passphrase`, validated against a
+single-value allowlist.** `ssh`, `yubikey`, `age-key`, `secure-enclave`,
+and `plugin:<name>` arrive later as additional accepted values — additive
+to the CLI surface rather than a flag introduced for the first time on
+configs and scripts that predate it.
 
-`--type` got careful treatment: accepted now, validated against a
-single-element allowlist, so a second type is purely additive later.
-`--method` has exactly the same future (additional methods are explicitly
-deferred) and no equivalent treatment anywhere in the design doc or plan.
-The command reference shows it with no default, implying required.
-Decide: required-and-allowlisted (mirrors `--type`'s explicitness), or
-defaulted to `passphrase`.
+Applied to the design doc as A13. Note this changed the command reference
+from `--method <required>` to `[--method passphrase]`, and dropped the
+not-yet-real values from the usage line — they're described in the prose
+instead, so the usage line documents what the tool actually accepts.
+
+Leaves Q-METHOD-SCOPE below genuinely open; the two are separate
+questions that both happen to touch the word "method."
+
+---
+
+### `[ ]` Q-METHOD-SCOPE — Is a vault's method one-per-vault, or per-device?
+
+**Blocks:** nothing today (passphrase is the only method). **Should be
+settled before the second method lands** — it's a principle-level
+question, and it's cheaper to answer now than after `identity add` has
+shipped a flag that may not belong.
+
+The design doc contradicts itself, and resolving Q-METHOD-FLAG made the
+contradiction visible rather than causing it:
+
+- **Principle 1** says "each vault has exactly one decryption method
+  chosen at `init` time," and `.gage/config.toml` carries a single
+  `[method] kind = ...` to match.
+- **["`identity` vs `recipient` stay separate"](../tdds/gage-cli-design.md)**
+  says the opposite: "A YubiKey-based vault might have a laptop identity
+  via NFC/USB touch and a phone identity via the Secure Enclave — same
+  recipient list, different local mechanics." Secure Enclave and YubiKey
+  are two different `kind` values in the config enum, not two flavors of
+  one.
+- **`gage identity add --method ssh|yubikey|passphrase|secure-enclave`**
+  takes a method flag at all, which only makes sense if a device can
+  choose one — but its own description says it "registers this device's
+  way of satisfying *the vault's* method," which implies it can't.
+
+**Nothing cryptographic forces one method per vault.** age recipients are
+just public keys, and a single `.age` file can be encrypted to a mix of
+X25519 and plugin recipients (a YubiKey recipient is `age1yubikey1...`).
+So the vault-level `[method]` is a policy/UX statement, not a
+crypto constraint — which means this is a genuine product decision, not a
+technical one.
+
+Options:
+
+1. **Method is per-vault policy** — every device must use the vault's
+   method. `identity add` drops `--method` entirely (it's implied by the
+   vault), and principle 1 stands as written.
+2. **Method is per-device** — `[method]` in vault config becomes a
+   *default* for new devices rather than a constraint, `identity add
+   --method` is meaningful, and principle 1 needs rewording. Matches the
+   `identity`/`recipient` bullet and what age actually permits.
+3. **Method is a per-vault *floor*** — the vault names a minimum
+   assurance level and devices may satisfy it with anything at or above
+   it. Most expressive, most complexity, probably not worth it.
+
+Recommendation: (2), since it's what the crypto permits and what the
+`identity`/`recipient` bullet already promises — but (1) is a coherent
+simpler product, and it's the one principle 1 currently claims. Either
+way one of the two passages has to change.
 
 ---
 
@@ -335,6 +391,17 @@ the current session vault," but the only git-specific command is
 and so isn't scoped to the session's current vault at all. Minor, but
 it's the kind of thing that produces a wrong help entry — worth
 correcting when A11 is applied.
+
+### `[x]` A13 — `--method` is optional and defaults to `passphrase`
+
+Per Q-METHOD-FLAG. The `gage init` usage line showed `--method` as
+required and listed six values, only one of which exists. Now
+`[--method passphrase]`, with the future values described in the
+following prose rather than advertised in a usage line as though they
+were accepted today.
+
+Deliberately did **not** touch `gage identity add --method`, whose
+existence depends on Q-METHOD-SCOPE.
 
 ---
 

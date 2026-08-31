@@ -45,8 +45,6 @@ bare-remote test harness exists to clone *from*.
 
 ## Decisions to make first
 
-- **[Q-METHOD-FLAG](open-questions.md)** — is `--method` required, and is
-  it allowlist-validated the way `--type` is? Affects several tests below.
 - **[Q-DEVICE-NAME](open-questions.md)** — the global config schema needs
   a per-vault `device` field if that's the answer. M1 defines the schema;
   M2 populates the field. Decide before writing the schema, not after.
@@ -83,9 +81,16 @@ bare-remote test harness exists to clone *from*.
 - [ ] `gage init --type git` succeeds and is equivalent to omitting the flag
 - [ ] `gage init --type <anything-else>` fails with a usage error before
       creating any files, and lists `git` as the only accepted value
-- [ ] `--method` behaves per Q-METHOD-FLAG, and an unaccepted method value
-      fails with a usage error before creating any files, listing
-      `passphrase` as the only accepted value
+- [ ] `gage init` with no `--method` flag defaults to
+      `method.kind = "passphrase"` in `.gage/config.toml`
+- [ ] `gage init --method passphrase` succeeds and is equivalent to
+      omitting the flag
+- [ ] `gage init --method <anything-else>` fails with a usage error before
+      creating any files, and lists `passphrase` as the only accepted
+      value — including for the method names the design doc mentions as
+      future work (`ssh`, `yubikey`, `age-key`, `secure-enclave`,
+      `plugin:*`), which must fail like any other unknown value rather
+      than being silently accepted and written to config
 - [ ] `gage init` with no `--recipient` fails with a clear error naming
       the flag — in M1 there's no identity generation to supply a key
       (M2 changes this test)
@@ -124,8 +129,12 @@ bare-remote test harness exists to clone *from*.
       no identity and performs no encryption
 - [ ] `gage init <name> [--dir PATH] [--type git] [--method passphrase]
       [--recipient PUBKEY ...] [--remote URL]` as a thin wiring layer
-      over `Vault.Create`; `--type` and `--method` validated against
-      single-element allowlists before any file is touched
+      over `Vault.Create`. `--type` and `--method` get identical
+      treatment: optional, defaulting to the single value that exists
+      today (`git` / `passphrase`), validated against a single-element
+      allowlist before any file is touched, so a second value later is
+      additive to the CLI surface rather than a breaking change
+      (Q-METHOD-FLAG)
 - [ ] `.gage/config.toml` read/write (`[vault]` incl. `type` and
       `format_version`, `[method]`, `[[recipients]]`), through M0's
       atomic-write helper
