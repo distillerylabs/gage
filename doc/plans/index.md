@@ -654,6 +654,11 @@ naturally after single-user CRUD+sync are solid.
       to HEAD before any subsequent write (`insert`/`edit`/`generate`/
       `--reencrypt`) proceeds, rather than being folded into that write's
       commit
+- [ ] Resetting a dirty `entries/` working tree emits a one-line warning
+      naming the discarded paths (via `Prompter`, a fake in tests) before
+      proceeding — the reset is automatic, but never silent, since the
+      "only an interrupted `--reencrypt` could cause this" assumption
+      isn't provable, only likely
 - [ ] `gage recipient list` prints every recipient's device name and
       public key, matching `.gage/config.toml`'s `[[recipients]]` exactly,
       and reflects an add/remove from the same test run
@@ -677,9 +682,12 @@ naturally after single-user CRUD+sync are solid.
       that same single commit
 - [ ] `gage recipient list`
 - [ ] Precondition check on every write (`insert`/`edit`/`generate`/
-      `--reencrypt`): if `entries/` is unexpectedly dirty at start, reset
-      it to HEAD before proceeding — the only source of unexpected
-      dirtiness is an interrupted `--reencrypt`
+      `--reencrypt`): if `entries/` is unexpectedly dirty at start, warn
+      once via `Prompter` (naming the discarded paths) and reset it to
+      HEAD before proceeding — the only *expected* source of unexpected
+      dirtiness is an interrupted `--reencrypt`, but the warning fires
+      regardless of cause, the same "warn and proceed" posture as an
+      unreachable network in M7
 - [ ] `gage recipient verify`: reads `.age-recipients` and
       `.gage/config.toml` directly — both plaintext — and never calls
       `Vault.Unlock`/`Prompter`, so it needs no identity to run

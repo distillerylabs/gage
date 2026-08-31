@@ -1000,9 +1000,16 @@ gage recipient verify [--use NAME]
     re-running --reencrypt picks up cleanly from scratch. gage also
     refuses to start any write against a dirty entries/ working tree it
     didn't just create itself — the only thing that could leave one is an
-    interrupted --reencrypt, so it's reset to HEAD before the new
-    operation proceeds, rather than risking an unrelated write folding a
-    stale partial reencrypt into its own commit.
+    interrupted --reencrypt, so gage warns once (naming the untracked/
+    modified paths it found) and resets entries/ to HEAD before the new
+    operation proceeds, rather than either silently discarding whatever it
+    found or risking an unrelated write folding a stale partial reencrypt
+    into its own commit. The warning, not the reset itself, is what's load-
+    bearing here: the interrupted-reencrypt assumption is strong but not
+    provable in general, so a change that's actually a hand-edit gage
+    didn't cause still gets surfaced, even though gage doesn't stop to ask
+    before proceeding — the same "warn and proceed" posture as an
+    unreachable network in "Sync model."
 
     `verify` checks that .age-recipients and .gage/config.toml's
     [[recipients]] list the same public keys. Needs no unlock — both files
