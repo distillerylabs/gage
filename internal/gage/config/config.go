@@ -1,0 +1,71 @@
+// Package config reads and writes gage's global $GAGE_CONFIG/config.toml —
+// the file tracking known vaults, this device's per-vault identity/method,
+// and shell preferences. See the design doc's "Global config" section.
+package config
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/pelletier/go-toml/v2"
+
+	"github.com/denmark/gage/internal/gage/atomicfile"
+)
+
+// GitMeta is the git-type-specific metadata for a vault entry, namespaced
+// under its own table so a future vault type only ever adds a new nested
+// table rather than touching this shape.
+type GitMeta struct {
+	Origin string `toml:"origin,omitempty"`
+}
+
+// VaultEntry is one vault's row in the global config: what this device
+// calls it, how this device unlocks it, and (for the git type) its remote.
+type VaultEntry struct {
+	Path   string  `toml:"path"`
+	Type   string  `toml:"type"`
+	Device string  `toml:"device"`
+	Method string  `toml:"method"`
+	Git    GitMeta `toml:"git,omitempty"`
+}
+
+// Shell holds this device's session-mode preferences.
+type Shell struct {
+	Prompt      string `toml:"prompt,omitempty"`
+	IdleTimeout string `toml:"idle_timeout,omitempty"`
+	HistoryFile string `toml:"history_file,omitempty"`
+}
+
+// Global is the full shape of $GAGE_CONFIG/config.toml.
+type Global struct {
+	Current string                `toml:"current,omitempty"`
+	Vaults  map[string]VaultEntry `toml:"vaults,omitempty"`
+	Shell   Shell                 `toml:"shell,omitempty"`
+}
+
+// Read parses a global config file at path.
+func Read(path string) (Global, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Global{}, err
+	}
+	var g Global
+	if err := toml.Unmarshal(data, &g); err != nil {
+		return Global{}, fmt.Errorf("config: parsing %s: %w", path, err)
+	}
+	return g, nil
+}
+
+// Write atomically writes g to path (temp file + fsync + rename — see
+// atomicfile), so an interrupted write never leaves a truncated config
+// behind.
+func Write(path string, g Global) error {
+	data, err := toml.Marshal(g)
+	if err != nil {
+		return fmt.Errorf("config: encoding %s: %w", path, err)
+	}
+	if err := atomicfile.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("config: writing %s: %w", path, err)
+	}
+	return nil
+}

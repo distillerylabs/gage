@@ -1,0 +1,11 @@
+# Build output
+/gage
+/gage.exe
+/dist/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
