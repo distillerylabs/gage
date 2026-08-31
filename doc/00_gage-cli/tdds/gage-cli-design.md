@@ -301,6 +301,16 @@ device = "recovery-paper-key"
 pubkey = "age1..."
 ```
 
+**`format_version` is enforced, not decorative.** `gage` refuses outright
+to operate on a vault whose `format_version` it doesn't recognize, with
+an error saying so, rather than parsing what it understands and ignoring
+the rest. A forward-compatibility marker that isn't checked from the
+very first release is worse than not having one: an older binary would
+half-read a newer vault, silently drop the fields it didn't know about
+on the next write, and the marker would have bought nothing. Enforcing
+it from v1 is what makes it possible to change this file's shape later
+at all.
+
 Recipients apply to the whole vault, full stop — no per-directory overrides.
 `gage init` is cheap enough that "who needs access to this?" is a vault-level
 question answered once at creation, not something that needs finer-grained
@@ -489,6 +499,15 @@ via `gage identity add` and listed under `[[recipients]]` in
 `.gage/config.toml` — e.g. `$GAGE_DATA/identities/personal/laptop-1.age`.
 The directory is created `0700`, the file `0600`.
 
+**This file always has exactly one recipient.** age refuses to encrypt to
+a scrypt passphrase recipient combined with any other recipient, so a
+passphrase-wrapped identity file is necessarily passphrase-only — there's
+no "also let my other device open this" variant of it, by construction.
+That's not a limitation to work around: the recovery story for a lost or
+inaccessible identity file is registering a fresh identity and being
+re-added as a recipient (see below), not sharing one device's wrapped
+key with another.
+
 This lives under `$GAGE_DATA`, not `$GAGE_STATE` or `$GAGE_CONFIG`, and
 that placement is deliberate, not just "closest available root":
 
@@ -553,7 +572,13 @@ lookups, and composing with other unix tools. (`Vault.Unlock` and
 `Identity.Close`, called once each — see "Library architecture" above.)
 
 **2. Session mode** — running `gage` with no subcommand (or `gage shell`)
-drops you into an interactive prompt:
+drops you into an interactive prompt, *provided stdin is a terminal*.
+With stdin piped or redirected, a bare `gage` prints help instead of
+starting a session: `--stdin` is already the explicit spelling for "read
+session commands from stdin" (see "Non-interactive session mode" below),
+and letting a bare `gage` silently mean the same thing would give one
+behavior two spellings, with the implicit one being the surprising one
+inside a script.
 
 ```
 $ gage
@@ -622,17 +647,64 @@ help
 exit / quit / ^D
 ```
 
-All entry commands (`show`, `ls`, `insert`, `edit`, `generate`,
-`search` (aka `grep`), `rm`, `mv`, `cp`, `sync`, `git`, `log`, `history`) work
-against the current session vault without needing `--use` each time, but
-`--use NAME` still works ad hoc against any vault already `use`d this
-session (it'll prompt to unlock if you haven't touched it yet).
+Everything else in the command reference works inside a session too —
+not just entry commands. The rule is short enough to state once:
+**every command is available in a session except `init` and `clone`.**
+
+- **Entry commands** (`show`, `cat`, `ls`, `insert`, `edit`, `rename`,
+  `generate`, `search` (aka `grep`), `rm`, `mv`, `cp`, `reindex`) and the
+  **sync family** (`sync`, `pull`, `push`, `log`, `history`) operate
+  against the current session vault without needing `--use` each time.
+- **Management commands** (`vault list/info/remove/set-default`,
+  `identity add/list`, `recipient add/remove/list/verify`) work in a
+  session as well. Adding a recipient right after you've unlocked is
+  exactly when you'd want to, and making you exit the session first
+  would be a poor edge for no benefit.
+- **`gage git set-remote`** works in a session, but note it takes an
+  explicit `<name>` argument rather than acting on the session's current
+  vault — it's the one command in this list that isn't
+  current-vault-scoped.
+- **`init` and `clone` are one-shot only.** Both *create* a vault rather
+  than operating on one, which leaves an unanswered question about
+  whether the newly created vault should become the session's current
+  vault. Invoked inside a session they report that plainly rather than
+  failing as unknown commands. This is the conservative side of a
+  reversible choice: making them session-available later is additive,
+  taking it away would be breaking.
+
+`--use NAME` still works ad hoc on any of the above against any vault
+already `use`d this session (it'll prompt to unlock if you haven't
+touched it yet).
+
+### Help
+
+There are two help surfaces, and they deliberately differ:
+
+- **`gage --help` and `gage help`** (equivalent spellings — `gage help`
+  is what most operators try first) list the commands available in
+  one-shot mode. They never list `use`/`lock`/`status`/`exit`/`help`,
+  which don't exist outside a session; listing them would point an
+  operator at a path that can't work.
+- **In-session `help`** lists the session-only commands above plus
+  everything else available in a session, and presents vault selection
+  as the bare `use <vault>` command rather than the `-u|--use NAME`
+  flag. The flag still appears in per-command help (`help show`), since
+  it does work ad hoc in a session.
+
+`gage help <command>` and in-session `help <command>` both print one
+command's usage. Both surfaces render from a single registry of command
+metadata — name, aliases, description, group, and where the command is
+available — so a command can't appear in one and go missing from the
+other. That's an implementation detail, but a load-bearing one: two
+hand-maintained lists would drift the first time a command is added.
 
 ### Addressing entries & the metadata index
 
-With opaque UUID filenames, there's no more "path" to type. Instead, `show`,
-`cat`, `edit`, `rm`, `mv`, `cp`, and `generate` all take a **query** that's
-matched against decrypted `title`s:
+With opaque UUID filenames, there's no more "path" to type. Instead,
+`show`, `cat`, `edit`, `rename`, `rm`, `mv`, and `cp` all take a
+**query** that's matched against decrypted `title`s. (`insert` and
+`generate` take a plain `<title>` instead — they create an entry rather
+than addressing an existing one, so there's nothing to resolve against.)
 
 ```
 [personal🔓] gage> show protonmail
@@ -667,6 +739,17 @@ process" still holds even though metadata is now something the tool has to
 decrypt just to display a list. `gage reindex` forces a rebuild (useful
 after a `git pull` run outside `gage`, or if you suspect staleness).
 
+The index is also invalidated automatically by `gage`'s own syncing. The
+fast-forward pull that happens on every vault unlock (see "Sync model"
+below) can bring in entries written on another device, changing
+`entries/` underneath a live session — so a successful pull that actually
+moved HEAD rebuilds or invalidates that vault's index before the next
+command reads it. A pull that brings in nothing leaves the index alone,
+since rebuilding on every unlock would defeat the point of caching it.
+Locking a vault (explicitly, or via the idle timeout) discards its index
+along with its key: the index is decrypted metadata, so it has no business
+outliving the identity that produced it.
+
 One-shot mode gets no such cache — every invocation of `ls`/`search`/`show`
 pays the full decrypt-every-entry cost from scratch. That's fine for a
 handful of entries, but it's the real cost of hiding names: for a large
@@ -695,6 +778,54 @@ trade: blast radius is one terminal's process, not "every shell you've
 opened since boot," and there's no socket whose permissions you need to
 reason about. If cross-terminal sharing becomes a real pain point later,
 it can be added as an *opt-in* agent mode without changing the default.
+
+### Concurrent processes and the vault lock
+
+The trade-off just described has a consequence worth stating outright:
+**multiple `gage` processes against the same vault is the normal case,
+not an edge case.** A session sitting in a `tmux` pane while you run
+`gage show` in another terminal is precisely the workflow this design
+encourages, since there's no shared agent to route both through.
+
+That collides with "every write is a commit." A write is a
+read-modify-commit sequence against a single git working tree — decrypt,
+modify, re-encrypt, stage, commit — and two of those interleaving can
+produce a commit containing another process's half-written state, or lose
+one of the two writes entirely. The dirty-`entries/` reset described
+under "Recipient / access management" makes it sharper still: run
+concurrently, one process's cleanup would discard another's in-flight
+work, which is exactly the "silently discard a just-rotated password"
+outcome the sync model refuses to allow.
+
+So `gage` takes a **per-vault advisory lock** — `flock` on Linux/macOS,
+`LockFileEx` on Windows — held across each complete read-modify-commit
+sequence, and released on every exit path including error paths:
+
+- **Writes take it; reads don't.** Two concurrent `show`s never block
+  each other. A write blocks other writes to the same vault, and only
+  that vault — a session working in `personal` is unaffected by a write
+  to `work`.
+- **A contended lock waits, with a message**, rather than failing
+  immediately. Whoever holds it is nearly always about to finish; a
+  one-line "waiting for another gage process" beats a spurious failure.
+  It waits with a timeout rather than forever, since a wedged holder
+  shouldn't hang a terminal indefinitely.
+- **The lock is process-scoped, like everything else here.** It's
+  released by the OS if a process is killed, so there's no stale lock
+  file to clean up by hand — the same property that makes "process
+  lifetime is the boundary" work for key material.
+- **`--reencrypt` holds it for its whole run** (see "Recipient / access
+  management"), which on a large vault can be a while. That's the right
+  trade: the operation's all-or-nothing guarantee is worth more than
+  letting an unrelated write slip in beside it.
+- **Cross-vault `mv`/`cp` take two locks**, one per vault, acquired in a
+  deterministic order so two simultaneous moves in opposite directions
+  between the same pair can't deadlock.
+
+This is about correctness between cooperating `gage` processes, not
+security. It doesn't defend against anything hostile with write access to
+the vault directory — that's the trust boundary discussed below, and a
+lock file has nothing to say about it.
 
 ---
 
@@ -1176,6 +1307,16 @@ here" — by construction, nothing would replace it.
   reference (see "Vault types" and "Git-specific commands"), it's what
   lets a future backing store slot in without touching entry CRUD,
   identity, recipients, or the session model at all.
+- **Multiple `gage` processes are expected, so writes take a per-vault
+  lock.** Having no shared agent means a session in one pane and a
+  one-shot command in another are the normal case, not an edge — and two
+  read-modify-commit sequences interleaving against one git working tree
+  could lose a write or commit half of one. A per-vault advisory lock
+  (`flock`/`LockFileEx`) serializes writers while leaving readers
+  unblocked, waits with a message instead of failing when contended, and
+  is released by the OS on process death like everything else here. It's
+  a correctness mechanism between cooperating processes, not a security
+  one. See "Concurrent processes and the vault lock."
 - **No daemon means no IPC attack surface.** There's no unix socket whose
   permissions need auditing, no risk of a stale agent process outliving
   the terminal that spawned it and being forgotten about. The trust

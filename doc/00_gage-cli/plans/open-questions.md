@@ -7,8 +7,8 @@ and isn't here, it's lost.
 Three sections:
 
 - **Open decisions** — needs a human answer before the named milestone.
-- **Design-doc amendments pending review** — changes the TDD needs, not
-  yet applied.
+- **Design-doc amendments** — changes the TDD needs; `[x]` once applied,
+  kept as a record of what changed and why.
 - **Accepted risks** — knowingly not fixing; recorded so nobody
   "discovers" them later and assumes they were missed.
 
@@ -234,12 +234,18 @@ out of scope for a first cut.
 
 ---
 
-## Design-doc amendments pending review
+## Design-doc amendments
 
-Changes [gage-cli-design.md](../tdds/gage-cli-design.md) needs. **None of
-these have been applied** — listed here for review first.
+Changes [gage-cli-design.md](../tdds/gage-cli-design.md) needs. `[x]`
+means applied to the design doc; entries are kept after application as a
+record of what changed and why.
 
-### `[ ]` A1 — Add a concurrency section
+**Applied 2026-08-30:** A1, A2, A3, A5, A7, A8, A9, A10, A11, A12.
+**Still open:** A4 and A6 — both are blocked on unresolved questions
+(Q-DEVICE-NAME and Q-GIT-AUTH respectively) and can't be written until
+those are answered.
+
+### `[x]` A1 — Add a concurrency section
 
 The design's "Trade-off vs. a shared agent" actively makes multi-process
 the normal case (a session in one pane, one-shot commands elsewhere).
@@ -250,7 +256,7 @@ doc needs a short section stating the advisory-lock model, what's held
 across what, and the contended-lock behavior. Decision already taken
 (primitive in M0, first used at M4); the doc just doesn't reflect it.
 
-### `[ ]` A2 — Resolve the `generate` title-vs-query contradiction
+### `[x]` A2 — Resolve the `generate` title-vs-query contradiction
 
 ["Addressing entries"](../tdds/gage-cli-design.md) lists `generate`
 among the query-taking commands; the command reference says
@@ -258,7 +264,7 @@ among the query-taking commands; the command reference says
 title — the query framing is most likely a leftover. Confirm and remove
 `generate` from the query-taking list.
 
-### `[ ]` A3 — State the scrypt sole-recipient invariant
+### `[x]` A3 — State the scrypt sole-recipient invariant
 
 age refuses to encrypt to a scrypt passphrase recipient combined with
 any other recipient. That's fine for the identity file as designed
@@ -270,7 +276,7 @@ storage" so nobody later tries to add a second recipient to
 
 Follows whatever Q-DEVICE-NAME resolves to.
 
-### `[ ]` A5 — Specify `format_version` enforcement
+### `[x]` A5 — Specify `format_version` enforcement
 
 The field appears in the example `.gage/config.toml` and nowhere else. A
 forward-compat marker that isn't enforced from v1 is worse than none —
@@ -281,20 +287,20 @@ an old binary will half-parse a v2 config. State that an unrecognized
 
 Follows whatever Q-GIT-AUTH resolves to.
 
-### `[ ]` A7 — Note that the metadata index is invalidated by sync
+### `[x]` A7 — Note that the metadata index is invalidated by sync
 
 The index is described as session-scoped and incrementally updated on
 insert/edit/rm. It doesn't mention that an auto fetch + fast-forward pull
 on unlock changes `entries/` underneath a live session. One sentence in
 "Addressing entries & the metadata index."
 
-### `[ ]` A8 — Fix the stale cross-reference
+### `[x]` A8 — Fix the stale cross-reference
 
 Not a design-doc issue — was in the plan, now fixed: the plan pointed at
 `../designs/gage-cli-design.md`, which moved to `../tdds/` in `c0ee608`.
 Recorded here only so the move is on the record.
 
-### `[ ]` A9 — State the bare-`gage` TTY carve-out
+### `[x]` A9 — State the bare-`gage` TTY carve-out
 
 Q-ROOT-CMD is resolved as "session on a TTY, help when stdin is piped."
 The design doc currently says only that running `gage` with no subcommand
@@ -302,7 +308,7 @@ drops you into the prompt, which read literally would make a piped bare
 `gage` a second, implicit spelling of `--stdin`. One sentence in "Session
 model."
 
-### `[ ]` A10 — Document the two help surfaces
+### `[x]` A10 — Document the two help surfaces
 
 The design doc mentions `help` exactly once, in the session-only command
 list, and never mentions `gage help`/`gage --help` at all. Given
@@ -312,7 +318,7 @@ what each covers, and that session-only commands never appear in the
 one-shot surface. Per Q-HELP-SURFACES: `gage help` ≡ `gage --help`,
 `help <command>` works in both, and both render from one registry.
 
-### `[ ]` A11 — Widen the session command list to the management commands
+### `[x]` A11 — Widen the session command list to the management commands
 
 ["Session-only commands"](../tdds/gage-cli-design.md) says "all entry
 commands (`show`, `ls`, `insert`, ...) work against the current session
@@ -321,7 +327,7 @@ Q-CMD-AVAILABILITY those are session-available too, and `init`/`clone`
 are the only one-shot-only commands. The doc should say so, since as
 written it reads like an exhaustive list.
 
-### `[ ]` A12 — `gage git` in the session command list is imprecise
+### `[x]` A12 — `gage git` in the session command list is imprecise
 
 The same list includes bare `git` among the commands that "work against
 the current session vault," but the only git-specific command is
