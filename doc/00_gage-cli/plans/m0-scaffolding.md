@@ -2,6 +2,8 @@
 
 [← plan index](index.md) · next: [M1 — Vault lifecycle & config](m1-vault-lifecycle.md)
 
+> **Recommended model: Sonnet.** Mechanical scaffolding — no design judgment left in it. **Run an Opus review pass over this milestone's tests before moving on:** the `vaultlock` serialization bullet is the archetypal vacuous test (goroutines instead of processes passes, and proves nothing, because `flock` semantics are per-file-descriptor).
+
 ## Goal
 
 Project setup, build tooling, CI, and the CLI/config skeleton — no crypto,

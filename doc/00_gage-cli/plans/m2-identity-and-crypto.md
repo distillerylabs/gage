@@ -2,6 +2,8 @@
 
 [← M1](m1-vault-lifecycle.md) · [plan index](index.md) · next: [M3 — Entry format](m3-entry-format.md)
 
+> **Recommended model: Opus** — the one milestone I'd not economize on. Crypto correctness plus `mlock`/`VirtualLock` and core-dump suppression across three platforms under build tags. Subtly wrong here is the worst outcome in the project, and it's the failure mode a passing test suite is least likely to catch. Worth an Opus review pass over the tests too.
+
 ## Goal
 
 The first milestone where any key material exists. Three things, in

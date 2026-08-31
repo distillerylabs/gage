@@ -2,6 +2,8 @@
 
 [← M3](m3-entry-format.md) · [plan index](index.md) · next: [M5 — Query resolution](m5-query-resolution.md)
 
+> **Recommended model: Sonnet.** Straightforward CRUD. The two judgment calls — commit-message confidentiality and commit author identity — are decisions to make before starting, not things to work out while coding.
+
 ## Goal
 
 `insert`, `cat`, `rm`, `ls` — the first end-to-end usable slice: store and

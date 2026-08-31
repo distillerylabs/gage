@@ -2,6 +2,8 @@
 
 [← M8b](m8b-sync-conflicts.md) · [plan index](index.md) · next: [M10 — Local trust cache](m10-trust-cache.md)
 
+> **Recommended model: Opus.** `--reencrypt` atomicity and the dirty-tree reset under lock. Crash-safety reasoning where the tests simulate the crash — so they only prove what you thought to simulate.
+
 ## Goal
 
 The first place multi-device/multi-recipient scenarios become testable —

@@ -2,6 +2,8 @@
 
 [← M2](m2-identity-and-crypto.md) · [plan index](index.md) · next: [M4 — CRUD (one-shot)](m4-crud.md)
 
+> **Recommended model: Sonnet.** Struct, YAML round-trip, file placement. M2 already proved the crypto this sits on.
+
 ## Goal
 
 The entry layer, at the library level, with no CLI verb wired up yet:

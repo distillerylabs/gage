@@ -2,6 +2,8 @@
 
 [← M6](m6-session-mode.md) · [plan index](index.md) · next: [M8a — Sync: transport & detection](m8a-sync-transport.md)
 
+> **Recommended model: Sonnet.** A pure caching layer — correctness doesn't change, and M5/M6's tests passing unmodified is the proof of that.
+
 ## Goal
 
 In-session decrypt-once cache for `ls`/`search`/`show` resolution, with

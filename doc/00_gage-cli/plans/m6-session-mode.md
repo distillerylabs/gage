@@ -2,6 +2,8 @@
 
 [← M5](m5-query-resolution.md) · [plan index](index.md) · next: [M7 — Metadata index](m7-metadata-index.md)
 
+> **Recommended model: Sonnet.** Borderline — switch to Opus if the idle-timeout clock seam or the readline integration turns awkward. The `Session` type itself is well-specified; the REPL wiring is where it could get fiddly.
+
 ## Goal
 
 The `Session` library type: holds one or more vaults' `Identity` values in

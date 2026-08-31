@@ -2,6 +2,8 @@
 
 [← M10](m10-trust-cache.md) · [plan index](index.md) · next: [M12 — Polish / output modes](m12-polish.md)
 
+> **Recommended model: Sonnet.** Small milestone. The deterministic two-vault lock ordering is the only real wrinkle, and it's called out as a decision up front.
+
 ## Goal
 
 `gage mv --to-vault` and `gage cp --to-vault`: decrypt an entry from the

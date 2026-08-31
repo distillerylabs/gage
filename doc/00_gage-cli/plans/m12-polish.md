@@ -2,6 +2,8 @@
 
 [← M11](m11-cross-vault-sharing.md) · [plan index](index.md)
 
+> **Recommended model: Sonnet.** Independent, individually deferrable items. The clipboard-clear semantics decision needs answering first, but that's a choice rather than a hard implementation.
+
 ## Goal
 
 The remaining output modes and conveniences. These items are independent

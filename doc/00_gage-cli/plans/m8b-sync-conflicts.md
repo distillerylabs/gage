@@ -2,6 +2,8 @@
 
 [← M8a](m8a-sync-transport.md) · [plan index](index.md) · next: [M9 — Identity & recipient management](m9-recipients.md)
 
+> **Recommended model: Opus.** Constructing a genuine two-parent merge commit through go-git, plus resolution logic where getting it wrong loses a secret. Four sub-decisions are still open in this doc and want judgment.
+
 ## Goal
 
 `gage sync`'s interactive resolution: for each genuinely conflicting

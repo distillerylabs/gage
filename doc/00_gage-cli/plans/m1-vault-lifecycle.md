@@ -2,6 +2,8 @@
 
 [← M0](m0-scaffolding.md) · [plan index](index.md) · next: [M2 — Identity & memory protection](m2-identity-and-crypto.md)
 
+> **Recommended model: Sonnet.** Config schemas, validation, and vault CRUD. Every decision here is already recorded — including the device-name validation rule, which is the one security-relevant bullet and is spelled out explicitly.
+
 ## Goal
 
 A vault's on-disk structure and the global vault registry — **with no

@@ -2,6 +2,8 @@
 
 [← M4](m4-crud.md) · [plan index](index.md) · next: [M6 — Session mode](m6-session-mode.md)
 
+> **Recommended model: Sonnet.** Resolver plus the `$EDITOR` scratch-file helper. Mechanical, though the scratch-file cleanup-on-every-exit-path bullet deserves care.
+
 ## Goal
 
 Upgrade addressing from "exact UUID/title" to the full resolution order

@@ -23,22 +23,45 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ## Milestones
 
-| # | Milestone | Status | Theme |
-|---|---|---|---|
-| M0 | [Scaffolding](m0-scaffolding.md) | `[ ]` | Toolchain, layout, CI, primitives — no crypto, no vaults |
-| M1 | [Vault lifecycle & config](m1-vault-lifecycle.md) | `[ ]` | On-disk vault structure and the vault registry — still no crypto |
-| M2 | [Identity & memory protection](m2-identity-and-crypto.md) | `[ ]` | age primitives, identity generation, `Unlock`/`Close`, page-locking |
-| M3 | [Entry format](m3-entry-format.md) | `[ ]` | Entry YAML + per-entry encrypt/decrypt round-trip |
-| M4 | [CRUD (one-shot)](m4-crud.md) | `[ ]` | `insert`/`cat`/`rm`/`ls`, commit-per-write |
-| M5 | [Query resolution](m5-query-resolution.md) | `[ ]` | prefix/exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
-| M6 | [Session mode](m6-session-mode.md) | `[ ]` | `Session` type, REPL, multi-vault, idle timeout |
-| M7 | [Metadata index](m7-metadata-index.md) | `[ ]` | Decrypt-once cache, `search`/`grep`, `reindex` |
-| M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[ ]` | Auth, auto fetch/pull/push, `clone`, divergence detection |
-| M8b | [Sync: conflict resolution](m8b-sync-conflicts.md) | `[ ]` | `gage sync` — keep local/remote/both, merge commit |
-| M9 | [Identity & recipient management](m9-recipients.md) | `[ ]` | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
-| M10 | [Local trust cache](m10-trust-cache.md) | `[ ]` | `known-config.toml`, recipient-change detection |
-| M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[ ]` | `mv`/`cp --to-vault` |
-| M12 | [Polish / output modes](m12-polish.md) | `[ ]` | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
+| # | Milestone | Status | Model | Theme |
+|---|---|---|---|---|
+| M0 | [Scaffolding](m0-scaffolding.md) | `[ ]` | Sonnet ⚑ | Toolchain, layout, CI, primitives — no crypto, no vaults |
+| M1 | [Vault lifecycle & config](m1-vault-lifecycle.md) | `[ ]` | Sonnet | On-disk vault structure and the vault registry — still no crypto |
+| M2 | [Identity & memory protection](m2-identity-and-crypto.md) | `[ ]` | **Opus** ⚑ | age primitives, identity generation, `Unlock`/`Close`, page-locking |
+| M3 | [Entry format](m3-entry-format.md) | `[ ]` | Sonnet | Entry YAML + per-entry encrypt/decrypt round-trip |
+| M4 | [CRUD (one-shot)](m4-crud.md) | `[ ]` | Sonnet | `insert`/`cat`/`rm`/`ls`, commit-per-write |
+| M5 | [Query resolution](m5-query-resolution.md) | `[ ]` | Sonnet | prefix/exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
+| M6 | [Session mode](m6-session-mode.md) | `[ ]` | Sonnet* | `Session` type, REPL, multi-vault, idle timeout |
+| M7 | [Metadata index](m7-metadata-index.md) | `[ ]` | Sonnet | Decrypt-once cache, `search`/`grep`, `reindex` |
+| M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[ ]` | **Opus** | Auth, auto fetch/pull/push, `clone`, divergence detection |
+| M8b | [Sync: conflict resolution](m8b-sync-conflicts.md) | `[ ]` | **Opus** | `gage sync` — keep local/remote/both, merge commit |
+| M9 | [Identity & recipient management](m9-recipients.md) | `[ ]` | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
+| M10 | [Local trust cache](m10-trust-cache.md) | `[ ]` | Sonnet* | `known-config.toml`, recipient-change detection |
+| M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[ ]` | Sonnet | `mv`/`cp --to-vault` |
+| M12 | [Polish / output modes](m12-polish.md) | `[ ]` | Sonnet | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
+
+**Model column.** `⚑` marks a milestone worth an Opus review pass over
+its *tests* before moving on, even where Sonnet wrote them. `*` marks a
+borderline call — start on Sonnet, switch if it turns awkward. Each phase
+doc carries the same recommendation with its reasoning, so you don't have
+to come back here.
+
+The split works because most of this plan is now specification rather
+than design: the decisions are made and written down, which is exactly
+what lets a cheaper model execute faithfully. Opus is reserved for the
+four milestones where the work is genuine problem-solving (go-git's thin
+merge surface) or where being subtly wrong is unrecoverable (crypto,
+crash-safety).
+
+**Switch at milestone boundaries, not within them.** The plan's test
+convention is task-level TDD — write a task's tests, implement it, move
+on — so there's no clean tests-then-implementation seam to switch models
+at mid-milestone. Pick one model per milestone and let it work.
+
+**The failure mode to watch** isn't wrong code, it's quiet scope
+narrowing: 18 of 24 test bullets implemented and the milestone reported
+done. Check the list off against the doc rather than against the summary,
+whichever model wrote it.
 
 ### Dependency graph
 

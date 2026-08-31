@@ -2,6 +2,8 @@
 
 [← M7](m7-metadata-index.md) · [plan index](index.md) · next: [M8b — Sync: conflict resolution](m8b-sync-conflicts.md)
 
+> **Recommended model: Opus.** go-git's fetch/push/merge surface is thin on documentation, and divergence classification is real problem-solving rather than transcription. The `.gitattributes` test is security-relevant.
+
 ## Goal
 
 Auto fetch + fast-forward-only pull on every vault unlock, auto push after

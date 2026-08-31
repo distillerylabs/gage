@@ -2,6 +2,8 @@
 
 [← M9](m9-recipients.md) · [plan index](index.md) · next: [M11 — Cross-vault sharing](m11-cross-vault-sharing.md)
 
+> **Recommended model: Sonnet.** Borderline. The two-outcome cache-regeneration rule is subtle but fully specified; the hook placement (encrypt methods, `Unlock`, and `sync` separately) is the part to get right.
+
 ## Goal
 
 Detect unreviewed recipient changes and surface them as a plaintext diff
