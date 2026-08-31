@@ -82,39 +82,75 @@ of it.
 
 ---
 
-### `[ ]` Q-HELP-SURFACES — Are `gage help` and in-session `help` the same thing?
+### `[x]` Q-HELP-SURFACES — Are `gage help` and in-session `help` the same thing?
 
-**Blocks:** M0 (CLI help), M6 (REPL help). **Raised by:** Q-ROOT-CMD.
+**Resolved 2026-08-30.** Two surfaces, one source of truth.
 
-They cannot be the same text, and until now nothing said so:
+They cannot be the same text: `gage --help` must not list
+`use`/`lock`/`status`/`exit` (they don't exist outside a session, and
+listing them sends an operator down a path that can't work), while
+in-session `help` must list exactly those. The entry commands overlap,
+and that overlap is where two hand-maintained lists would silently drift
+as commands land across M4, M5, M7, M8, and M12.
 
-- `gage --help` / `gage help` list **top-level subcommands**, which must
-  *not* include `use`/`lock`/`status`/`exit` — those exist only inside a
-  session.
-- In-session `help` must list exactly those session-only commands, and
-  must present vault selection as the bare `use <vault>` command rather
-  than the `-u|--use NAME` flag.
-- The **entry commands overlap**, and that overlap is where the two
-  surfaces will silently drift apart as commands are added across M4,
-  M5, M7, M8, and M12.
+**The answers:**
 
-Decisions needed:
+1. **`gage help` is supported and equivalent to `gage --help`.** It's
+   what every operator tries first. Both are tested, including
+   `gage help <subcommand>`.
+2. **In-session `help <command>` mirrors `gage help <subcommand>`.** The
+   registry makes it nearly free, and asymmetry there is its own small
+   surprise.
+3. **Both surfaces render from one command registry** — name, aliases,
+   short description, group, and availability. Adding a command updates
+   both help surfaces or neither. A test compares the rendered sets
+   rather than eyeballing two lists.
+4. **`-u|--use` appears in per-command help** (`help show` lists it),
+   **not in top-level session help**, which leads with bare
+   `use <vault>`. The flag genuinely works ad hoc inside a session — the
+   design doc says so — so hiding it entirely would hide something
+   functional; leading with it would bury the primary spelling.
 
-1. Is `gage help` (subcommand form) a supported spelling alongside
-   `gage --help`? Cobra provides it for free; the question is whether
-   it's tested and kept, or explicitly disabled.
-2. Does `gage help <subcommand>` work, and does in-session
-   `help <command>` mirror it?
-3. **How do the two surfaces stay in sync?** Recommendation: derive both
-   from one registry of command metadata, tagged with where each command
-   is available (one-shot, session, or both), so adding a command
-   updates both help surfaces or neither. The alternative — two
-   hand-maintained lists — is a guaranteed drift.
-4. Does in-session `help` list the one-shot-only flags (`-u|--use`) at
-   all, given they still work ad hoc inside a session?
+**Registry placement: `cmd/gage`, not `internal/gage`.** Command names
+are CLI vocabulary — a GUI/TUI calls library methods directly and never
+needs a command table. Putting it in the library would also collide with
+M0's no-terminal-I/O lint rule. Worth stating because it's a reasonable
+thing to get backwards.
 
-Recommendation on (1): keep `gage help`, test it, and treat it as
-equivalent to `gage --help`. It's what every operator will try first.
+**Registry shape:** name, aliases (`search`/`grep`, `status`/`whoami`,
+`exit`/`quit`), short description, group (mirroring the design doc's own
+command-reference sections rather than a flat 25-item list), and
+availability.
+
+**Availability tagging** (see Q-CMD-AVAILABILITY below):
+
+| Availability | Commands |
+|---|---|
+| session-only | `use`, `lock`, `status`/`whoami`, `exit`/`quit`, `help` |
+| both | `show`, `cat`, `ls`, `insert`, `edit`, `rename`, `generate`, `rm`, `mv`, `cp`, `search`/`grep`, `reindex`, `sync`, `pull`, `push`, `log`, `history`, `vault list/info/remove/set-default`, `identity add/list`, `recipient add/remove/list/verify`, `git set-remote` |
+| one-shot only | `init`, `clone` |
+
+---
+
+### `[x]` Q-CMD-AVAILABILITY — Which management commands work in-session?
+
+**Resolved 2026-08-30.** Everything except `init` and `clone`.
+
+The design doc lists "all entry commands" plus sync/git/log/history as
+session-available and is silent on the management commands, but the
+registry needs every command tagged. Management commands (`vault`,
+`identity`, `recipient`, `git set-remote`) work in-session: `recipient
+add` right after being unlocked is exactly when you'd want it, and
+forcing an exit for it would be a poor edge.
+
+`init` and `clone` stay one-shot because they create a vault rather than
+operating on the current one, which leaves an unanswered question about
+whether the new vault becomes the session's current vault. Widening this
+later is additive; narrowing it would be breaking — so the conservative
+side is the right one to start on.
+
+Needs a design-doc amendment (A11 below), since the doc's session command
+list is currently entry-commands-only.
 
 ---
 
@@ -273,7 +309,26 @@ list, and never mentions `gage help`/`gage --help` at all. Given
 Q-ROOT-CMD makes bare `gage` a session rather than a help dump, the
 command reference should state plainly that there are two help surfaces,
 what each covers, and that session-only commands never appear in the
-one-shot surface. Follows whatever Q-HELP-SURFACES resolves to.
+one-shot surface. Per Q-HELP-SURFACES: `gage help` ≡ `gage --help`,
+`help <command>` works in both, and both render from one registry.
+
+### `[ ]` A11 — Widen the session command list to the management commands
+
+["Session-only commands"](../tdds/gage-cli-design.md) says "all entry
+commands (`show`, `ls`, `insert`, ...) work against the current session
+vault" and doesn't mention `vault`/`identity`/`recipient` at all. Per
+Q-CMD-AVAILABILITY those are session-available too, and `init`/`clone`
+are the only one-shot-only commands. The doc should say so, since as
+written it reads like an exhaustive list.
+
+### `[ ]` A12 — `gage git` in the session command list is imprecise
+
+The same list includes bare `git` among the commands that "work against
+the current session vault," but the only git-specific command is
+`gage git set-remote <name> <url>`, which takes an explicit vault name
+and so isn't scoped to the session's current vault at all. Minor, but
+it's the kind of thing that produces a wrong help entry — worth
+correcting when A11 is applied.
 
 ---
 

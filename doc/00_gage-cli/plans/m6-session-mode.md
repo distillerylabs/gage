@@ -43,12 +43,17 @@ decrypt-on-demand per command.
   enters the session prompt, piped stdin prints help. Wired in M0;
   confirm that dispatch actually reaches the REPL now that the REPL
   exists.
-- **[Q-HELP-SURFACES](open-questions.md)** — in-session `help` renders
-  from M0's command registry, filtered to what's available in a session.
-  Decide whether `help <command>` is supported in-session, and whether
-  the one-shot-only `-u|--use` flag is shown at all (it still works ad
-  hoc inside a session, so hiding it entirely is a choice, not an
-  oversight).
+- **[Q-HELP-SURFACES](open-questions.md)** — resolved: in-session `help`
+  renders from M0's command registry filtered to session availability;
+  `help <command>` is supported, mirroring `gage help <subcommand>`;
+  `-u|--use` appears in per-command help but not in top-level session
+  help, which leads with bare `use <vault>`. Nothing left to decide here
+  — just don't hand-maintain a second list.
+- **[Q-CMD-AVAILABILITY](open-questions.md)** — resolved: everything
+  except `init` and `clone` works in-session, including the `vault`,
+  `identity`, and `recipient` families. Those commands land in M1, M9,
+  and M9 respectively, so M6 only needs the registry filter to be
+  correct; the commands themselves tag in as they arrive.
 - **Readline implementation.** History, line editing, and Ctrl-C/Ctrl-D
   handling in the REPL. Not in the locked dependency list; needs one
   (`chzyer/readline`, `peterh/liner`, or hand-rolled over `x/term`).
@@ -103,14 +108,25 @@ decrypt-on-demand per command.
 - [ ] Bare `gage` on a TTY reaches the REPL — the M0 dispatch decision,
       re-asserted end-to-end now that there's a session to reach
 - [ ] In-session `help` lists the session-only commands
-      (`use`/`lock`/`status`/`exit`) *and* the entry commands available
-      in a session
+      (`use`/`lock`/`status`/`exit`/`help`) *and* every command the
+      registry marks session-available — entry commands and the
+      `vault`/`identity`/`recipient` families alike
 - [ ] In-session `help` and `gage --help` derive from the same command
       registry: a command registered as available in both modes appears
       in both surfaces with the same description, asserted by comparing
       the rendered sets rather than by eyeballing two hand-written lists
 - [ ] No command available in a session is missing from in-session
       `help`, and no session-only command leaks into `gage --help`
+- [ ] `init` and `clone` do not appear in in-session `help`, and
+      invoking either inside a session reports plainly that it's a
+      one-shot command rather than failing obscurely
+- [ ] `help <command>` in-session prints that command's usage, mirroring
+      `gage help <subcommand>`; `help <unknown>` reports usage without
+      terminating the session
+- [ ] Top-level in-session `help` presents vault selection as bare
+      `use <vault>`, not as `-u|--use NAME`
+- [ ] `help show` (per-command) *does* list `-u|--use`, which still works
+      ad hoc inside a session
 - [ ] An unknown REPL command reports usage and does not terminate the
       session, and points at `help`
 - [ ] The full M6 test suite passes unmodified on Windows, not just
@@ -128,8 +144,15 @@ decrypt-on-demand per command.
       (`use`/`lock`/`status`/`exit`/`help`), including rendering an
       ambiguous-query candidate list as the `[1-2]` prompt shown in the
       design doc — the one place this wiring is more than plain dispatch
-- [ ] In-session `help`, rendered from M0's command registry filtered to
-      session availability — not a second hand-maintained list
+- [ ] In-session `help` and `help <command>`, rendered from M0's command
+      registry filtered to session availability — not a second
+      hand-maintained list
+- [ ] Session dispatch rejects the one-shot-only commands (`init`,
+      `clone`) with a clear "one-shot only" message rather than an
+      unknown-command error
+- [ ] Session dispatch routes the `vault`/`identity`/`recipient`
+      families the same as entry commands, against the session's current
+      vault (Q-CMD-AVAILABILITY)
 - [ ] Prompt template rendering (`{vault}`, `{lock}`, `{dirty}`) from
       `[shell].prompt`
 - [ ] History file handling: `[shell].history_file`, `0600`, command

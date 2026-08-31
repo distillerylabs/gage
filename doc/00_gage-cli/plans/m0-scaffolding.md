@@ -29,12 +29,6 @@ Nothing.
 
 ## Decisions to make first
 
-- **[Q-HELP-SURFACES](open-questions.md)** — `gage --help`/`gage help`
-  and in-session `help` are two different surfaces that share the entry
-  commands. Decide how they stay in sync (recommendation: one command
-  registry tagged by availability, so both derive from it) before writing
-  either, since retrofitting a registry after two hand-maintained lists
-  exist is the expensive order.
 - **Exit-code taxonomy.** The design specifies codes ad hoc (`recipient
   verify` exits 0/1; an ambiguous query fails nonzero). Define the full
   set centrally now — success, usage error, not-found, ambiguous,
@@ -58,11 +52,30 @@ Nothing.
 - [ ] `gage help <subcommand>` prints that subcommand's usage and exits 0;
       `gage help <unknown>` fails with the usage exit code
 - [ ] Neither help spelling lists the session-only commands
-      (`use`/`lock`/`status`/`exit`) as top-level subcommands — they don't
-      exist outside a session, and listing them would send an operator
-      down a path that can't work
-- [ ] Every registered top-level subcommand appears in `gage --help` with
-      a non-empty short description — no command ships undocumented
+      (`use`/`lock`/`status`/`exit`/`help`) as top-level subcommands —
+      they don't exist outside a session, and listing them would send an
+      operator down a path that can't work
+- [ ] Every command in the registry marked available in one-shot mode
+      appears in `gage --help`, and nothing else does — asserted by
+      comparing the rendered set against the registry, not against a
+      hardcoded list
+- [ ] Every registered command has a non-empty short description and a
+      group — no command ships undocumented or ungrouped
+- [ ] Help output is grouped (vault lifecycle, identity, recipients,
+      entry CRUD, sync, git-specific), mirroring the design doc's own
+      command-reference sections rather than one flat list
+- [ ] A command's aliases (`search`/`grep`, `status`/`whoami`,
+      `exit`/`quit`) resolve to the same command and are shown alongside
+      the canonical name rather than as separate entries
+- [ ] The registry lives in `cmd/gage`: the M0 library-purity lint
+      passes, i.e. no command-name metadata leaked into `internal/gage`
+- [ ] **Registry completeness is enforced structurally**: a test walks
+      the Cobra command tree and fails if any registered Cobra command is
+      absent from the registry, or any registry entry has no
+      corresponding command. This is what keeps every later milestone
+      honest without needing a "remember to register" reminder in eight
+      other files — a command added in M9 that skips the registry fails
+      M0's test, immediately
 - [ ] `gage --version` prints a version string including the build's
       commit and, on a tagged build, the tag
 - [ ] Bare `gage` with a TTY on stdin enters session mode rather than
@@ -117,11 +130,26 @@ Nothing.
       build metadata injected at link time. Bare `gage` dispatches to
       session mode on a TTY and to help otherwise (Q-ROOT-CMD) — the
       session handler itself is a stub until M6
-- [ ] Command registry: one place recording each command's name, short
-      description, and where it's available (one-shot, session, or both).
-      `gage --help`/`gage help` and M6's in-session `help` both render
-      from it, so a command added later can't appear in one surface and
-      not the other (Q-HELP-SURFACES)
+- [ ] **Command registry** in `cmd/gage` (not `internal/gage` — command
+      names are CLI vocabulary; a GUI calls library methods directly and
+      never needs a command table). Each entry records:
+      - name and aliases (`search`/`grep`, `status`/`whoami`, `exit`/`quit`)
+      - short description
+      - group, mirroring the design doc's command-reference sections
+      - **availability**: session-only, both, or one-shot-only
+
+      `gage --help`/`gage help` render the one-shot-visible set; M6's
+      in-session `help` renders the session-visible set. A command added
+      in any later milestone registers here or it's invisible to one
+      surface or both (Q-HELP-SURFACES, Q-CMD-AVAILABILITY)
+- [ ] `gage help` and `gage help <subcommand>` wired as equivalents to
+      `gage --help` / `<subcommand> --help`
+- [ ] Availability tagging for the commands that exist by the end of M0
+      (`help`, `version`); later milestones tag their own as they land.
+      The settled full table is in
+      [open-questions.md](open-questions.md) — `init` and `clone` are
+      the only one-shot-only commands; `use`/`lock`/`status`/`exit`/`help`
+      the only session-only ones; everything else is available in both
 - [ ] Exit-code taxonomy as a single library-side enum, rendered to
       process exit codes by `cmd/gage` (the library itself never calls
       `os.Exit`)
