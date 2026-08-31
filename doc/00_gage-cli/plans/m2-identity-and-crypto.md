@@ -166,7 +166,7 @@ purely additive (a recovery key alongside the device's own).
       `memlock` package — the real `memlock`-backed implementation in
       production and in every realistic test, a fake returning a
       deterministic failure in the one page-lock-failure test; the same
-      injectable-seam pattern M8 uses for `RemoteSyncer`
+      injectable-seam pattern M8a uses for `RemoteSyncer`
 - [ ] `Identity.Close()`: releases the page lock and zeroes the private
       key, cross-platform, via the same `memlock` package; idempotent
 - [ ] Process-wide core dump disabling at `cmd/gage` startup:
@@ -192,5 +192,5 @@ decrypt something encrypted to it — but there are still no entries.
   what M4's one-shot handler and M6's `Lock`/idle-timeout both invoke.
   Nothing after this milestone adds new memory-protection mechanics —
   M6 only changes how long an already-protected `Identity` survives.
-- Typed unlock errors are what M8's `clone` uses to say "this device
+- Typed unlock errors are what M8a's `clone` uses to say "this device
   isn't a recipient yet" plainly.

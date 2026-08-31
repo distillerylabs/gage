@@ -24,7 +24,7 @@ whole recovery story (`recovery-paper-key`) depends on.
 
 One vault type only (`git` — the only type that exists) and one method
 only (`passphrase`), both validated against single-element allowlists so
-a second value is additive later. Defer `clone` to M8, once a
+a second value is additive later. Defer `clone` to M8a, once a
 bare-remote test harness exists to clone *from*.
 
 ## Depends on
@@ -53,12 +53,17 @@ bare-remote test harness exists to clone *from*.
 ## Tests (write first)
 
 - [ ] `gage init <name> --recipient <pubkey>` creates `.gage/config.toml`,
-      `.age-recipients`, `entries/`, `.gitignore`, and a git repo with
-      exactly one commit
+      `.age-recipients`, `entries/`, `.gitignore`, `.gitattributes`, and
+      a git repo with exactly one commit
 - [ ] Without `--dir`, the vault is created at `$GAGE_DATA/vaults/<name>`
       and registered under exactly that path in global config
 - [ ] With `--dir PATH`, the vault is created at `PATH` and registered
       under it
+- [ ] `gage init` writes a `.gitattributes` marking `.age-recipients` and
+      `.gage/config.toml` as `-merge`, so a later divergence on either is
+      forced to a conflict instead of being line-merged into a recipient
+      list neither device wrote (Q-SYNC-CONFLICT; the merge behavior
+      itself is tested in M8a)
 - [ ] The generated `.gitignore` contains the standard OS-cruft patterns
       (`.DS_Store`, `Thumbs.db`) and nothing `gage`-state-specific —
       there's nothing else to ignore, since the trust cache and identity
@@ -145,9 +150,11 @@ bare-remote test harness exists to clone *from*.
 ## Implementation
 
 - [ ] `Vault.Create(spec)` in the library: writes the full on-disk
-      skeleton given a name, type, method, path, and a list of recipient
-      public keys as strings; go-git `PlainInit` + initial commit. Takes
-      no identity and performs no encryption
+      skeleton — including `.gitattributes` marking the two
+      recipient-defining files unmergeable — given a name, type, method,
+      path, and a list of recipient public keys as strings; go-git
+      `PlainInit` + initial commit. Takes no identity and performs no
+      encryption
 - [ ] `gage init <name> [--dir PATH] [--type git] [--method passphrase]
       [--recipient PUBKEY ...] [--remote URL]` as a thin wiring layer
       over `Vault.Create`. `--type` and `--method` get identical

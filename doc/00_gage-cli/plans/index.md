@@ -33,7 +33,8 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | M5 | [Query resolution](m5-query-resolution.md) | `[ ]` | prefix/exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
 | M6 | [Session mode](m6-session-mode.md) | `[ ]` | `Session` type, REPL, multi-vault, idle timeout |
 | M7 | [Metadata index](m7-metadata-index.md) | `[ ]` | Decrypt-once cache, `search`/`grep`, `reindex` |
-| M8 | [Sync (+ `clone`)](m8-sync.md) | `[ ]` | Auto fetch/pull/push, divergence, `gage sync`, `gage clone` |
+| M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[ ]` | Auth, auto fetch/pull/push, `clone`, divergence detection |
+| M8b | [Sync: conflict resolution](m8b-sync-conflicts.md) | `[ ]` | `gage sync` — keep local/remote/both, merge commit |
 | M9 | [Identity & recipient management](m9-recipients.md) | `[ ]` | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
 | M10 | [Local trust cache](m10-trust-cache.md) | `[ ]` | `known-config.toml`, recipient-change detection |
 | M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[ ]` | `mv`/`cp --to-vault` |
@@ -42,7 +43,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ### Dependency graph
 
 ```
-M0 ─┬─> M1 ──> M2 ──> M3 ──> M4 ─┬─> M5 ──> M6 ──> M7 ──> M8
+M0 ─┬─> M1 ──> M2 ──> M3 ──> M4 ─┬─> M5 ──> M6 ──> M7 ──> M8a ──> M8b
     │                            │                        │
     │                            └────────────────────────┴──> M9 ──> M10 ──> M11
     │                                                                          │
@@ -104,7 +105,7 @@ the milestone that introduces it.
 | [spf13/cobra](https://github.com/spf13/cobra) | Command structure/dispatch, both invocation modes | M0 |
 | [pelletier/go-toml](https://github.com/pelletier/go-toml) v2 | All TOML read/write — global and per-vault config. TOML 1.0 compliant, struct-tag driven, no CGo | M0 |
 | [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) (`unix`, `windows`) | The `memlock` and `vaultlock` packages — `mlock`/`flock` vs `VirtualLock`/`LockFileEx` behind one signature | M0 (`vaultlock`), M2 (`memlock`) |
-| [go-git/go-git](https://github.com/go-git/go-git) | All git operations — native Go, no shelling out | M1 (`init`), M8 (sync) |
+| [go-git/go-git](https://github.com/go-git/go-git) | All git operations — native Go, no shelling out | M1 (`init`), M8a (sync) |
 | [golang.org/x/term](https://pkg.go.dev/golang.org/x/term) | Masked terminal input, cross-platform | M2 (passphrase prompt) |
 | [creack/pty](https://github.com/creack/pty) | **Test-only.** Drives the real `x/term` prompter through a pseudoterminal in the handful of tests that need it | M2 |
 | [FiloSottile/age](https://github.com/FiloSottile/age) | All encryption/decryption; the format `.age-recipients` interop depends on | M2 |
@@ -158,15 +159,15 @@ that can be written in-process should be.
 
 **No network.** `make test` runs with no network access and no
 pre-existing keys. Remote git behavior is tested against ephemeral local
-bare repos via the `gittest` helper package (M0, extended in M8), which
+bare repos via the `gittest` helper package (M0, extended in M8a), which
 exercises go-git's real code paths without a socket. The one exception is
 "network unreachable," which is tested by injecting a fake `RemoteSyncer`
-(M8) rather than depending on a real timeout.
+(M8a) rather than depending on a real timeout.
 
 **Injectable seams.** Where a failure mode can't be produced honestly in
 a test, the library calls through a narrow interface and the test injects
 a fake: `Locker` for page-lock failure (M2), `RemoteSyncer` for network
-unreachability (M8), `Prompter` for every human decision. The real
+unreachability (M8a), `Prompter` for every human decision. The real
 implementation is used in production *and in every realistic test*; fakes
 are for the specific failure being proven, not a general substitute.
 
@@ -192,16 +193,17 @@ this class of coupling easy to lose.
 | M0 | Atomic TOML write (temp + rename) | Global config, `.gage/config.toml`, `known-config.toml` (M10) |
 | M0 | Exit-code taxonomy | Every command; M9's `verify` 0/1 contract |
 | M0 | Command registry in `cmd/gage` — name, aliases, description, group, and one-shot/session/both availability | `gage --help`/`gage help` render the one-shot set; M6's in-session `help` renders the session set. **Every milestone that adds a command must register it**, enforced by M0's registry-completeness test rather than by convention |
-| M0 | `gittest.NewBareRemote` | M1's `set-remote` tests; M8's full sync harness |
+| M0 | `gittest.NewBareRemote` | M1's `set-remote` tests; M8a's full sync harness |
 | M1 | `.gage/config.toml` schema incl. `format_version`, and rejection of unknown versions | Every later reader of that file |
 | M1 | Global config schema, incl. the per-vault `device` and `method` fields | M2 populates both; M4's `updated_by` reads `device`; `Unlock` dispatches on `method` |
+| M1 | `.gitattributes` marking `.age-recipients`/`config.toml` `-merge` | M8a — without it, two devices each adding a recipient merge into a union neither wrote, invisibly to M10's trust cache |
 | M1 | Device-name normalization **and validation** — names reach the filesystem as path components and arrive from a committed file any git-writer can edit | M2 (identity file paths), M9 (`identity add`) |
 | M2 | `Identity.Close()` releases the page lock and zeroes key material | M4's one-shot handler; M6's `Lock` and idle timeout |
 | M2 | Thin age encrypt-to-recipients / decrypt-with-identity wrapper (bytes in, bytes out) | M3's entry layer; M9's `--reencrypt`; M11's cross-vault encrypt |
-| M4 | Commit-per-write, under the vault lock | M8's auto-push; M9's single-commit `--reencrypt` |
+| M4 | Commit-per-write, under the vault lock | M8a's auto-push; M9's single-commit `--reencrypt` |
 | M5 | Resolver returns a resolved entry *or* a candidate list, as a value | M6 prompts with it; one-shot fails with it |
 | M6 | `Session` owns all "how long does this stay unlocked" bookkeeping | M7's index lives there too |
-| M7 | Session-scoped metadata index | **M8 must invalidate/rebuild it after a successful pull**; M11 must update both vaults' indexes |
+| M7 | Session-scoped metadata index | **M8a must invalidate/rebuild it after a successful pull**; M8b after each resolution; M11 must update both vaults' indexes |
 | M9 | Recipient list changes touch `.age-recipients` and `config.toml` together, in one commit | M10 diffs exactly that pair |
 | M10 | `RecipientChangeWarning` typed value + cache regeneration rules | M11 runs the check against the *destination* vault |
 
@@ -222,7 +224,7 @@ this class of coupling easy to lose.
 - **Signed recipient changes** — design doc calls this out as "reserve
   for high-stakes repos," not a default.
 - **`gage clone` against a real, external remote** — the command itself
-  is implemented and tested against a `gittest` bare remote in M8; an
+  is implemented and tested against a `gittest` bare remote in M8a; an
   actual GitHub/self-hosted URL is only really exercisable manually.
 - **A GUI and/or TUI frontend.** The library/CLI split is *not* deferred
   — it's built in from M0 — but actually writing a second frontend is.

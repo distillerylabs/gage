@@ -174,7 +174,7 @@ being the unmodified suite. Both invocation modes work and share every
 
 - **M7's metadata index lives on `Session`**, keyed alongside each
   vault's cached `Identity` — never on `Vault`.
-- M8's auto fetch+pull hooks `Vault.Unlock`, which both `Session.Use` and
+- M8a's auto fetch+pull hooks `Vault.Unlock`, which both `Session.Use` and
   the one-shot handler call — so the hook must not be wired into the
   `use` REPL command specifically.
 - M10's opportunistic trust-cache warning rides the same unlock hook.

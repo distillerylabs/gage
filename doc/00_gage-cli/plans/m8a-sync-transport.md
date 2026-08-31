@@ -1,12 +1,14 @@
-# M8 — Sync (+ `clone`)
+# M8a — Sync: transport & divergence detection
 
-[← M7](m7-metadata-index.md) · [plan index](index.md) · next: [M9 — Identity & recipient management](m9-recipients.md)
+[← M7](m7-metadata-index.md) · [plan index](index.md) · next: [M8b — Sync: conflict resolution](m8b-sync-conflicts.md)
 
 ## Goal
 
 Auto fetch + fast-forward-only pull on every vault unlock, auto push after
-writes, divergence detection, and `gage sync` for the one case that never
-auto-resolves. These commands stay vault-generic in the CLI
+writes, remote authentication, `gage clone`, and divergence **detection**.
+Resolving a conflict is M8b's job; this milestone's contract is that
+divergence is noticed, classified, and reported — never silently merged.
+These commands stay vault-generic in the CLI
 (`sync`/`pull`/`push`), even though they're entirely git-implemented
 today. (`gage git set-remote` — the one git-*specific* command — was
 already implemented back in M1; there's no generic `gage git --
@@ -36,17 +38,6 @@ test harness this milestone already builds for divergence testing.
 
 ## Decisions to make first
 
-- **[Q-SYNC-CONFLICT](open-questions.md) — blocks this milestone.**
-  "Surfaces both versions and requires an explicit choice" is the entire
-  specification today. What the choices are, what history results, which
-  paths unlock, and whether same-title-different-UUID counts as a
-  conflict are all unanswered. This is the second-riskiest piece in the
-  build after crypto and likely wants its own design-doc subsection.
-- **Whether this milestone splits.** If Q-SYNC-CONFLICT resolves into
-  something substantial, split into M8a (fetch/pull/push/clone happy
-  path, divergence *detection*) and M8b (conflict *resolution*) — the
-  same isolation logic that separates crypto and the trust cache into
-  their own milestones.
 - **Push failure vs. divergence.** A failed push because the remote
   diverged is a different user-facing situation from a failed push
   because the network is down. Both leave the local commit intact;
@@ -107,12 +98,21 @@ offline-handling logic runs.
 - [ ] `gittest`'s second-clone helper pushes an independent commit to a
       shared bare remote, producing real divergence when the vault under
       test also has an unpushed local commit
-- [ ] `gage sync` surfaces both versions of a conflicting entry and
-      requires an explicit choice before proceeding
-- [ ] Conflict resolution behaves per Q-SYNC-CONFLICT (tests written once
-      that resolves — placeholder until then)
 - [ ] A divergence with no *entry-level* conflict (both sides touched
-      different entries) resolves without prompting
+      different entries) merges cleanly and pushes, with no prompt and no
+      unlock — git handles separate files on its own
+- [ ] A divergence that *does* conflict on an entry is detected, reported,
+      and left unresolved with a pointer to `gage sync` — M8a never
+      resolves, it only detects
+- [ ] **`.age-recipients` diverging on both sides produces a conflict
+      rather than a silent union.** Two devices each adding a different
+      recipient add two different lines, which git would merge cleanly
+      without `.gitattributes` — and the merged list is one neither
+      device wrote, with no unreviewed change for M10's trust cache to
+      catch. This is the security-relevant test of the milestone
+- [ ] The same holds for `.gage/config.toml`
+- [ ] `gage init` writes the `.gitattributes` marking both files `-merge`
+      (M1 wrote the file; this asserts it actually prevents the merge)
 
 **Authentication**
 
@@ -189,9 +189,11 @@ offline-handling logic runs.
       happens rather than in each caller
 - [ ] Auto push after writes (go-git `Push`), under the same vault lock
       the write holds
-- [ ] Divergence detection, with distinct reporting from offline failure
-- [ ] `gage sync` (conflict surfacing, both versions shown), per
-      Q-SYNC-CONFLICT
+- [ ] Divergence detection, with distinct reporting from offline failure.
+      Classify what diverged — disjoint entries (merge and continue),
+      conflicting entry (report, point at `gage sync`), recipient files
+      (report as the more severe case) — since M8b's resolution consumes
+      that classification
 - [ ] Manual `pull`/`push` via go-git (both already implemented purely in
       go-git — no passthrough, no `git` binary dependency, anywhere in
       `gage`)
@@ -205,11 +207,17 @@ offline-handling logic runs.
 ## Definition of done
 
 Full test list green on all three CI platforms. A vault syncs between two
-simulated devices, divergence is detected and never silently resolved,
-and a clone of a vault you can't yet read tells you so plainly.
+simulated devices; a divergence touching different entries merges and
+pushes without a prompt; a divergence that genuinely conflicts is
+detected, classified, and reported without being resolved; a recipient-file
+divergence conflicts rather than silently unioning; and a clone of a vault
+you can't yet read tells you so plainly.
 
 ## Affects later milestones
 
+- **M8b consumes this milestone's divergence classification.** Detection
+  decides *what kind* of conflict exists; resolution only has to present
+  and apply a choice.
 - M9's `--reencrypt` produces one large commit that then gets pushed;
   its atomicity guarantee is about HEAD, not about the push succeeding.
 - M10's opportunistic trust-cache warning must also fire on `sync`

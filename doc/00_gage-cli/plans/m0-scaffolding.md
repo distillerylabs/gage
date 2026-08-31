@@ -190,7 +190,7 @@ Nothing.
       string` wraps `t.TempDir()` + `git.PlainInit(path, true)` to create
       an ephemeral local bare repo for use as a fake remote in later
       milestones' tests (first real use: M1's `git set-remote` tests; the
-      full sync-testing harness built on top of it lands in M8)
+      full sync-testing harness built on top of it lands in M8a)
 
 ## Definition of done
 
@@ -209,4 +209,4 @@ correctly by TTY; nothing else does yet, and that's correct.
   that isn't in the registry is invisible to one help surface or both.
 - The atomic-write helper and exit-code taxonomy are expected by every
   later milestone; using anything else is a review failure.
-- `gittest.NewBareRemote` is extended, not replaced, in M8.
+- `gittest.NewBareRemote` is extended, not replaced, in M8a.

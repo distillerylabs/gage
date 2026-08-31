@@ -15,7 +15,7 @@ exist to detect changes against — but only needs those files to differ
 from a locally-cached copy, not `--reencrypt`'s crash-safety machinery
 specifically. Kept as its own milestone so that atomicity work stays
 isolated from this one's detection/UX logic, the same way M2 isolates
-crypto risk and M8 isolates sync risk.
+crypto risk and M8a/M8b isolate sync risk.
 
 Two halves of the cache, and both matter: a verbatim copy of
 `.gage/config.toml` (the file that's *diffed and shown*, because device
@@ -27,7 +27,7 @@ the first would miss someone who edits only the second.
 
 - **M5** — the encrypting commands the blocking check hooks.
 - **M6** — `Vault.Unlock`, which the opportunistic check hooks.
-- **M8** — `sync`, which needs its own hook since a clean fast-forward
+- **M8b** — `sync`, which needs its own hook since a clean fast-forward
   never unlocks anything.
 - **M9** — recipient changes to detect, and `verify`'s comparison logic.
 
@@ -74,7 +74,7 @@ the first would miss someone who edits only the second.
       never calls `Session.Use` at all
 - [ ] A non-blocking opportunistic warning fires on a plain `gage show`/
       `ls` in one-shot mode when recipients have changed, even though
-      neither command encrypts anything — the same unlock hook M8's auto
+      neither command encrypts anything — the same unlock hook M8a's auto
       fetch+pull uses, not the mandatory pre-encrypt check
 - [ ] `gage sync` surfaces the opportunistic warning even when it resolves
       via a clean fast-forward with no conflicting entry — the case where
@@ -109,7 +109,7 @@ the first would miss someone who edits only the second.
       the destination vault)
 - [ ] Non-blocking opportunistic check wired into `Vault.Unlock` itself
       (covering session `use` and every one-shot command's implicit
-      unlock, mirroring M8's fetch+pull hook) *and* into `sync` directly,
+      unlock, mirroring M8a's fetch+pull hook) *and* into `sync` directly,
       since a clean fast-forward sync can complete without ever calling
       `Unlock`
 - [ ] Diff generation against the cached `config.toml` copy

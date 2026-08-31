@@ -1,6 +1,6 @@
 # M9 — Identity & recipient management
 
-[← M8](m8-sync.md) · [plan index](index.md) · next: [M10 — Local trust cache](m10-trust-cache.md)
+[← M8b](m8b-sync-conflicts.md) · [plan index](index.md) · next: [M10 — Local trust cache](m10-trust-cache.md)
 
 ## Goal
 
@@ -20,7 +20,7 @@ untouched rather than half-migrated.
 - **M2** — identity generation (reused for additional devices).
 - **M3** — entry encrypt/decrypt, iterated over by `--reencrypt`.
 - **M4** — commit-per-write under the vault lock.
-- **M8** — sync, so a recipient change made on one device reaches another.
+- **M8a** — sync, so a recipient change made on one device reaches another.
 
 ## Design references
 
@@ -151,7 +151,7 @@ untouched rather than half-migrated.
       reset it to HEAD before proceeding — the only *expected* source of
       unexpected dirtiness is an interrupted `--reencrypt`, but the
       warning fires regardless of cause, the same "warn and proceed"
-      posture as an unreachable network in M8. **This runs under the vault
+      posture as an unreachable network in M8a. **This runs under the vault
       lock**, so it can never race another process's in-flight write
 - [ ] `gage recipient verify`: reads `.age-recipients` and
       `.gage/config.toml` directly — both plaintext — and never calls

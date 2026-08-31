@@ -18,7 +18,7 @@ dangerous command in the tool.
 
 - **M5** — `show`/`generate` exist and are on the resolver.
 - **M6** — `Session`, which `--script`/`--stdin` drives non-interactively.
-- **M8** — commit history for `log`/`history`.
+- **M8a** — commit history for `log`/`history`.
 
 ## Design references
 

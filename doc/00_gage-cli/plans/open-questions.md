@@ -46,16 +46,15 @@ remotes the design doc explicitly names.
 - `gage auth login` steers toward narrowly-scoped tokens (on GitHub, a
   fine-grained PAT limited to the one repository rather than a classic
   `repo`-scoped token reaching everything you own).
-- **go-github is added, but only for conveniences** on recognized hosts:
-  OAuth device-flow login instead of a pasted token, and creating the
-  private repo during `gage init --remote`. The transport is go-git
-  either way; elsewhere the same commands ask for a token. Mechanism
-  identical, acquisition friendlier.
+- **No host-specific code paths.** (Initially this resolution added
+  go-github for GitHub conveniences; Q-OAUTH-APP below then removed both
+  the device flow and the dependency. The final position is
+  host-neutral: a user-supplied token, everywhere.)
 - **SSH remotes stay best-effort**: used when ssh-agent has a usable key,
   but `~/.ssh/config` is never interpreted, so an alias-dependent remote
   fails with a message saying so and pointing at the HTTPS spelling.
   Same posture as the Windows core-dump gap — a narrow guarantee stated
-  honestly. If this proves more trouble than it's worth in M8, dropping
+  honestly. If this proves more trouble than it's worth in M8a, dropping
   SSH entirely is a clean narrowing.
 - The design doc's example remotes were SSH-spelled (`git@github.com:...`,
   `git@internal:...`) — the second one specifically depended on a
@@ -111,7 +110,7 @@ Two supporting reasons:
 **The one real cost, and it's an error-message problem:** PATs expire.
 An expired token must fail legibly ("your token for github.com expired,
 run `gage auth login`") rather than as an opaque 403 from the transport.
-Covered by an M8 test.
+Covered by an M8a test.
 
 **Consequence: go-github is dropped entirely.** With device flow gone,
 its only remaining job was creating the private repo during `gage init
@@ -166,7 +165,7 @@ it may belong under the design doc's "Vault types" section rather than
 replacing the `git` type outright. Worth deciding whether it's
 `type = "github"` alongside `type = "git"`, or a replacement.
 
-Nothing before M8 depended on the answer, so it stayed open through M7
+Nothing before M8a depended on the answer, so it stayed open through M7
 without blocking work.
 
 ---
@@ -376,34 +375,67 @@ whose device name is already a recipient of that vault.
 
 ---
 
-### `[ ]` Q-SYNC-CONFLICT — What does conflict resolution actually do?
+### `[x]` Q-SYNC-CONFLICT — What does conflict resolution actually do?
 
-**Blocks:** M8.
+**Resolved 2026-08-30.** Applied as A16. M8 split into
+[M8a](m8a-sync-transport.md) (transport + detection) and
+[M8b](m8b-sync-conflicts.md) (resolution).
 
-"`gage sync` surfaces both versions and requires an explicit choice" is
-the whole specification today, and this is the second-riskiest piece in
-the build after crypto. Unanswered:
+**The main finding was that "the entry conflicts" is one of five
+situations, not the whole problem:**
 
-- What are the choices — keep-local, keep-remote, keep-both-as-two-entries
-  (new UUID for one)? Field-level merge is presumably out of scope.
-- What does the resulting git history look like — a merge commit, or
-  reset-and-recommit?
-- Resolution needs to decrypt both sides, so it needs an unlocked
-  identity — but the trust cache (M10) also wants to warn on a clean
-  fast-forward sync that never unlocks anything. Which paths unlock?
-- Same-UUID-modified-on-both-sides is the obvious conflict. Is
-  same-title-different-UUID (two devices independently inserting
-  "AWS root") a conflict, or two entries?
+| Situation | Git's view | Handling |
+|---|---|---|
+| Different entries changed | Merges cleanly | Nothing to ask |
+| Same entry changed | Conflict (binary) | Decrypt both, ask |
+| Delete vs. modify | Conflict | Decrypt survivor, ask |
+| **Recipient files changed** | **Would merge cleanly** | **Forced to conflict via `.gitattributes`** |
+| Same title, different UUIDs | Merges cleanly | Not a conflict — resolver handles it |
 
-This likely wants its own subsection in the design doc, and may justify
-splitting M8 into happy-path sync and conflict resolution.
+**The recipient-file row is a security hole that existed in the design.**
+`.age-recipients` is one key per line, so two devices each adding a
+*different* recipient add two different lines and git merges them without
+any conflict. The result is a recipient list neither device wrote,
+assembled by a clean-looking merge, with every subsequent write encrypted
+to all of it — and **no unreviewed change for the trust cache to catch**,
+because the merge manufactured it rather than a person doing so. Fixed
+with a `.gitattributes` marking `.age-recipients` and `.gage/config.toml`
+`-merge`. Written by `init` in M1, its effect tested in M8a.
 
----
+**The answers:**
 
-### `[x]` Q-DEVICE-DEFAULT-NAME — see Q-DEVICE-NAME above
+1. **Resolution menu: keep local / keep remote / keep both**, plus skip
+   and abort. `keep both` writes the losing version as a new entry under
+   a fresh UUID, so resolving never destroys a secret — the two versions
+   become two same-titled entries that M5's ambiguous-query resolver
+   already handles. Choosing wrong under pressure becomes recoverable
+   rather than a silent loss, which is the right default here.
+2. **History: a true merge commit**, two parents. Preserves both devices'
+   history and local commit granularity, and keeps the vault an ordinary
+   git repo. Rebasing would re-prompt for the same entry once per local
+   commit that touched it; flattening to one commit would discard
+   per-write audit trail.
+3. **Unlock is lazy.** Fast-forwards and merges touching only different
+   entries need no identity at all — nothing has to be decrypted. `sync`
+   prompts for unlock only on reaching a conflict that needs plaintext
+   shown. This preserves the property M10 depends on: a clean sync may
+   never call `Vault.Unlock`, which is why the trust-cache check hooks
+   `sync` directly.
+4. **Same-title-different-UUID is not a conflict.** Detecting it would
+   mean decrypting every entry on both sides, forcing an unlock on every
+   sync including clean fast-forwards. The ambiguous-query resolver
+   reaches the same outcome later for free.
 
-Folded into Q-DEVICE-NAME and resolved there: normalized hostname by
-default, `--device NAME` to override.
+**M8 split.** Detection and resolution are separable risks — the same
+isolation the plan uses for crypto (M2) and the trust cache (M10). M8a
+leaves a fully usable tool where divergence is detected, classified, and
+reported; M8b adds acting on it. Kept as `M8a`/`M8b` rather than
+renumbering, so M9–M12 are unaffected.
+
+Sub-decisions left to M8b itself (recorded there, not here): whether
+`keep both` suffixes the duplicate title, whether it preserves the losing
+side's `updated_by`, non-interactive behavior, and lock-holding during a
+human-paced resolution.
 
 ---
 
@@ -567,6 +599,23 @@ Per Q-METHOD-SCOPE (option 2). Five changes:
    subsequent `gage identity add` will suggest"), plus the
    `identity`/`recipient` bullet, which now states the per-device rule
    explicitly instead of merely implying it.
+
+### `[x]` A16 — Conflict resolution, and the recipient-file merge hole
+
+Per Q-SYNC-CONFLICT. Four changes:
+
+1. **`.gitattributes` added to the on-disk layout**, with the reasoning:
+   two devices each adding a different recipient would otherwise merge
+   into a union neither wrote, invisibly to the trust cache. This was a
+   real hole in the design, not a documentation gap.
+2. **New "What \"diverged\" actually means"** — the five-situation table,
+   why same-title-different-UUID isn't a conflict, and the lazy-unlock
+   rule.
+3. **New "Resolving an entry conflict"** — the `[l/r/b/s/q]` prompt,
+   why `keep both` exists, and why the result is a merge commit rather
+   than a rebase or a flattened one.
+4. **Two bullets in "A few decisions worth calling out"** for the
+   unmergeable recipient files and for `keep both`.
 
 ### `[x]` A15 — Device naming, storage, and validation
 

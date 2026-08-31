@@ -237,6 +237,7 @@ myvault/                          # git repo root
 │   ├── 4b9d7710-8e2a-4a1f-9c3d-1a2b3c4d5e6f.age
 │   ├── a03e5f88-1c44-4e9a-8b77-2d3e4f5a6b7c.age
 │   └── 8f3a1c2e-5566-4a11-9d22-33aa44bb55cc.age
+├── .gitattributes                # stops git auto-merging the recipient files
 └── .gitignore
 ```
 
@@ -269,6 +270,31 @@ Two things live at the vault root instead of nested, and one thing doesn't
   and leaves room for more `gage`-owned files later (schema version
   markers, migration state) without cluttering the root or claiming a
   generic name like `config.toml` at the top level.
+
+**`.gitattributes` has exactly one job, and it's a security one.**
+`.age-recipients` is one public key per line — which means two devices
+each adding a *different* recipient produce two different added lines,
+and git merges them without any conflict at all. The result is a
+recipient list neither device ever wrote, assembled silently by a merge
+that looks clean, and every subsequent write encrypted to all of it.
+That defeats the local trust cache in precisely the situation it exists
+to catch (see "Local trust cache"), because there's no unreviewed
+*change* to notice — the union is what the merge produced.
+
+So the vault ships a `.gitattributes` marking the two recipient-defining
+files as unmergeable:
+
+```
+.age-recipients   -merge
+.gage/config.toml -merge
+```
+
+Any divergence on either file is then forced to a real conflict that a
+human resolves through the trust-cache confirmation, rather than being
+quietly reconciled by a line-based merge that has no idea what those
+lines mean. Entry files need no such marking: `.age` ciphertext is
+binary, so git already refuses to merge two versions of one and reports
+a conflict on its own.
 
 **`.gitignore` has deliberately little to do.** By construction, nothing
 `gage` itself ever writes into a vault's working tree that isn't meant to
@@ -967,6 +993,74 @@ versions so you choose — gage never guesses on your behalf. `pull`, `push`,
 and `git` remain as the manual override / scripting / CI control surface,
 but day-to-day they're a fallback, not something to remember every session.
 
+### What "diverged" actually means
+
+"The entry conflicts" is only one of several things divergence can mean,
+and they want different handling. Given local and remote commits sharing
+a merge base:
+
+| Situation | Git's view | What `gage` does |
+|---|---|---|
+| Both sides changed **different** entries | Merges cleanly — separate files | Nothing to ask. Merge and move on |
+| Both sides changed **the same** entry | Conflict — `.age` is binary, no 3-way merge | Decrypt both, ask (below) |
+| One side **deleted** an entry the other **edited** | Delete/modify conflict | Decrypt the surviving version, ask |
+| Both sides changed the **recipient files** | *Would* merge cleanly — prevented by `.gitattributes` | Forced conflict, resolved through the trust-cache confirmation |
+| Both sides inserted entries with the **same title** | Merges cleanly — different UUIDs | Not a conflict. Two real entries; the ambiguous-query resolver handles it |
+
+The last row is deliberate. Detecting duplicate titles during sync would
+mean decrypting every entry on both sides, forcing an unlock on every
+sync — including the clean fast-forwards that currently need no identity
+at all. The resolver already lists candidates and asks (see "Addressing
+entries"), which is the same answer arrived at later, for free.
+
+**Sync unlocks lazily.** A fast-forward, and a merge where the two sides
+touched different entries, need no identity — nothing has to be
+decrypted to complete them. `gage sync` only prompts for an unlock when
+it reaches a conflict whose resolution requires showing you plaintext.
+This is why the trust-cache check hooks `sync` directly rather than
+riding on `Vault.Unlock` (see "Local trust cache"): a clean sync may
+never unlock anything.
+
+### Resolving an entry conflict
+
+For each conflicting entry, `gage` decrypts both sides and shows their
+metadata — who last wrote each, and when — then asks:
+
+```
+[personal🔓] gage> sync
+Entry conflicts: "ProtonMail"
+
+  local    updated 2026-08-30 14:22  by laptop-1
+  remote   updated 2026-08-29 09:03  by phone
+
+  [l] keep local     [r] keep remote
+  [b] keep both      [s] skip this entry     [q] abort sync
+Which? [l/r/b/s/q]:
+```
+
+**`keep both` is why this menu has three options rather than two.** It
+writes the losing version as a *new* entry under a fresh UUID, so
+resolving a conflict never destroys a secret — the two versions become
+two entries with the same title, which the ambiguous-query resolver
+already knows how to present, and which you can reconcile later at
+leisure with `rm` or `rename`. Choosing wrong under time pressure is a
+recoverable mistake rather than a silent loss, which is the right
+default for a tool whose whole premise is not losing secrets.
+
+`skip` leaves that entry conflicted and moves to the next; the sync ends
+without pushing, since the tree still has unresolved conflicts. `abort`
+restores the pre-sync state entirely.
+
+**The result is a real merge commit**, with both sides as parents, the
+same as any other git merge. Local commit granularity survives, both
+devices' histories remain walkable by `history --decrypt`, and the vault
+stays an ordinary git repository someone can `cd` into and inspect with
+real git — which is exactly the property the "no passthrough" decision
+elsewhere depends on. Rebasing local work onto the remote would give a
+tidier line at the cost of re-prompting for the same entry once per
+local commit that touched it; flattening to a single post-sync commit
+would discard the per-write history a secrets manager may later want.
+
 ### Remote authentication: HTTPS and a token
 
 `gage` speaks to remotes through go-git, never a `git` binary (see
@@ -1600,6 +1694,19 @@ here" — by construction, nothing would replace it.
   and actual ciphertext recipients disagreeing — just self-inflicted
   instead of caused by a remote git-writer, so it gets the same
   "never let it become committed truth" treatment.
+- **The recipient files are marked unmergeable, and that's load-bearing.**
+  `.age-recipients` is one key per line, so two devices each adding a
+  different recipient would merge cleanly into a union neither of them
+  wrote — with no unreviewed *change* for the trust cache to catch,
+  because the merge manufactured it. A `.gitattributes` marking that
+  file and `config.toml` as `-merge` forces the conflict instead. See
+  "On-disk layout."
+- **Conflict resolution keeps both versions when asked, and that's the
+  interesting option.** `keep both` writes the losing side as a new
+  entry under a fresh UUID, turning "I picked wrong under pressure" from
+  a lost secret into a duplicate title the resolver already handles. For
+  a tool whose premise is not losing secrets, non-destructive should be
+  one keystroke away. See "Resolving an entry conflict."
 - **Sync is automatic except where auto-resolving would be dangerous.**
   Fast-forward pulls on `use` and pushes after every write happen without
   being asked, so `pull`/`push` aren't something to remember day-to-day.

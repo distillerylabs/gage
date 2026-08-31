@@ -38,7 +38,7 @@ round trip exists for it to share.
 - ["Entry CRUD"](../tdds/gage-cli-design.md) — the command surface and
   the notes on `insert`'s mutually exclusive input modes
 - ["Sync model"](../tdds/gage-cli-design.md) — "commit is local, instant,
-  and always happens"; push is M8's problem
+  and always happens"; push is M8a's problem
 - ["Session model"](../tdds/gage-cli-design.md) — one-shot mode's
   unlock-use-close contract
 
@@ -131,7 +131,7 @@ committed, all locked against concurrent writers.
 
 ## Affects later milestones
 
-- Commit-per-write under the lock is what M8's auto-push sits on and what
+- Commit-per-write under the lock is what M8a's auto-push sits on and what
   M9's single-commit `--reencrypt` has to preserve.
 - The `Unlock` → use → `Close` handler is the shape M6's `Session`
   deliberately *doesn't* change — it only holds the `Identity` longer.

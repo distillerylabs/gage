@@ -1,6 +1,6 @@
 # M7 — Metadata index
 
-[← M6](m6-session-mode.md) · [plan index](index.md) · next: [M8 — Sync (+ `clone`)](m8-sync.md)
+[← M6](m6-session-mode.md) · [plan index](index.md) · next: [M8a — Sync: transport & detection](m8a-sync-transport.md)
 
 ## Goal
 
@@ -94,11 +94,12 @@ signal this stayed a pure caching layer.
 
 ## Affects later milestones
 
-- **M8 must invalidate or rebuild this index after a successful
-  fast-forward pull.** Auto-pull on unlock changes `entries/` underneath
+- **M8a must invalidate or rebuild this index after a successful
+  fast-forward pull**, and **M8b after each applied conflict
+  resolution.** Auto-pull on unlock changes `entries/` underneath
   a live session, and nothing in the design doc currently mentions it —
   see [A7](open-questions.md). This is the single most likely thing to be
-  missed in M8.
+  missed in M8a.
 - **M11's cross-vault `mv`/`cp`** must update the source vault's index
   (entry removed) and the destination's (entry added, if that vault is
   unlocked in the same session).
