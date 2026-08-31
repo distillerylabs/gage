@@ -158,6 +158,18 @@ func TestReleaseLetsWaiterProceed(t *testing.T) {
 	}()
 
 	time.Sleep(100 * time.Millisecond)
+
+	// Assert the waiter is still blocked *before* releasing. Without
+	// this, the test would pass just as well if the lock had never been
+	// held at all — the Acquire above would return immediately, the
+	// select below would see a nil error, and "releasing lets the waiter
+	// proceed" would be reported green by a run that never had a waiter.
+	select {
+	case err := <-acquired:
+		t.Fatalf("Acquire returned (err=%v) while the subprocess still held the lock; nothing was ever blocked", err)
+	default:
+	}
+
 	if err := stdin.Close(); err != nil {
 		t.Fatalf("closing subprocess stdin: %v", err)
 	}

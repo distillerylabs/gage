@@ -10,10 +10,24 @@ package main
 type Availability int
 
 const (
-	AvailBoth Availability = iota
+	// availUnset is the zero value, and it is deliberately not a valid
+	// availability. If AvailBoth were zero, a registry entry that simply
+	// forgot the field would silently become "available everywhere" —
+	// failing open, and in the one direction that matters: a session-only
+	// command would appear in gage --help, which is precisely what
+	// Q-HELP-SURFACES says must never happen. An unset field is instead
+	// invalid and caught by TestEveryRegistryEntryHasShortAndGroup.
+	availUnset Availability = iota
+	AvailBoth
 	AvailOneShotOnly
 	AvailSessionOnly
 )
+
+// Valid reports whether the availability was explicitly set to one of
+// the three real values.
+func (a Availability) Valid() bool {
+	return a == AvailBoth || a == AvailOneShotOnly || a == AvailSessionOnly
+}
 
 // OneShotVisible reports whether a command belongs in gage --help/gage
 // help's rendered set.

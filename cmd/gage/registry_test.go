@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func testApp() *App {
@@ -14,6 +16,35 @@ func testApp() *App {
 		Build:      BuildInfo{Version: "v1.2.3", Commit: "abcdef1"},
 		IsTerminal: func() bool { return false },
 	}
+}
+
+// commandTreePaths walks the whole Cobra tree under root and returns
+// every command's path relative to root, space-separated — "use",
+// "vault list", "git set-remote". Recursion is the point: from M1 on,
+// most commands are nested (vault list/info/remove/set-default,
+// identity add/list, recipient add/remove/list/verify, git set-remote,
+// auth login/status/logout), and a depth-1 walk would see only the
+// "vault"/"recipient"/"git" parents and silently pass while every leaf
+// under them went unregistered.
+//
+// A parent that exists purely to group subcommands (no RunE of its own)
+// is not itself a command a user can invoke, so it isn't required to be
+// in the registry — but it is still descended into.
+func commandTreePaths(root *cobra.Command) []string {
+	var paths []string
+	var walk func(c *cobra.Command, prefix []string)
+	walk = func(c *cobra.Command, prefix []string) {
+		for _, sub := range c.Commands() {
+			path := append(append([]string{}, prefix...), sub.Name())
+			runnable := sub.RunE != nil || sub.Run != nil
+			if runnable {
+				paths = append(paths, strings.Join(path, " "))
+			}
+			walk(sub, path)
+		}
+	}
+	walk(root, nil)
+	return paths
 }
 
 // TestRegistryCompleteness walks the real Cobra command tree and fails
@@ -37,13 +68,13 @@ func TestRegistryCompleteness(t *testing.T) {
 	root.InitDefaultHelpCmd()
 
 	seen := map[string]bool{}
-	for _, c := range root.Commands() {
-		if c.Name() == "help" {
+	for _, path := range commandTreePaths(root) {
+		if path == "help" {
 			continue
 		}
-		seen[c.Name()] = true
-		if _, ok := findCommand(c.Name()); !ok {
-			t.Errorf("Cobra command %q exists with no registry entry", c.Name())
+		seen[path] = true
+		if _, ok := findCommand(path); !ok {
+			t.Errorf("Cobra command %q exists with no registry entry", path)
 		}
 	}
 
@@ -51,6 +82,46 @@ func TestRegistryCompleteness(t *testing.T) {
 		if !seen[ci.Name] {
 			t.Errorf("registry entry %q has no corresponding Cobra command", ci.Name)
 		}
+	}
+}
+
+// TestRegistryCompletenessDetectsNestedDrift is a meta-test: it proves
+// TestRegistryCompleteness would actually catch an unregistered *nested*
+// command, which is the shape every command from M1 on takes. Without
+// this, the completeness test could quietly regress to a depth-1 walk
+// (as it originally was) and still pass its own assertions, since M0's
+// only commands happen to be top-level.
+func TestRegistryCompletenessDetectsNestedDrift(t *testing.T) {
+	app := testApp()
+	root := NewRootCmd(app)
+
+	parent := &cobra.Command{Use: "vault", Short: "vault management"}
+	parent.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "list vaults",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	})
+	root.AddCommand(parent)
+
+	paths := commandTreePaths(root)
+
+	var sawLeaf, sawParent bool
+	for _, p := range paths {
+		if p == "vault list" {
+			sawLeaf = true
+		}
+		if p == "vault" {
+			sawParent = true
+		}
+	}
+	if !sawLeaf {
+		t.Errorf("tree walk missed nested command %q; paths = %v", "vault list", paths)
+	}
+	if sawParent {
+		t.Errorf("tree walk treated non-runnable group %q as an invocable command; paths = %v", "vault", paths)
+	}
+	if _, ok := findCommand("vault list"); ok {
+		t.Error("findCommand resolved \"vault list\", which is not in the registry — the drift this test simulates would go undetected")
 	}
 }
 

@@ -139,6 +139,73 @@ func home() string {
 	}
 }
 
+// TestAliasedImportsDoNotEvadeTheCheck: the rule this tool enforces is
+// architectural, so the check has to hold against the spelling as well
+// as the intent. Matching the literal identifier "os" (the obvious
+// implementation) misses `import osx "os"` entirely, which would let the
+// library layer call os.Exit under an alias with lint still green.
+func TestAliasedImportsDoNotEvadeTheCheck(t *testing.T) {
+	src := `package gage
+
+import (
+	osx "os"
+	format "fmt"
+)
+
+func fail() {
+	format.Println("leaking to stdout")
+	osx.Exit(1)
+}
+`
+	violations, err := checkSource("aliased.go", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 2 {
+		t.Errorf("aliased imports evaded the check: got %d violations, want 2: %v", len(violations), violations)
+	}
+}
+
+func TestDotImportIsReported(t *testing.T) {
+	src := `package gage
+
+import . "os"
+
+func fail() {
+	Exit(1)
+}
+`
+	violations, err := checkSource("dot.go", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) == 0 {
+		t.Error("dot-import of os not reported; it hides os.Exit from selector analysis entirely")
+	}
+}
+
+// TestLocalIdentifierNamedOsIsNotAPackageReference is the other
+// direction: resolving through the import list must not turn a local
+// variable that happens to be named os into a false violation.
+func TestLocalIdentifierNamedOsIsNotAPackageReference(t *testing.T) {
+	src := `package gage
+
+type opts struct{ Stdin string }
+
+func run() string {
+	os := opts{Stdin: "x"}
+	return os.Stdin
+}
+`
+	violations, err := checkSource("shadow.go", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("local variable named os reported as a package reference: %v", violations)
+	}
+}
+
 func TestUnparseableSourceIsAnError(t *testing.T) {
 	if _, err := checkSource("broken.go", "this is not go source {{{"); err == nil {
 		t.Fatal("expected a parse error")

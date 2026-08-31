@@ -18,14 +18,26 @@ func TestBareErrorIsInternal(t *testing.T) {
 	}
 }
 
-// TestEveryDefinedCodeIsProducedBySomeCodePath exercises New/Wrap/CodeOf
-// for every entry in the taxonomy, proving the general
-// construct-then-render mechanism cmd/gage relies on actually reaches
-// every defined code. Concrete commands that produce NotFound/Ambiguous/
-// LockedOrAuth/Conflict in practice arrive in later milestones (M2, M4,
-// M5, M9 — see the plan's cross-milestone contracts); this test is what
-// keeps the taxonomy itself honest in the meantime.
-func TestEveryDefinedCodeIsProducedBySomeCodePath(t *testing.T) {
+// TestEveryDefinedCodeRoundTripsThroughConstructors exercises
+// New/Wrap/CodeOf for every entry in the taxonomy.
+//
+// Note carefully what this does *not* establish. The M0 checklist asks
+// that "every defined exit code is produced by at least one code path,"
+// and this test does not show that: it hands each code to New and checks
+// CodeOf hands the same one back, which is a round-trip of the
+// constructor, not evidence that any command ever reaches NotFound,
+// Ambiguous, LockedOrAuth, or Conflict. It cannot be otherwise in M0,
+// because no command that could produce those exists yet — the
+// commands that will are M2's, M4's, M5's, and M9's. Naming this test
+// after the checklist bullet would have made a milestone with four
+// unreachable codes look fully covered.
+//
+// What is genuinely verifiable now lives in cmd/gage's
+// TestNoBareUnenumeratedExitCode: every code the CLI can currently emit
+// is in the taxonomy. The converse — every code in the taxonomy is
+// emitted by something — becomes checkable as those milestones land, and
+// is tracked as such rather than claimed here.
+func TestEveryDefinedCodeRoundTripsThroughConstructors(t *testing.T) {
 	for _, code := range All() {
 		code := code
 		t.Run(code.String(), func(t *testing.T) {

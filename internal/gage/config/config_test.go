@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
+	"runtime"
 	"testing"
 )
 
@@ -56,16 +56,16 @@ func TestReadMissingFile(t *testing.T) {
 	}
 }
 
-// TestInterruptedGlobalConfigWriteLeavesPreviousFileIntact simulates a
-// write to $GAGE_CONFIG/config.toml getting interrupted between the temp
-// file being written and the rename that makes it visible: it writes a
-// good config, then hand-writes an orphan temp file the same way Write
-// would (without the rename), and asserts the real config.toml — the
-// thing a concurrently-crashing gage would leave behind — is untouched
-// and still parses. Write's atomicity itself is proven once, at the
-// atomicfile layer; this is the same guarantee re-asserted where the
-// checklist actually names it: the global config.toml Write uses.
-func TestInterruptedGlobalConfigWriteLeavesPreviousFileIntact(t *testing.T) {
+// TestGlobalConfigWriteIsAtomic asserts that Write actually routes
+// through the atomic helper rather than writing config.toml in place —
+// the property that keeps a crash mid-write from truncating the file
+// that lists every registered vault. Same discriminator as
+// atomicfile's own test (stat before, stat after, require a different
+// file object), applied here because it's Write, not WriteFile, that
+// every config writer in gage calls: a future refactor that dropped the
+// atomicfile call would leave atomicfile's tests green and only this one
+// would notice.
+func TestGlobalConfigWriteIsAtomic(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 
 	good := Global{Current: "personal", Vaults: map[string]VaultEntry{
@@ -74,29 +74,60 @@ func TestInterruptedGlobalConfigWriteLeavesPreviousFileIntact(t *testing.T) {
 	if err := Write(path, good); err != nil {
 		t.Fatal(err)
 	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	before, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmp.WriteString("current = \"CORRUPTED")
-	tmp.Close()
-	// No rename — this is the simulated interruption.
+
+	if err := Write(path, Global{Current: "work"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if os.SameFile(before, after) {
+		t.Error("config.Write wrote config.toml in place; an interrupted write could truncate it and lose every registered vault")
+	}
+}
+
+// TestFailedGlobalConfigWriteLeavesPreviousConfigParseable exercises a
+// real Write failure and asserts the previous config survives it intact
+// and still parses — the checklist's "never a truncated file".
+func TestFailedGlobalConfigWriteLeavesPreviousConfigParseable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits don't restrict writes the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permission bits are not enforced")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	good := Global{Current: "personal", Vaults: map[string]VaultEntry{
+		"personal": {Path: "/data/vaults/personal", Type: "git", Device: "laptop-1", Method: "passphrase"},
+	}}
+	if err := Write(path, good); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	if err := Write(path, Global{Current: "work"}); err == nil {
+		t.Fatal("expected Write to fail in an unwritable directory")
+	}
 
 	got, err := Read(path)
 	if err != nil {
-		t.Fatalf("previous config.toml no longer parses after an interrupted write: %v", err)
+		t.Fatalf("previous config.toml no longer parses after a failed write: %v", err)
 	}
 	if !reflect.DeepEqual(got, good) {
-		t.Errorf("previous config.toml was altered by the interrupted write: got %+v, want %+v", got, good)
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "CORRUPTED") {
-		t.Error("config.toml contains content from the interrupted write")
+		t.Errorf("previous config.toml altered by a failed write: got %+v, want %+v", got, good)
 	}
 }
 

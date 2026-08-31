@@ -3,6 +3,7 @@ package atomicfile
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -61,14 +62,63 @@ func TestWriteFileOverwritesAtomically(t *testing.T) {
 	}
 }
 
-// TestInterruptedWriteLeavesPreviousFileIntact simulates the write being
-// interrupted between the temp-file write and the rename: it performs the
-// temp-file half of WriteFile by hand and stops there, then asserts the
-// real destination file — written earlier via the real WriteFile — is
-// untouched and still parses. This is the property the temp+rename
-// pattern exists to guarantee: the destination is never opened for
-// writing directly, so a crash before rename can't leave it truncated.
-func TestInterruptedWriteLeavesPreviousFileIntact(t *testing.T) {
+// TestWriteFileReplacesRatherThanTruncatesInPlace is the test that
+// actually discriminates an atomic implementation from a naive one, and
+// it's the reason the crash-safety claim is credible at all.
+//
+// "Simulate the interruption" is the tempting way to write this and it
+// is worthless: hand-rolling a temp file that never gets renamed, then
+// asserting the destination is unchanged, passes just as happily against
+// a plain os.WriteFile — nothing in that arrangement ever exercises
+// WriteFile's own interrupted path.
+//
+// What separates the two implementations is observable without any fault
+// injection: temp+rename makes the destination path point at a *new*
+// filesystem object, so the pre-write object is never truncated and a
+// crash at any instant leaves one whole version or the other. An
+// in-place write reuses the same object — which is precisely the state
+// in which a crash yields a truncated config. So: stat before, stat
+// after, and require they are not the same file.
+func TestWriteFileReplacesRatherThanTruncatesInPlace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	original := "current = \"personal\"\n"
+	if err := WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFile(path, []byte("current = \"work\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if os.SameFile(before, after) {
+		t.Error("WriteFile wrote the destination in place (same file object before and after); " +
+			"a crash mid-write would leave a truncated file, which is exactly what temp+rename exists to prevent")
+	}
+}
+
+// TestFailedWriteLeavesPreviousFileIntact exercises a real WriteFile
+// failure — not a simulated one — and asserts the previous contents
+// survive it. The failure is induced by making the containing directory
+// unwritable, so WriteFile's own os.CreateTemp fails and it returns
+// before touching the destination.
+func TestFailedWriteLeavesPreviousFileIntact(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits don't restrict writes the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permission bits are not enforced")
+	}
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
@@ -77,27 +127,24 @@ func TestInterruptedWriteLeavesPreviousFileIntact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate a write that got interrupted after creating its temp
-	// file but before the rename that would make it visible.
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
+	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tmp.WriteString("current = \"CORRUPTED-HALF-WRITE"); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	if err := WriteFile(path, []byte("current = \"CORRUPTED"), 0o600); err == nil {
+		t.Fatal("expected WriteFile to fail in an unwritable directory")
 	}
-	tmp.Close()
-	// Deliberately no os.Rename call here — this is the interruption.
 
 	got, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("previous file unreadable after a failed write: %v", err)
 	}
 	if string(got) != original {
-		t.Errorf("destination file was touched by the interrupted write: got %q, want %q", got, original)
+		t.Errorf("previous file altered by a failed write: got %q, want %q", got, original)
 	}
-	if !strings.HasPrefix(string(got), "current") {
-		t.Errorf("destination file no longer parses as before: %q", got)
+	if strings.Contains(string(got), "CORRUPTED") {
+		t.Error("previous file contains content from the failed write")
 	}
 }
 

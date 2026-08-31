@@ -87,8 +87,49 @@ var forbiddenSelectors = map[string]bool{
 	"Exit":   true,
 }
 
+// importBindings maps each local identifier a file binds to an import
+// onto that import's package path — so `import osx "os"` yields
+// osx -> os. Resolving through the import list rather than matching the
+// literal identifier "os" is what makes the check hold against an
+// aliased import, and equally keeps a local variable that happens to be
+// named os from being reported as the package.
+//
+// A dot-import of os or fmt is reported by the caller rather than
+// resolved: it puts Exit/Println into file scope unqualified, which this
+// selector-based analysis cannot see at all.
+func importBindings(f *ast.File) (bindings map[string]string, dotImported []string) {
+	bindings = map[string]string{}
+	for _, spec := range f.Imports {
+		importPath := strings.Trim(spec.Path.Value, `"`)
+		if importPath != "os" && importPath != "fmt" {
+			continue
+		}
+		switch {
+		case spec.Name == nil:
+			bindings[importPath] = importPath
+		case spec.Name.Name == ".":
+			dotImported = append(dotImported, importPath)
+		case spec.Name.Name == "_":
+			// Imported for side effects only; nothing can reference it.
+		default:
+			bindings[spec.Name.Name] = importPath
+		}
+	}
+	return bindings, dotImported
+}
+
 func inspect(fset *token.FileSet, f *ast.File, path string) []Violation {
 	var violations []Violation
+
+	bindings, dotImported := importBindings(f)
+	for _, pkg := range dotImported {
+		violations = append(violations, Violation{
+			File:    path,
+			Line:    fset.Position(f.Pos()).Line,
+			Message: fmt.Sprintf("must not dot-import %q outside _test.go files (it hides os.Exit/fmt.Print* from this check)", pkg),
+		})
+	}
+
 	ast.Inspect(f, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
@@ -98,15 +139,26 @@ func inspect(fset *token.FileSet, f *ast.File, path string) []Violation {
 		if !ok {
 			return true
 		}
+		// ident.Obj is non-nil when the identifier resolves to something
+		// declared in this file (a variable, a parameter), which means
+		// it shadows the import rather than referring to it.
+		if ident.Obj != nil {
+			return true
+		}
+
+		pkg, ok := bindings[ident.Name]
+		if !ok {
+			return true
+		}
 
 		switch {
-		case ident.Name == "os" && forbiddenSelectors[sel.Sel.Name]:
+		case pkg == "os" && forbiddenSelectors[sel.Sel.Name]:
 			violations = append(violations, Violation{
 				File:    path,
 				Line:    fset.Position(sel.Pos()).Line,
 				Message: fmt.Sprintf("must not reference os.%s outside _test.go files", sel.Sel.Name),
 			})
-		case ident.Name == "fmt" && strings.HasPrefix(sel.Sel.Name, "Print"):
+		case pkg == "fmt" && strings.HasPrefix(sel.Sel.Name, "Print"):
 			violations = append(violations, Violation{
 				File:    path,
 				Line:    fset.Position(sel.Pos()).Line,
