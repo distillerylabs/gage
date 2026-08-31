@@ -64,16 +64,57 @@ M7 without blocking work.
 
 ---
 
-### `[ ]` Q-ROOT-CMD — What does bare `gage` (no subcommand) do?
+### `[x]` Q-ROOT-CMD — What does bare `gage` (no subcommand) do?
 
-**Blocks:** M0 (skeleton), M6 (REPL).
+**Resolved 2026-08-30.** Bare `gage` drops into the interactive session
+prompt, per the design doc — overriding Cobra's default of printing help
+for an argument-less root command.
 
-The design doc says running `gage` with no subcommand drops into the
-interactive session prompt. Cobra's default for a root command with no
-args is to print help. Needs an explicit decision and an M0 test either
-way, because M6 inherits whatever M0 wires up. Recommendation: root
-command with no args and a TTY on stdin enters session mode; no TTY
-prints help.
+With one carve-out: **only when stdin is a TTY.** With stdin piped or
+redirected, bare `gage` prints help instead of entering a session. That's
+not a hedge on the decision — `--stdin` is already the design's explicit
+flag for "read session commands from stdin," and letting bare `gage`
+silently do the same thing would give one behavior two spellings, with
+the implicit one being the surprising one inside a script.
+
+Wired in M0, consumed by M6. See Q-HELP-SURFACES below for what falls out
+of it.
+
+---
+
+### `[ ]` Q-HELP-SURFACES — Are `gage help` and in-session `help` the same thing?
+
+**Blocks:** M0 (CLI help), M6 (REPL help). **Raised by:** Q-ROOT-CMD.
+
+They cannot be the same text, and until now nothing said so:
+
+- `gage --help` / `gage help` list **top-level subcommands**, which must
+  *not* include `use`/`lock`/`status`/`exit` — those exist only inside a
+  session.
+- In-session `help` must list exactly those session-only commands, and
+  must present vault selection as the bare `use <vault>` command rather
+  than the `-u|--use NAME` flag.
+- The **entry commands overlap**, and that overlap is where the two
+  surfaces will silently drift apart as commands are added across M4,
+  M5, M7, M8, and M12.
+
+Decisions needed:
+
+1. Is `gage help` (subcommand form) a supported spelling alongside
+   `gage --help`? Cobra provides it for free; the question is whether
+   it's tested and kept, or explicitly disabled.
+2. Does `gage help <subcommand>` work, and does in-session
+   `help <command>` mirror it?
+3. **How do the two surfaces stay in sync?** Recommendation: derive both
+   from one registry of command metadata, tagged with where each command
+   is available (one-shot, session, or both), so adding a command
+   updates both help surfaces or neither. The alternative — two
+   hand-maintained lists — is a guaranteed drift.
+4. Does in-session `help` list the one-shot-only flags (`-u|--use`) at
+   all, given they still work ad hoc inside a session?
+
+Recommendation on (1): keep `gage help`, test it, and treat it as
+equivalent to `gage --help`. It's what every operator will try first.
 
 ---
 
@@ -216,6 +257,23 @@ on unlock changes `entries/` underneath a live session. One sentence in
 Not a design-doc issue — was in the plan, now fixed: the plan pointed at
 `../designs/gage-cli-design.md`, which moved to `../tdds/` in `c0ee608`.
 Recorded here only so the move is on the record.
+
+### `[ ]` A9 — State the bare-`gage` TTY carve-out
+
+Q-ROOT-CMD is resolved as "session on a TTY, help when stdin is piped."
+The design doc currently says only that running `gage` with no subcommand
+drops you into the prompt, which read literally would make a piped bare
+`gage` a second, implicit spelling of `--stdin`. One sentence in "Session
+model."
+
+### `[ ]` A10 — Document the two help surfaces
+
+The design doc mentions `help` exactly once, in the session-only command
+list, and never mentions `gage help`/`gage --help` at all. Given
+Q-ROOT-CMD makes bare `gage` a session rather than a help dump, the
+command reference should state plainly that there are two help surfaces,
+what each covers, and that session-only commands never appear in the
+one-shot surface. Follows whatever Q-HELP-SURFACES resolves to.
 
 ---
 

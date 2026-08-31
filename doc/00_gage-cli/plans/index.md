@@ -182,6 +182,7 @@ this class of coupling easy to lose.
 | M0 | `vaultlock` advisory lock primitive | M4 onward: held across every read-modify-commit |
 | M0 | Atomic TOML write (temp + rename) | Global config, `.gage/config.toml`, `known-config.toml` (M10) |
 | M0 | Exit-code taxonomy | Every command; M9's `verify` 0/1 contract |
+| M0 | Command registry (name, description, one-shot/session availability) | `gage --help`/`gage help` render from it; M6's in-session `help` renders from it filtered. **Every milestone that adds a command must register it** |
 | M0 | `gittest.NewBareRemote` | M1's `set-remote` tests; M8's full sync harness |
 | M1 | `.gage/config.toml` schema incl. `format_version`, and rejection of unknown versions | Every later reader of that file |
 | M1 | Global config schema, incl. the per-vault `device` field | M2 populates `device`; M4's `updated_by` reads it |

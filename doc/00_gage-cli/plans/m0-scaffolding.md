@@ -29,8 +29,12 @@ Nothing.
 
 ## Decisions to make first
 
-- **[Q-ROOT-CMD](open-questions.md)** — what bare `gage` with no
-  subcommand does. M6 inherits whatever gets wired here.
+- **[Q-HELP-SURFACES](open-questions.md)** — `gage --help`/`gage help`
+  and in-session `help` are two different surfaces that share the entry
+  commands. Decide how they stay in sync (recommendation: one command
+  registry tagged by availability, so both derive from it) before writing
+  either, since retrofitting a registry after two hand-maintained lists
+  exist is the expensive order.
 - **Exit-code taxonomy.** The design specifies codes ad hoc (`recipient
   verify` exits 0/1; an ambiguous query fails nonzero). Define the full
   set centrally now — success, usage error, not-found, ambiguous,
@@ -49,10 +53,24 @@ Nothing.
       `os.Stdin`/`os.Stdout` or calls `fmt.Print*`/`os.Exit` outside
       `_test.go` files — keeps CLI-only I/O out of the library from day one
 - [ ] `gage --help` exits 0 and lists the registered top-level subcommands
+- [ ] `gage help` exits 0 and produces output identical to `gage --help` —
+      the spelling every operator tries first
+- [ ] `gage help <subcommand>` prints that subcommand's usage and exits 0;
+      `gage help <unknown>` fails with the usage exit code
+- [ ] Neither help spelling lists the session-only commands
+      (`use`/`lock`/`status`/`exit`) as top-level subcommands — they don't
+      exist outside a session, and listing them would send an operator
+      down a path that can't work
+- [ ] Every registered top-level subcommand appears in `gage --help` with
+      a non-empty short description — no command ships undocumented
 - [ ] `gage --version` prints a version string including the build's
       commit and, on a tagged build, the tag
-- [ ] bare `gage` with no subcommand behaves per Q-ROOT-CMD (test written
-      to whichever answer is chosen)
+- [ ] Bare `gage` with a TTY on stdin enters session mode rather than
+      printing help (Q-ROOT-CMD) — asserted at the dispatch level in M0;
+      the session itself is M6's
+- [ ] Bare `gage` with stdin piped or redirected prints help instead of
+      entering a session, leaving `--stdin` as the one spelling for
+      "read session commands from stdin"
 - [ ] XDG path resolution: correct config/data/state paths on Linux/macOS
       with `XDG_*` env vars set, and with them unset (defaults)
 - [ ] XDG path resolution: correct `%APPDATA%`/`%LOCALAPPDATA%`-based paths
@@ -96,7 +114,14 @@ Nothing.
       later milestone's cross-platform claims are actually verified,
       rather than asserted on whatever OS the plan happens to be written on
 - [ ] Cobra root command + subcommand dispatch skeleton; `--version` with
-      build metadata injected at link time
+      build metadata injected at link time. Bare `gage` dispatches to
+      session mode on a TTY and to help otherwise (Q-ROOT-CMD) — the
+      session handler itself is a stub until M6
+- [ ] Command registry: one place recording each command's name, short
+      description, and where it's available (one-shot, session, or both).
+      `gage --help`/`gage help` and M6's in-session `help` both render
+      from it, so a command added later can't appear in one surface and
+      not the other (Q-HELP-SURFACES)
 - [ ] Exit-code taxonomy as a single library-side enum, rendered to
       process exit codes by `cmd/gage` (the library itself never calls
       `os.Exit`)
@@ -141,8 +166,9 @@ Nothing.
 
 ## Definition of done
 
-Full test list green on all three CI platforms. `gage --help` and
-`gage --version` work; nothing else does yet, and that's correct.
+Full test list green on all three CI platforms. `gage --help`,
+`gage help`, and `gage --version` work, and bare `gage` dispatches
+correctly by TTY; nothing else does yet, and that's correct.
 
 ## Affects later milestones
 
@@ -150,6 +176,9 @@ Full test list green on all three CI platforms. `gage --help` and
   M2 fills them in, M4/M5 consume them, M6 caches across them.
 - `vaultlock` is unused until M4 but its semantics (blocking, timeout,
   typed contention error) are settled here.
+- The command registry is what M6's in-session `help` renders from, and
+  what every milestone adding a command must register into. A command
+  that isn't in the registry is invisible to one help surface or both.
 - The atomic-write helper and exit-code taxonomy are expected by every
   later milestone; using anything else is a review failure.
 - `gittest.NewBareRemote` is extended, not replaced, in M8.

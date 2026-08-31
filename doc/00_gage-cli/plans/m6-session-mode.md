@@ -39,8 +39,16 @@ decrypt-on-demand per command.
 
 ## Decisions to make first
 
-- **[Q-ROOT-CMD](open-questions.md)** — settled in M0, consumed here.
-  Confirm the M0 wiring actually reaches the REPL.
+- **[Q-ROOT-CMD](open-questions.md)** — resolved: bare `gage` on a TTY
+  enters the session prompt, piped stdin prints help. Wired in M0;
+  confirm that dispatch actually reaches the REPL now that the REPL
+  exists.
+- **[Q-HELP-SURFACES](open-questions.md)** — in-session `help` renders
+  from M0's command registry, filtered to what's available in a session.
+  Decide whether `help <command>` is supported in-session, and whether
+  the one-shot-only `-u|--use` flag is shown at all (it still works ad
+  hoc inside a session, so hiding it entirely is a choice, not an
+  oversight).
 - **Readline implementation.** History, line editing, and Ctrl-C/Ctrl-D
   handling in the REPL. Not in the locked dependency list; needs one
   (`chzyer/readline`, `peterh/liner`, or hand-rolled over `x/term`).
@@ -92,8 +100,19 @@ decrypt-on-demand per command.
 - [ ] the REPL is a thin wiring layer: it parses a typed line into the
       corresponding `Session` call and renders the result — one wiring
       test suffices here, not a re-test of `Session` behavior
+- [ ] Bare `gage` on a TTY reaches the REPL — the M0 dispatch decision,
+      re-asserted end-to-end now that there's a session to reach
+- [ ] In-session `help` lists the session-only commands
+      (`use`/`lock`/`status`/`exit`) *and* the entry commands available
+      in a session
+- [ ] In-session `help` and `gage --help` derive from the same command
+      registry: a command registered as available in both modes appears
+      in both surfaces with the same description, asserted by comparing
+      the rendered sets rather than by eyeballing two hand-written lists
+- [ ] No command available in a session is missing from in-session
+      `help`, and no session-only command leaks into `gage --help`
 - [ ] An unknown REPL command reports usage and does not terminate the
-      session
+      session, and points at `help`
 - [ ] The full M6 test suite passes unmodified on Windows, not just
       Linux/macOS — `Session`'s locking/idle-timeout behavior doesn't
       depend on any POSIX-only mechanism
@@ -109,6 +128,8 @@ decrypt-on-demand per command.
       (`use`/`lock`/`status`/`exit`/`help`), including rendering an
       ambiguous-query candidate list as the `[1-2]` prompt shown in the
       design doc — the one place this wiring is more than plain dispatch
+- [ ] In-session `help`, rendered from M0's command registry filtered to
+      session availability — not a second hand-maintained list
 - [ ] Prompt template rendering (`{vault}`, `{lock}`, `{dirty}`) from
       `[shell].prompt`
 - [ ] History file handling: `[shell].history_file`, `0600`, command
