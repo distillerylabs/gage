@@ -168,20 +168,51 @@ from `--method <required>` to `[--method passphrase]`, and dropped the
 not-yet-real values from the usage line — they're described in the prose
 instead, so the usage line documents what the tool actually accepts.
 
-Leaves Q-METHOD-SCOPE below genuinely open; the two are separate
-questions that both happen to touch the word "method."
+Q-METHOD-SCOPE below — a separate question that happens to touch the
+same word — was surfaced by this one and is now resolved too.
 
 ---
 
-### `[ ]` Q-METHOD-SCOPE — Is a vault's method one-per-vault, or per-device?
+### `[x]` Q-METHOD-SCOPE — Is a vault's method one-per-vault, or per-device?
 
-**Blocks:** nothing today (passphrase is the only method). **Should be
-settled before the second method lands** — it's a principle-level
-question, and it's cheaper to answer now than after `identity add` has
-shipped a flag that may not belong.
+**Resolved 2026-08-30 — option 2: per-device.** A vault's `[method]` is a
+*default* for devices joining it, not a constraint. `gage identity add
+--method` is meaningful and keeps its flag. Applied as A14.
 
-The design doc contradicts itself, and resolving Q-METHOD-FLAG made the
-contradiction visible rather than causing it:
+**What follows from it:**
+
+- `.gage/config.toml`'s `[method] kind = ...` becomes
+  `[method] default = ...` — the old name read as the constraint
+  interpretation being removed. No compatibility concern; nothing is
+  built yet.
+- **Each device's actual method is recorded in local state, not in the
+  vault.** A method is an identity concern, and the design's own
+  `identity`/`recipient` split says identities are device-side and never
+  committed. Nothing else needs it: unlock consults only your own
+  method, and `recipient add` only ever needs a public key.
+- That placement has a security benefit worth keeping deliberately: a
+  committed `device = "laptop-1", method = "passphrase"` line would tell
+  anyone with vault read access which recipient is the softest target,
+  while enabling nothing in return.
+- `gage init --method` sets both the vault default and the first
+  device's own method; `gage identity add --method` sets only that
+  device's, defaulting to the vault's default.
+- Principle 1 reworded — it no longer claims one method per vault.
+
+**Couples to Q-DEVICE-NAME below:** the local per-vault record now
+has to hold both this device's identity *name* and its *method*. Whatever
+Q-DEVICE-NAME settles on as the local record is where both live, so the
+two should be answered together.
+
+**The reasoning, retained:** nothing cryptographic forced one method per
+vault. age recipients are just public keys, and a single `.age` file can
+be encrypted to a mix of X25519 and plugin recipients — a YubiKey
+recipient is `age1yubikey1...` sitting in `.age-recipients` beside any
+other. A vault-wide method would have been policy dressed up as a
+constraint.
+
+The original contradiction, for the record — resolving Q-METHOD-FLAG made
+it visible rather than causing it:
 
 - **Principle 1** says "each vault has exactly one decryption method
   chosen at `init` time," and `.gage/config.toml` carries a single
@@ -197,34 +228,11 @@ contradiction visible rather than causing it:
   choose one — but its own description says it "registers this device's
   way of satisfying *the vault's* method," which implies it can't.
 
-**Nothing cryptographic forces one method per vault.** age recipients are
-just public keys, and a single `.age` file can be encrypted to a mix of
-X25519 and plugin recipients (a YubiKey recipient is `age1yubikey1...`).
-So the vault-level `[method]` is a policy/UX statement, not a
-crypto constraint — which means this is a genuine product decision, not a
-technical one.
 
-Options:
-
-1. **Method is per-vault policy** — every device must use the vault's
-   method. `identity add` drops `--method` entirely (it's implied by the
-   vault), and principle 1 stands as written.
-2. **Method is per-device** — `[method]` in vault config becomes a
-   *default* for new devices rather than a constraint, `identity add
-   --method` is meaningful, and principle 1 needs rewording. Matches the
-   `identity`/`recipient` bullet and what age actually permits.
-3. **Method is a per-vault *floor*** — the vault names a minimum
-   assurance level and devices may satisfy it with anything at or above
-   it. Most expressive, most complexity, probably not worth it.
-
-Recommendation: (2), since it's what the crypto permits and what the
-`identity`/`recipient` bullet already promises — but (1) is a coherent
-simpler product, and it's the one principle 1 currently claims. Either
-way one of the two passages has to change.
 
 ---
 
-### `[ ]` Q-DEVICE-NAME — Where is this device's identity name recorded?
+### `[ ]` Q-DEVICE-NAME — Where is this device's identity name *and method* recorded?
 
 **Blocks:** M2 (`Unlock` must find the file), M4 (`updated_by`).
 
@@ -234,8 +242,14 @@ document says where "which device am I, for this vault" is stored.
 Globbing the directory only works under an unstated one-file-per-vault
 assumption.
 
-Recommendation, and what the plan is currently written against: a
-`device` field under `[vaults.<name>]` in global config, written by
+**Now also has to hold this device's method**, per Q-METHOD-SCOPE: the
+method is a per-device choice recorded locally and never committed to
+the vault, so whatever local record answers "which device am I" is also
+where "and how do I unlock" lives. The two fields travel together and
+should be answered in one go.
+
+Recommendation, and what the plan is currently written against: `device`
+and `method` fields under `[vaults.<name>]` in global config, written by
 `init`/`identity add`/`clone`. Needs confirmation because it changes the
 global config schema tested in M0/M1.
 
@@ -296,8 +310,8 @@ Changes [gage-cli-design.md](../tdds/gage-cli-design.md) needs. `[x]`
 means applied to the design doc; entries are kept after application as a
 record of what changed and why.
 
-**Applied 2026-08-30:** A1, A2, A3, A5, A7, A8, A9, A10, A11, A12.
-**Still open:** A4 and A6 — both are blocked on unresolved questions
+**Applied 2026-08-30:** A1, A2, A3, A5, A7, A8, A9, A10, A11, A12, A13,
+A14. **Still open:** A4 and A6 — both are blocked on unresolved questions
 (Q-DEVICE-NAME and Q-GIT-AUTH respectively) and can't be written until
 those are answered.
 
@@ -400,8 +414,31 @@ required and listed six values, only one of which exists. Now
 following prose rather than advertised in a usage line as though they
 were accepted today.
 
-Deliberately did **not** touch `gage identity add --method`, whose
-existence depends on Q-METHOD-SCOPE.
+Deliberately did **not** touch `gage identity add --method` in this
+amendment; that followed in A14 once Q-METHOD-SCOPE was answered.
+
+### `[x]` A14 — Decryption methods are per-device, not per-vault
+
+Per Q-METHOD-SCOPE (option 2). Five changes:
+
+1. **Principle 1 reworded** — no longer claims "exactly one decryption
+   method chosen at `init` time." Now: recipients are the trust
+   boundary, and the vault records a *default* method while the method
+   itself is a per-device choice.
+2. **New section, "Decryption methods are per-device"** — why nothing
+   cryptographic required otherwise, why a device's actual method is
+   local rather than committed, and what `[method].default` is for.
+3. **`[method] kind` → `[method] default`** in the vault config, with
+   the comment relabeled as a default rather than a constraint.
+4. **`gage identity add`** — usage becomes `[--method passphrase]`,
+   described as this device's own choice, defaulting to the vault's
+   default, on the same allowlist as `init`.
+5. **Residual "the vault's method" claims corrected** in `gage init`
+   ("chosen default method… using that same method for this device") and
+   `gage clone` ("learn the vault's default method, which is what a
+   subsequent `gage identity add` will suggest"), plus the
+   `identity`/`recipient` bullet, which now states the per-device rule
+   explicitly instead of merely implying it.
 
 ---
 

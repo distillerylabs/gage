@@ -60,6 +60,11 @@ untouched rather than half-migrated.
       to decrypt
 - [ ] `gage identity add` with a device name already registered is
       rejected rather than silently overwriting an existing identity file
+- [ ] `gage identity add` with no `--method` takes the vault's
+      `[method].default`; `--method passphrase` is equivalent, and any
+      other value fails on the same allowlist as `init` — the flag sets
+      *this device's* method, which is per-device by design and recorded
+      locally rather than in the vault (Q-METHOD-SCOPE)
 - [ ] `gage identity list` reports the local device's registered
       identities for a vault
 - [ ] Recovering from a lost identity file needs no file restore: a fresh

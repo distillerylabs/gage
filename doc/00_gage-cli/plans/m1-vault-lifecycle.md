@@ -46,8 +46,12 @@ bare-remote test harness exists to clone *from*.
 ## Decisions to make first
 
 - **[Q-DEVICE-NAME](open-questions.md)** — the global config schema needs
-  a per-vault `device` field if that's the answer. M1 defines the schema;
-  M2 populates the field. Decide before writing the schema, not after.
+  per-vault `device` *and* `method` fields if that's the answer. Both are
+  local-only by Q-METHOD-SCOPE: a device's actual method is an identity
+  concern and is never committed to the vault, so it can't live in
+  `.gage/config.toml` alongside `[method].default`. M1 defines the
+  schema; M2 populates both fields. Decide before writing the schema,
+  not after.
 - **`gage init` into an already-registered name.** Reject outright, or
   allow with `--force`? Untested and unspecified today.
 - **`gage vault info` with no argument** — the design shows `[<name>]` as
@@ -72,8 +76,12 @@ bare-remote test harness exists to clone *from*.
       per the decision above, and either way leaves the existing vault's
       files and registration untouched
 - [ ] `.gage/config.toml` round-trip: `[vault]` (including `type = "git"`
-      and `format_version`) + `[method]` + `[[recipients]]` fields survive
-      write/parse
+      and `format_version`) + `[method].default` + `[[recipients]]` fields
+      survive write/parse
+- [ ] `[[recipients]]` entries carry only `device` and `pubkey` — no
+      per-device `method` field leaks into the committed vault config,
+      which would tell anyone with read access which recipient is the
+      softest target (Q-METHOD-SCOPE)
 - [ ] A `.gage/config.toml` carrying an unrecognized `format_version`
       is refused cleanly with an "upgrade gage" error, before any other
       field is acted on — never best-effort parsed
@@ -82,7 +90,9 @@ bare-remote test harness exists to clone *from*.
 - [ ] `gage init --type <anything-else>` fails with a usage error before
       creating any files, and lists `git` as the only accepted value
 - [ ] `gage init` with no `--method` flag defaults to
-      `method.kind = "passphrase"` in `.gage/config.toml`
+      `[method].default = "passphrase"` in `.gage/config.toml` — a
+      default for devices joining, not a vault-wide constraint
+      (Q-METHOD-SCOPE)
 - [ ] `gage init --method passphrase` succeeds and is equivalent to
       omitting the flag
 - [ ] `gage init --method <anything-else>` fails with a usage error before

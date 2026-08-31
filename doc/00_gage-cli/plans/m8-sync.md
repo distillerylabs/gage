@@ -164,7 +164,9 @@ offline-handling logic runs.
       `gage`)
 - [ ] `gage clone` (go-git `PlainClone`, reusing this milestone's
       bare-remote test harness); reads the cloned `.gage/config.toml` to
-      learn the vault's method and reports plainly if the local device
+      learn the vault's default method — what a subsequent `identity add`
+      will suggest for this device, not a constraint on it
+      (Q-METHOD-SCOPE) — and reports plainly if the local device
       isn't yet a recipient
 
 ## Definition of done

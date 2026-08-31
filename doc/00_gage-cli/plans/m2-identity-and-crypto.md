@@ -87,8 +87,14 @@ purely additive (a recovery key alongside the device's own).
 - [ ] The public key derived from the generated identity matches exactly
       what's written to both `.age-recipients` and `.gage/config.toml`'s
       `[[recipients]]`
-- [ ] The device name is recorded per Q-DEVICE-NAME, and `Unlock`
-      resolves the right identity file from it
+- [ ] The device name *and this device's method* are recorded locally per
+      Q-DEVICE-NAME, and `Unlock` resolves the right identity file from
+      the former
+- [ ] `Unlock` dispatches on **this device's** locally-recorded method,
+      not on the vault's `[method].default` — the two can differ by
+      design (Q-METHOD-SCOPE), and reading the vault's default would be
+      the wrong source even though today both are `passphrase` and the
+      bug would be invisible
 - [ ] `Vault.Unlock` with the correct passphrase returns an `Identity`
       that decrypts a payload encrypted to its public key via the wrapper
       above
@@ -133,7 +139,11 @@ purely additive (a recovery key alongside the device's own).
       private half wrapped via age's scrypt passphrase recipient at the
       chosen work factor, written to
       `$GAGE_DATA/identities/<vault>/<device>.age`
-- [ ] Device-name resolution and recording, per Q-DEVICE-NAME
+- [ ] Device-name and per-device-method resolution and recording, per
+      Q-DEVICE-NAME — written to local state, never to the vault's
+      committed config. `Vault.Unlock` reads the method from here, which
+      is what makes a second method additive later rather than a change
+      to how unlocking finds its method at all
 - [ ] `Vault.Unlock(Prompter) (Identity, error)`: decrypts the wrapped
       identity file back into a usable private key via the typed unlock
       exchange; returns distinguishable typed errors (wrong passphrase /

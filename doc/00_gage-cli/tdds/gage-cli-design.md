@@ -4,14 +4,19 @@
 
 ## Design principles
 
-1. **A vault is the unit of trust.** Each vault has exactly one decryption
-   method chosen at `init` time, and its own set of recipients. You can have
-   as many vaults as you want (`work`, `personal`, `shared-family`), each with
-   a different security posture. A vault also has a *type*, naming the
-   backing store that durably holds and syncs its entries — today that's
-   always `git` (see "Vault types" below), but making it a first-class field
-   rather than an assumption is what lets the storage layer change later
-   without the rest of `gage` noticing.
+1. **A vault is the unit of trust.** Each vault has its own set of
+   recipients, and that list — nothing finer-grained — is who can read it.
+   You can have as many vaults as you want (`work`, `personal`,
+   `shared-family`), each with a different security posture. A vault also
+   records a *default* decryption method for devices joining it, but the
+   method is a per-device choice rather than a vault-wide constraint (see
+   "Decryption methods are per-device" below): what a vault actually
+   contains is a list of public keys, and how each device holds the
+   matching private key is that device's business. A vault also has a
+   *type*, naming the backing store that durably holds and syncs its
+   entries — today that's always `git` (see "Vault types" below), but
+   making it a first-class field rather than an assumption is what lets the
+   storage layer change later without the rest of `gage` noticing.
 2. **Entries are just files, named opaquely.** A password, a structured note
    (API keys, recovery codes), or an unstructured note (a paragraph of text)
    are all the same thing on disk: one `.age`-encrypted file per entry,
@@ -290,8 +295,8 @@ format_version = 1
 created = "2026-08-29"
 
 [method]
-kind = "yubikey"          # passphrase | age-key | ssh | yubikey | secure-enclave | plugin:<name>
-plugin = "age-plugin-yubikey"
+default = "yubikey"       # passphrase | age-key | ssh | yubikey | secure-enclave | plugin:<name>
+plugin = "age-plugin-yubikey"   # a default for devices joining, not a constraint
 
 [[recipients]]
 device = "yubikey-5c-nfc-1"
@@ -310,6 +315,48 @@ half-read a newer vault, silently drop the fields it didn't know about
 on the next write, and the marker would have bought nothing. Enforcing
 it from v1 is what makes it possible to change this file's shape later
 at all.
+
+### Decryption methods are per-device
+
+`[method].default` is exactly what it says: the method suggested to a
+device joining this vault, not a rule every device must follow. A single
+vault can have a laptop unlocking via YubiKey touch, a phone via the
+Secure Enclave, and a paper recovery key that's a bare age keypair —
+same recipient list, different local mechanics.
+
+**Nothing cryptographic requires otherwise.** age recipients are just
+public keys, and one `.age` file can be encrypted to a mix of X25519 and
+plugin recipients — a YubiKey recipient is `age1yubikey1...` and sits in
+`.age-recipients` beside any other. A vault-wide method would have been
+policy dressed up as a constraint, and enforcing it would buy nothing:
+the recipient list is what determines who can read the vault, and it
+can't tell you how any of those keys are stored anyway.
+
+This follows directly from the `identity`/`recipient` split (see "A few
+decisions worth calling out"). A *recipient* is public, vault-side, and
+committed. An *identity* is how one device proves it holds the matching
+private key — device-side, and never committed. A method is an identity
+concern, so:
+
+- **Each device's actual method is recorded locally**, alongside that
+  device's own identity name, and never written into the vault. Nothing
+  else needs it: unlocking consults only your own method, and adding a
+  recipient only ever needs a public key.
+- **The vault therefore never advertises which device uses which
+  method.** That's worth having on purpose — a committed
+  `device = "laptop-1", method = "passphrase"` line would tell anyone
+  with read access exactly which recipient is the softest target,
+  without enabling anything in return.
+- **`[method].default` exists for the joining experience.** `gage clone`
+  reads it to know what to suggest, so a new device gets a sensible
+  prompt instead of being asked to pick from a list of methods with no
+  indication of what this vault's other devices do.
+
+`gage init --method` sets both the vault's default and the first device's
+own method. `gage identity add --method` sets just that device's,
+defaulting to the vault's default when omitted. Both are validated
+against the same single-value allowlist described under `gage init` —
+today, `passphrase`.
 
 Recipients apply to the whole vault, full stop — no per-directory overrides.
 `gage init` is cheap enough that "who needs access to this?" is a vault-level
@@ -1043,7 +1090,8 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
 
     Creates a new vault: for the git type (the only one today), this means
     git init, writes .gage/config.toml with type = "git" plus the chosen
-    method, generates or registers the first identity (writing its wrapped
+    default method, generates or registers the first identity using that
+    same method for this device (writing its wrapped
     identity file for passphrase/age-key methods — see "Local identity
     storage" above), and commits the initial (empty) structure. --recipient
     can be repeated to add extra
@@ -1065,7 +1113,9 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
 gage clone <remote-url> [--name NAME] [--dir PATH]
 
     Clones an existing vault: for the git type, a git clone, followed by
-    reading .gage/config.toml to learn the required method. Without --dir,
+    reading .gage/config.toml to learn the vault's default method, which
+    is what a subsequent `gage identity add` will suggest for this
+    device. Without --dir,
     clones to $GAGE_DATA/vaults/<name> — same default as `init` — inferring
     <name> from the remote URL unless --name overrides it. Does NOT grant
     you access — if your device isn't already a recipient, gage tells you
@@ -1098,12 +1148,14 @@ under one verb would be confusing in the other direction.
 ### Identity (how *this device* proves it can decrypt)
 
 ```
-gage identity add --use NAME --method ssh|yubikey|passphrase|secure-enclave
-                   [--key-path PATH]
+gage identity add --use NAME [--method passphrase] [--key-path PATH]
 
-    Registers this device's way of satisfying the vault's method, and prints
-    the resulting public key so it can be added as a recipient (either by
-    you, if you're bootstrapping, or by an existing recipient). For
+    Registers how *this device* holds its private key, and prints the
+    resulting public key so it can be added as a recipient (either by
+    you, if you're bootstrapping, or by an existing recipient). --method
+    is this device's own choice, not the vault's (see "Decryption methods
+    are per-device"); omitted, it takes the vault's [method].default.
+    Same single-value allowlist as `gage init` — today, passphrase. For
     passphrase/age-key methods this also writes the device's wrapped
     identity file to $GAGE_DATA/identities/<vault>/<device>.age (see "Local
     identity storage"); ssh/yubikey/secure-enclave write nothing here,
@@ -1344,9 +1396,13 @@ here" — by construction, nothing would replace it.
   decrypt this vault" (public keys, vault-side, committed to git).
   `identity` is "how does *this device* prove it's one of those
   recipients" (private-key handling, device-side, never committed). A
-  YubiKey-based vault might have a laptop identity via NFC/USB touch and a
+  vault might have a laptop identity via NFC/USB touch and a
   phone identity via the Secure Enclave — same recipient list, different
-  local mechanics.
+  local mechanics. This is why the decryption *method* is a per-device
+  choice rather than a vault-wide setting: it's an identity concern, so
+  it's recorded on the device and never committed. The vault's
+  `[method].default` only says what to suggest to the next device that
+  joins. See "Decryption methods are per-device."
 - **Local identity files live under `$GAGE_DATA`, never inside a vault.**
   `passphrase`/`age-key` methods need `gage` to persist a wrapped private
   key somewhere on this device (`ssh`/`yubikey`/`secure-enclave` don't —
