@@ -232,31 +232,40 @@ it visible rather than causing it:
 
 ---
 
-### `[ ]` Q-DEVICE-NAME — Where is this device's identity name *and method* recorded?
+### `[x]` Q-DEVICE-NAME — Where is this device's identity name *and method* recorded?
 
-**Blocks:** M2 (`Unlock` must find the file), M4 (`updated_by`).
+**Resolved 2026-08-30.** `device` and `method` fields under
+`[vaults.<name>]` in global config, written by `init`/`identity
+add`/`clone`. Both are per-vault, because both can legitimately differ
+between vaults on one machine. Applied as A15.
 
-`Vault.Unlock` has to locate `$GAGE_DATA/identities/<vault>/<device>.age`
-and every write stamps `updated_by` with the device name. Neither
-document says where "which device am I, for this vault" is stored.
-Globbing the directory only works under an unstated one-file-per-vault
-assumption.
+**Default device name: the normalized hostname.** Lowercased, truncated
+at the first dot (`Andrews-MacBook-Pro.local` → `andrews-macbook-pro`),
+anything outside `[a-z0-9._-]` replaced with `-`, runs collapsed, length
+capped. If normalization leaves nothing usable, `gage` prompts rather
+than inventing a name.
 
-**Now also has to hold this device's method**, per Q-METHOD-SCOPE: the
-method is a per-device choice recorded locally and never committed to
-the vault, so whatever local record answers "which device am I" is also
-where "and how do I unlock" lives. The two fields travel together and
-should be answered in one go.
+**`--device NAME` added to `init` and `identity add`.** This turned out
+to be a gap rather than a choice: neither command had *any* way to name
+a device, so "hostname is the default" was unimplementable — a default
+needs something to be a default *for*. The flag is also the escape hatch
+for the disclosure noted under Accepted risks below.
 
-Recommendation, and what the plan is currently written against: `device`
-and `method` fields under `[vaults.<name>]` in global config, written by
-`init`/`identity add`/`clone`. Needs confirmation because it changes the
-global config schema tested in M0/M1.
+**Security consequence, and the reason this resolution grew:** a device
+name is a filename component in
+`$GAGE_DATA/identities/<vault>/<device>.age`, and it arrives from
+`.gage/config.toml` — a committed file that, per the design's own
+"Trust boundaries," anyone with git write access can edit. A
+`[[recipients]]` entry reading `device = "../../../../etc/cron.d/x"`
+must be rejected, not resolved. Device names are therefore validated
+against the character allowlist on read *and* on write, and no path is
+ever constructed from an unvalidated one. This is the only place a
+vault's plaintext metadata reaches the local filesystem, so it's treated
+as untrusted input. Tested in M1 (config read) and M2 (path
+construction).
 
-Secondary question it raises: what's the default device name when the
-user doesn't pass one? Hostname is the obvious candidate; it's also
-PII-ish and lands in a committed, plaintext `config.toml` readable by
-everyone with vault read access.
+Collision handling was already covered: M9 rejects an `identity add`
+whose device name is already a recipient of that vault.
 
 ---
 
@@ -284,10 +293,10 @@ splitting M8 into happy-path sync and conflict resolution.
 
 ---
 
-### `[ ]` Q-DEVICE-DEFAULT-NAME — see Q-DEVICE-NAME above
+### `[x]` Q-DEVICE-DEFAULT-NAME — see Q-DEVICE-NAME above
 
-Folded into Q-DEVICE-NAME; kept as an anchor so it isn't answered by
-accident.
+Folded into Q-DEVICE-NAME and resolved there: normalized hostname by
+default, `--device NAME` to override.
 
 ---
 
@@ -342,9 +351,10 @@ any other recipient. That's fine for the identity file as designed
 storage" so nobody later tries to add a second recipient to
 `<device>.age`.
 
-### `[ ]` A4 — Say where the device name is recorded
+### `[x]` A4 — Say where the device name is recorded
 
-Follows whatever Q-DEVICE-NAME resolves to.
+Superseded by A15, which covers this and the naming/validation rules
+Q-DEVICE-NAME turned out to need.
 
 ### `[x]` A5 — Specify `format_version` enforcement
 
@@ -440,9 +450,42 @@ Per Q-METHOD-SCOPE (option 2). Five changes:
    `identity`/`recipient` bullet, which now states the per-device rule
    explicitly instead of merely implying it.
 
+### `[x]` A15 — Device naming, storage, and validation
+
+Per Q-DEVICE-NAME. Four changes:
+
+1. **Global config gains `device` and `method`** under
+   `[vaults.<name>]`, with prose on why both are per-vault and why both
+   are local rather than committed.
+2. **"Where the device name comes from"** in "Local identity storage" —
+   the hostname default and its normalization rules, and `--device` as
+   the override.
+3. **`--device NAME` added** to `gage init` and `gage identity add`
+   usage, plus the already-registered-name rejection on `identity add`.
+4. **"Device names are validated before they're ever used as a path"** —
+   the path-traversal rule, framed against the design's own trust
+   boundary (a committed file that any git-writer can edit).
+
 ---
 
 ## Accepted risks
+
+### A hostname device name discloses whose machine it is
+
+`device` defaults to the normalized hostname and is written into the
+vault's committed, plaintext `.gage/config.toml`, where every recipient
+can read it — `andrews-macbook-pro` names a person as much as a machine.
+
+Accepted because the people who can read a vault generally already know
+whose devices are on it, and because a recognizable device name is the
+whole point of the trust-cache diff being legible ("a bare `age1...`
+list doesn't" — see "Local trust cache"). `--device NAME` is the escape
+hatch, and is worth reaching for on vaults shared beyond people who
+should know your machine names.
+
+Note the disclosure is bounded to the *name*: per Q-METHOD-SCOPE, a
+device's unlock method stays local, so the committed config never
+reveals which recipient is the softest target.
 
 ### Entries carry no format version of their own
 

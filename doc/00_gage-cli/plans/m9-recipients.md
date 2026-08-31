@@ -58,8 +58,13 @@ untouched rather than half-migrated.
       identity file at `$GAGE_DATA/identities/<vault>/<device>.age`;
       deleting one device's file doesn't affect another device's ability
       to decrypt
-- [ ] `gage identity add` with a device name already registered is
-      rejected rather than silently overwriting an existing identity file
+- [ ] `gage identity add` with a device name already registered as a
+      recipient of that vault is rejected rather than silently
+      overwriting an existing identity file — including the common case
+      of two machines sharing a hostname, where the default name
+      collides without anyone typing it
+- [ ] `gage identity add --device NAME` overrides the hostname default;
+      omitted, the normalized hostname is used
 - [ ] `gage identity add` with no `--method` takes the vault's
       `[method].default`; `--method passphrase` is equivalent, and any
       other value fails on the same allowlist as `init` — the flag sets

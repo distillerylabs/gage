@@ -45,13 +45,6 @@ bare-remote test harness exists to clone *from*.
 
 ## Decisions to make first
 
-- **[Q-DEVICE-NAME](open-questions.md)** — the global config schema needs
-  per-vault `device` *and* `method` fields if that's the answer. Both are
-  local-only by Q-METHOD-SCOPE: a device's actual method is an identity
-  concern and is never committed to the vault, so it can't live in
-  `.gage/config.toml` alongside `[method].default`. M1 defines the
-  schema; M2 populates both fields. Decide before writing the schema,
-  not after.
 - **`gage init` into an already-registered name.** Reject outright, or
   allow with `--force`? Untested and unspecified today.
 - **`gage vault info` with no argument** — the design shows `[<name>]` as
@@ -82,6 +75,24 @@ bare-remote test harness exists to clone *from*.
       per-device `method` field leaks into the committed vault config,
       which would tell anyone with read access which recipient is the
       softest target (Q-METHOD-SCOPE)
+- [ ] Global config round-trips per-vault `device` and `method` fields
+      (M2 populates them; M1 only has to define and preserve the schema)
+- [ ] Device-name normalization: a hostname like `Andrews-MacBook-Pro.local`
+      normalizes to `andrews-macbook-pro`; names are lowercased,
+      truncated at the first dot, non-allowlisted characters replaced,
+      runs collapsed, length capped
+- [ ] A hostname that normalizes to nothing usable causes `gage` to
+      prompt for a device name rather than inventing one
+- [ ] `--device NAME` overrides the hostname default on `init`, and the
+      given name is what lands in `[[recipients]].device` and the
+      identity file path
+- [ ] `--device` with a name failing the allowlist is rejected with a
+      usage error before any file is created
+- [ ] **A `.gage/config.toml` whose `[[recipients]].device` contains a
+      path traversal (`../../../etc/x`), an absolute path, or a path
+      separator is rejected on read** — never normalized into something
+      usable, never used to build a path. The file is committed and any
+      git-writer can edit it, so this is untrusted input (Q-DEVICE-NAME)
 - [ ] A `.gage/config.toml` carrying an unrecognized `format_version`
       is refused cleanly with an "upgrade gage" error, before any other
       field is acted on — never best-effort parsed
@@ -157,7 +168,14 @@ bare-remote test harness exists to clone *from*.
       rather than at first encrypt in M3
 - [ ] Global config registry: register on `init`, deregister on `vault
       remove`, `current` on `set-default`; schema includes the per-vault
-      `device` field (populated in M2)
+      `device` and `method` fields (populated in M2)
+- [ ] Device-name normalization and validation helper: normalize a
+      hostname to the allowlist, and validate any name read from
+      `.gage/config.toml` before it is used anywhere. Validation is the
+      security-relevant half — device names reach the filesystem as path
+      components and arrive from a committed file any git-writer can
+      edit
+- [ ] `--device NAME` on `init`
 - [ ] `gage vault list/info/remove/set-default`
 - [ ] `gage git set-remote` (go-git set/update `origin`, synced into
       `vaults.<name>.git.origin` in global config in the same call)

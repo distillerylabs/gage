@@ -474,6 +474,9 @@ current = "personal"
 [vaults.personal]
 path = "$GAGE_DATA/vaults/personal"
 type = "git"
+device = "laptop-1"       # this device's identity name in that vault
+method = "passphrase"     # how THIS device unlocks it — see "Decryption
+                          # methods are per-device"
 
 [vaults.personal.git]
 origin = "git@github.com:you/personal-vault.git"
@@ -481,6 +484,8 @@ origin = "git@github.com:you/personal-vault.git"
 [vaults.work]
 path = "$GAGE_DATA/vaults/work"
 type = "git"
+device = "laptop-1"
+method = "passphrase"
 
 [vaults.work.git]
 origin = "git@internal:secrets/work-vault.git"
@@ -490,6 +495,16 @@ prompt = "[{vault}{lock}] gage> "    # {vault}, {lock} (🔓/🔒), {dirty} toke
 idle_timeout = "10m"                 # auto re-lock a session vault after inactivity
 history_file = "$GAGE_STATE/history"   # command names/paths only, never values
 ```
+
+`device` and `method` are this machine's answers to "who am I in that
+vault, and how do I unlock it." They're per-vault because both can
+legitimately differ between vaults on one machine — a laptop might be
+`laptop-1` unlocking `personal` by passphrase and `work-laptop`
+unlocking `work` by YubiKey. Both live here, in local config, rather
+than in the vault's own committed `config.toml`: `device` is what maps
+this machine to one of the vault's recipients, and `method` is an
+identity concern that the vault has no business recording (see
+"Decryption methods are per-device").
 
 Type-specific metadata (`origin`, for `git`) lives in its own nested
 table — `[vaults.<name>.<type>]` — rather than flat fields on
@@ -545,6 +560,33 @@ filesystem permissions). `<device>` is the same identity name registered
 via `gage identity add` and listed under `[[recipients]]` in
 `.gage/config.toml` — e.g. `$GAGE_DATA/identities/personal/laptop-1.age`.
 The directory is created `0700`, the file `0600`.
+
+**Where the device name comes from.** `gage init` and `gage identity add`
+both take an optional `--device NAME`. Omitted, it defaults to this
+machine's hostname, normalized: lowercased, truncated at the first dot
+(so `Andrews-MacBook-Pro.local` becomes `andrews-macbook-pro`), any
+character outside `[a-z0-9._-]` replaced with `-`, runs collapsed, and
+length-capped. If normalization leaves nothing usable, `gage` asks for a
+name rather than inventing one. The chosen name is recorded in local
+config under `[vaults.<name>].device` and, as a recipient label, in the
+vault's committed `.gage/config.toml`.
+
+A hostname default is convenient rather than private: it puts something
+like `andrews-macbook-pro` into a plaintext file every recipient of the
+vault can read. That's usually fine — the people who can read a vault
+generally know whose devices are on it — but `--device` is there for
+when it isn't, and shared vaults are exactly where it's worth using.
+
+**Device names are validated before they're ever used as a path.** The
+name is a filename component, and it arrives from
+`.gage/config.toml` — a committed file that, per "Trust boundaries,"
+anyone with git write access can edit. A recipient entry reading
+`device = "../../../../etc/cron.d/x"` must be rejected on read, not
+helpfully resolved. `gage` therefore validates every device name against
+the same character allowlist above, on the way in *and* on the way out,
+and refuses to construct a path from one that doesn't match. This is the
+one place a vault's plaintext metadata reaches the local filesystem, so
+it gets checked like the untrusted input it is.
 
 **This file always has exactly one recipient.** age refuses to encrypt to
 a scrypt passphrase recipient combined with any other recipient, so a
@@ -1085,7 +1127,7 @@ results those methods return.
 
 ```
 gage init <name> [--dir PATH] [--remote URL] [--type git]
-                  [--method passphrase]
+                  [--method passphrase] [--device NAME]
                   [--recipient PUBKEY ...]
 
     Creates a new vault: for the git type (the only one today), this means
@@ -1148,14 +1190,19 @@ under one verb would be confusing in the other direction.
 ### Identity (how *this device* proves it can decrypt)
 
 ```
-gage identity add --use NAME [--method passphrase] [--key-path PATH]
+gage identity add --use NAME [--method passphrase] [--device NAME]
+                   [--key-path PATH]
 
     Registers how *this device* holds its private key, and prints the
     resulting public key so it can be added as a recipient (either by
     you, if you're bootstrapping, or by an existing recipient). --method
     is this device's own choice, not the vault's (see "Decryption methods
     are per-device"); omitted, it takes the vault's [method].default.
-    Same single-value allowlist as `gage init` — today, passphrase. For
+    Same single-value allowlist as `gage init` — today, passphrase.
+    --device names this device; omitted, it defaults to the normalized
+    hostname (see "Local identity storage"). A name already registered as
+    a recipient of this vault is rejected rather than silently taken
+    over. For
     passphrase/age-key methods this also writes the device's wrapped
     identity file to $GAGE_DATA/identities/<vault>/<device>.age (see "Local
     identity storage"); ssh/yubikey/secure-enclave write nothing here,

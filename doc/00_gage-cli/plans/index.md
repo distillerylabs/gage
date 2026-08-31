@@ -185,7 +185,8 @@ this class of coupling easy to lose.
 | M0 | Command registry in `cmd/gage` — name, aliases, description, group, and one-shot/session/both availability | `gage --help`/`gage help` render the one-shot set; M6's in-session `help` renders the session set. **Every milestone that adds a command must register it**, enforced by M0's registry-completeness test rather than by convention |
 | M0 | `gittest.NewBareRemote` | M1's `set-remote` tests; M8's full sync harness |
 | M1 | `.gage/config.toml` schema incl. `format_version`, and rejection of unknown versions | Every later reader of that file |
-| M1 | Global config schema, incl. the per-vault `device` field | M2 populates `device`; M4's `updated_by` reads it |
+| M1 | Global config schema, incl. the per-vault `device` and `method` fields | M2 populates both; M4's `updated_by` reads `device`; `Unlock` dispatches on `method` |
+| M1 | Device-name normalization **and validation** — names reach the filesystem as path components and arrive from a committed file any git-writer can edit | M2 (identity file paths), M9 (`identity add`) |
 | M2 | `Identity.Close()` releases the page lock and zeroes key material | M4's one-shot handler; M6's `Lock` and idle timeout |
 | M2 | Thin age encrypt-to-recipients / decrypt-with-identity wrapper (bytes in, bytes out) | M3's entry layer; M9's `--reencrypt`; M11's cross-vault encrypt |
 | M4 | Commit-per-write, under the vault lock | M8's auto-push; M9's single-commit `--reencrypt` |

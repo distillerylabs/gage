@@ -44,11 +44,6 @@ purely additive (a recovery key alongside the device's own).
 
 ## Decisions to make first
 
-- **[Q-DEVICE-NAME](open-questions.md)** — blocks this milestone
-  directly: `Unlock` cannot locate the identity file without it, and
-  M4's `updated_by` reads it. Includes the secondary question of a
-  default device name when the user doesn't pass one (hostname is the
-  obvious candidate and is also PII-ish in a committed plaintext file).
 - **Retry policy on a wrong passphrase.** The design is explicit that
   the library returns a typed error and `cmd/gage` owns retry policy —
   so decide the CLI's policy here: how many attempts, and does a retry
@@ -87,9 +82,17 @@ purely additive (a recovery key alongside the device's own).
 - [ ] The public key derived from the generated identity matches exactly
       what's written to both `.age-recipients` and `.gage/config.toml`'s
       `[[recipients]]`
-- [ ] The device name *and this device's method* are recorded locally per
-      Q-DEVICE-NAME, and `Unlock` resolves the right identity file from
-      the former
+- [ ] `gage init` records this device's `device` and `method` under
+      `[vaults.<name>]` in global config, and `Unlock` resolves the
+      identity file from the former
+- [ ] `gage init --device NAME` uses that name for the identity file
+      path, the `[[recipients]].device` label, and the global config
+      record — all three agree
+- [ ] **No path is constructed from an unvalidated device name**: a
+      global config or vault config carrying a traversal-style `device`
+      value causes `Unlock` to fail with a typed error rather than
+      reading or writing outside `$GAGE_DATA/identities/<vault>/`
+      (Q-DEVICE-NAME)
 - [ ] `Unlock` dispatches on **this device's** locally-recorded method,
       not on the vault's `[method].default` — the two can differ by
       design (Q-METHOD-SCOPE), and reading the vault's default would be
