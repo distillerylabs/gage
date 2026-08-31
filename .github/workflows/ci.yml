@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # windows-latest doesn't ship GNU make; every other platform in the
+      # matrix already has it. The plan requires make build/test/lint to
+      # run natively (not cross-compiled) on all three OSes, so this is
+      # the one bit of matrix-specific setup rather than a reason to
+      # avoid a Makefile.
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+
+      - name: make build
+        run: make build
+        shell: bash
+
+      - name: make test
+        run: make test
+        shell: bash
+
+      - name: make lint
+        run: make lint
+        shell: bash
