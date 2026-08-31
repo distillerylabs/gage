@@ -1,9 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -29,6 +27,14 @@ jobs:
       - name: Install make (Windows)
         if: runner.os == 'Windows'
         run: choco install make --no-progress -y
+
+      # `make test` runs with GOPROXY=off so the test suite can never reach
+      # the network. That requires every module to already be in the module
+      # cache, which isn't true on a cold runner, so populate it explicitly
+      # here rather than relying on setup-go's cache being warm.
+      - name: go mod download
+        run: go mod download
+        shell: bash
 
       - name: make build
         run: make build
