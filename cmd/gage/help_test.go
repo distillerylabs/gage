@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -81,18 +82,32 @@ func listsCommandEntry(out, name string) bool {
 	return false
 }
 
-// entryNames pulls the leading comma-separated name run off one rendered
-// help line — "status, whoami   List vaults" yields [status whoami] —
-// and stops at the description, so words in the description are never
-// mistaken for command names.
+// nameFieldBoundary splits a rendered help line into its name field and
+// its description at the first run of 2+ spaces — the padding
+// commandListLine's "%-24s %s" leaves after any name shorter than 24
+// columns. Every registry name (aliases joined) is well under that
+// today, so this boundary is unambiguous for the lines this helper is
+// ever asked to parse.
+var nameFieldBoundary = regexp.MustCompile(`\s{2,}`)
+
+// entryNames pulls the name field off one rendered help line and splits
+// it on ", " for aliases — "status, whoami   List vaults" yields
+// [status whoami], "vault list   List registered vaults" yields
+// ["vault list"] (a nested command's name is itself space-separated,
+// unlike an alias list, so it stays one entry) — and never mistakes a
+// word in the description for a command name.
 func entryNames(line string) []string {
-	fields := strings.Fields(strings.TrimSpace(line))
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return nil
+	}
+	nameField := nameFieldBoundary.Split(trimmed, 2)[0]
+
 	var names []string
-	for _, f := range fields {
-		more := strings.HasSuffix(f, ",")
-		names = append(names, strings.TrimSuffix(f, ","))
-		if !more {
-			break
+	for _, n := range strings.Split(nameField, ",") {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			names = append(names, n)
 		}
 	}
 	return names

@@ -11,9 +11,9 @@ import "github.com/denmark/gage/internal/gage/exitcode"
 // real crypto in M2. What's fixed here is the shape everything after M1
 // builds against.
 type Vault struct {
-	// Name and Path are set once a vault actually has an on-disk
-	// location to point at — M1's job. Left exported and empty until
-	// then.
+	// Name and Path are the vault's registry name and its on-disk
+	// location. Set by Create, or by whatever M1+ adds for opening an
+	// already-registered vault.
 	Name string
 	Path string
 }

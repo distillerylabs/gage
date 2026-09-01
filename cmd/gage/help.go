@@ -108,7 +108,15 @@ func commandListLine(ci CommandInfo) string {
 		names := append([]string{ci.Name}, ci.Aliases...)
 		name = strings.Join(names, ", ")
 	}
-	return fmt.Sprintf("%-24s %s", name, ci.Short)
+	// Two literal spaces, not one, between the padded name field and the
+	// description — %-24s alone guarantees a minimum width but not a
+	// minimum *gap*: a name (aliases joined) 24 characters or longer
+	// gets no padding at all, which would leave name and description
+	// separated by a single space with no reliable boundary between
+	// them. The extra space keeps a real "run of 2+ spaces" boundary
+	// for any name length, which is what test code parses on (see
+	// nameFieldBoundary in help_test.go).
+	return fmt.Sprintf("%-24s  %s", name, ci.Short)
 }
 
 // renderCommandHelp is the "gage help <command>" / "<command> --help"
