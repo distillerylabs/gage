@@ -1,0 +1,104 @@
+version: "2"
+
+linters:
+  # "standard" is errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    # Enforces the library/CLI split — see the forbidigo settings below.
+    - forbidigo
+    # A secrets manager should not be silently ignoring a write error or
+    # a weak-permission file mode, so the security-oriented pass runs
+    # from the start rather than being retrofitted once there is real
+    # key material to get wrong.
+    - gosec
+
+  settings:
+    forbidigo:
+      # Resolve identifiers through type information rather than source
+      # text, so `import osx "os"; osx.Exit(1)` is caught — that aliased
+      # spelling is exactly the hole the hand-rolled checker this
+      # replaces shipped with.
+      #
+      # Coverage below was established by probing this config against
+      # deliberate violations, not assumed from the docs. What it
+      # catches: every direct fmt.Print/Printf/Println; os.Exit and
+      # os.Stdin/os.Stdout including under an import alias; and
+      # fmt.Fprint* to os.Stderr.
+      #
+      # KNOWN GAP, deliberately accepted: forbidigo does not flag a
+      # `fmt.Fprint*(w, ...)` call used as a bare expression statement
+      # when w is anything other than os.Stderr — so a library-side
+      #   fmt.Fprintln(os.Stdout, "x")
+      # is NOT caught, though the same call in assignment position
+      # (`_, _ = fmt.Fprintln(os.Stdout, ...)`) is. Also uncaught: an
+      # aliased fmt print (`import format "fmt"; format.Printf(...)`).
+      # Both are deliberate spellings rather than plausible slips, and
+      # the accidental case this rule mainly defends against — a stray
+      # fmt.Println left in a library function — is covered. Closing the
+      # gap would mean a custom AST check, which this config exists to
+      # replace; revisit if a real violation ever ships in that form.
+      analyze-types: true
+      forbid:
+        - pattern: '^os\.Stdin$'
+          msg: >-
+            internal/gage must not read stdin; return a typed request and
+            let cmd/gage own the terminal. See "Library architecture".
+        - pattern: '^os\.Stdout$'
+          msg: >-
+            internal/gage must not write stdout; return a value and let
+            cmd/gage render it. See "Library architecture".
+        - pattern: '^os\.Exit$'
+          msg: >-
+            internal/gage must not exit the process; return an
+            exitcode-carrying error and let cmd/gage map it.
+        - pattern: '^fmt\.Print.*$'
+          msg: >-
+            internal/gage must not print; return a value or a typed
+            request. See "Library architecture".
+        # Not redundant with the os.Stdout rule: this is what actually
+        # catches `fmt.Fprintln(os.Stdout, ...)` (see the note above).
+        # The library returns values rather than writing to writers at
+        # all, so it has no legitimate Fprint call to lose — non-test
+        # library code uses only fmt.Errorf and fmt.Sprintf.
+        - pattern: '^fmt\.Fprint.*$'
+          msg: >-
+            internal/gage must not write to a writer; return a value and
+            let cmd/gage render it. See "Library architecture".
+
+    errcheck:
+      # Blank-identifier assignments (`_ = f.Close()`) are a deliberate,
+      # visible "I considered this and chose to ignore it" and stay
+      # allowed; a bare unchecked call does not.
+      check-blank: false
+      # Type assertions without the comma-ok form panic rather than
+      # returning an error, which is not what this codebase wants.
+      check-type-assertions: true
+
+  exclusions:
+    generated: lax
+    rules:
+      # The forbidigo rules above encode the *library layer's* purity
+      # rule. cmd/gage is the CLI frontend — printing, reading stdin, and
+      # exiting the process are its entire job.
+      - path: ^cmd/
+        linters:
+          - forbidigo
+
+      # Test files are exempt from the purity rule by the same rule's own
+      # terms ("outside _test.go files"): a library test legitimately
+      # drives a fake terminal, and vaultlock's subprocess harness has to
+      # read stdin and exit to be a lock holder at all.
+      - path: _test\.go$
+        linters:
+          - forbidigo
+
+      # Test files also get a narrower gosec pass. G404 (weak RNG) and
+      # G306/G302 (permissive file modes) describe fixtures under
+      # t.TempDir(), not shipped behavior.
+      - path: _test\.go$
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt

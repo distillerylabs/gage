@@ -24,20 +24,26 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 		return fmt.Errorf("atomicfile: creating temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	// If anything below fails, don't leave the temp file behind.
+	// If anything below fails, don't leave the temp file behind. Cleanup
+	// is best-effort: the write is already failing, and a leftover temp
+	// file is strictly less bad than masking the real error with a
+	// remove error.
 	success := false
 	defer func() {
 		if !success {
-			os.Remove(tmpName)
+			_ = os.Remove(tmpName)
 		}
 	}()
 
+	// On these paths the write has already failed and that error is
+	// what the caller needs; the close is just releasing the descriptor
+	// on a file about to be removed.
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("atomicfile: writing temp file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("atomicfile: syncing temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

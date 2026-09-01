@@ -60,22 +60,41 @@ func installHelp(app *App, root *cobra.Command) {
 // spellings must produce byte-identical output (per the M0 test list),
 // so both call this one function rather than each having their own
 // rendering path.
+//
+// The text is assembled first and written once. That keeps the rendering
+// itself free of I/O (and so of error handling), and leaves exactly one
+// place where a write can fail — see writeOut for why that failure is
+// deliberately dropped.
 func renderHelp(w io.Writer, root *cobra.Command) {
-	fmt.Fprintln(w, root.Short)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintf(w, "  %s [command]\n", root.Name())
-	fmt.Fprintln(w)
-
-	for _, group := range groupedOneShotCommands() {
-		fmt.Fprintf(w, "%s:\n", group.Group)
-		for _, ci := range group.Commands {
-			fmt.Fprintf(w, "  %s\n", commandListLine(ci))
-		}
-		fmt.Fprintln(w)
+	lines := []string{
+		root.Short,
+		"",
+		"Usage:",
+		fmt.Sprintf("  %s [command]", root.Name()),
+		"",
 	}
 
-	fmt.Fprintln(w, `Use "gage help <command>" (or "gage <command> --help") for more information about a command.`)
+	for _, group := range groupedOneShotCommands() {
+		lines = append(lines, group.Group+":")
+		for _, ci := range group.Commands {
+			lines = append(lines, "  "+commandListLine(ci))
+		}
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, `Use "gage help <command>" (or "gage <command> --help") for more information about a command.`)
+	writeOut(w, lines)
+}
+
+// writeOut joins rendered help lines and writes them in one call.
+//
+// The write error is dropped on purpose: the only realistic failure is a
+// closed pipe (`gage --help | head`), Cobra's HelpFunc signature has no
+// error return to propagate it through anyway, and the process is about
+// to exit. Dropping it in one audited place is honest; threading an
+// unreportable error through every render function would not be.
+func writeOut(w io.Writer, lines []string) {
+	_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
 }
 
 // commandListLine renders one registry entry's line in the grouped
@@ -95,20 +114,19 @@ func commandListLine(ci CommandInfo) string {
 // renderCommandHelp is the "gage help <command>" / "<command> --help"
 // surface: one command's usage, not the full grouped listing.
 func renderCommandHelp(w io.Writer, cmd *cobra.Command) {
-	if cmd.Long != "" {
-		fmt.Fprintln(w, cmd.Long)
-	} else if cmd.Short != "" {
-		fmt.Fprintln(w, cmd.Short)
+	var lines []string
+	switch {
+	case cmd.Long != "":
+		lines = append(lines, cmd.Long)
+	case cmd.Short != "":
+		lines = append(lines, cmd.Short)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintf(w, "  %s\n", cmd.UseLine())
+	lines = append(lines, "", "Usage:", "  "+cmd.UseLine())
 
 	if len(cmd.Aliases) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Aliases:")
 		names := append([]string{cmd.Name()}, cmd.Aliases...)
 		sort.Strings(names)
-		fmt.Fprintf(w, "  %s\n", strings.Join(names, ", "))
+		lines = append(lines, "", "Aliases:", "  "+strings.Join(names, ", "))
 	}
+	writeOut(w, lines)
 }
