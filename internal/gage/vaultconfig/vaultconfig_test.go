@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,14 @@ func TestReadRejectsUnrecognizedFormatVersion(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnsupportedFormatVersion) {
 		t.Errorf("Read error = %v, want it to wrap ErrUnsupportedFormatVersion", err)
+	}
+	// The plan asks for an "upgrade gage" error specifically: a typed
+	// refusal an operator can't act on is only half the requirement.
+	if !strings.Contains(err.Error(), "upgrade gage") {
+		t.Errorf("Read error doesn't tell the operator to upgrade gage: %v", err)
+	}
+	if !strings.Contains(err.Error(), "99") {
+		t.Errorf("Read error doesn't name the version it found: %v", err)
 	}
 }
 

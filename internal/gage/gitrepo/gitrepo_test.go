@@ -58,6 +58,31 @@ func TestIsCleanDetectsDirtyWorkingTree(t *testing.T) {
 	}
 }
 
+// TestIsCleanCountsUntrackedFilesAsDirty pins down the property M1's
+// vault tests reason from: "exactly one commit and a clean tree" is only
+// evidence that the skeleton files were *committed* if an uncommitted
+// file would have made the tree dirty. If go-git ever stopped counting
+// untracked files, those tests would keep passing while no longer
+// proving anything, so the assumption is asserted here rather than left
+// implicit at the call site.
+func TestIsCleanCountsUntrackedFilesAsDirty(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.txt"), "hello")
+	if _, err := InitAndCommit(dir, "initial commit"); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(dir, "never-committed.txt"), "stray")
+
+	clean, err := IsClean(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean {
+		t.Error("IsClean = true with an untracked file present; \"clean tree\" no longer implies \"everything was committed\"")
+	}
+}
+
 func TestRemoteURLEmptyWhenUnset(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.txt"), "hello")

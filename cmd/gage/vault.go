@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -27,6 +28,28 @@ func newVaultCommand(app *App) *cobra.Command {
 	parent.AddCommand(newVaultRemoveCommand(app))
 	parent.AddCommand(newVaultSetDefaultCommand(app))
 	return parent
+}
+
+// readVaultConfig reads a vault's own .gage/config.toml and maps its two
+// typed refusals onto the exit-code taxonomy deliberately.
+//
+// Both are anticipated, well-understood states a human has to resolve —
+// "this vault was written by a newer gage" and "this vault's committed
+// config carries a device name that isn't a safe path component" (any
+// git-writer can edit that file; see Q-DEVICE-NAME) — so neither belongs
+// in Internal, which the taxonomy reserves for the unexpected. A script
+// that gets Conflict can tell "upgrade gage / fix this vault" apart from
+// "gage hit a bug", which a blanket Internal would flatten. Everything
+// else (a missing file, an I/O error, malformed TOML) stays Internal.
+func readVaultConfig(vaultPath string) (vaultconfig.File, error) {
+	vc, err := vaultconfig.Read(filepath.Join(vaultPath, ".gage", "config.toml"))
+	if err != nil {
+		if errors.Is(err, vaultconfig.ErrUnsupportedFormatVersion) || errors.Is(err, vaultconfig.ErrInvalidDeviceName) {
+			return vaultconfig.File{}, exitcode.Wrap(exitcode.Conflict, err)
+		}
+		return vaultconfig.File{}, exitcode.Wrap(exitcode.Internal, err)
+	}
+	return vc, nil
 }
 
 func newVaultListCommand(app *App) *cobra.Command {
@@ -83,9 +106,9 @@ func newVaultInfoCommand(app *App) *cobra.Command {
 				return exitcode.Newf(exitcode.NotFound, "gage: no such vault %q", name)
 			}
 
-			vc, err := vaultconfig.Read(filepath.Join(entry.Path, ".gage", "config.toml"))
+			vc, err := readVaultConfig(entry.Path)
 			if err != nil {
-				return exitcode.Wrap(exitcode.Internal, err)
+				return err
 			}
 
 			lines := []string{

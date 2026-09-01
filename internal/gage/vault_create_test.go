@@ -3,8 +3,13 @@ package gage
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
@@ -65,6 +70,60 @@ func TestCreateWritesFullSkeleton(t *testing.T) {
 	}
 	if !clean {
 		t.Error("working tree not clean after Create")
+	}
+}
+
+// committedFiles lists the paths actually present in HEAD's tree, so a
+// test can assert what was *committed* rather than merely what exists on
+// disk. go-git reports tree paths with forward slashes on every
+// platform, so the expected values below are the same on Windows.
+func committedFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	if err := tree.Files().ForEach(func(f *object.File) error {
+		files = append(files, f.Name)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	return files
+}
+
+// TestCreateCommitsTheSkeletonFiles asserts the initial commit's tree
+// directly. TestCreateWritesFullSkeleton proves the files exist and the
+// tree is clean, which does imply they were committed (go-git counts an
+// untracked file as dirty — see gitrepo's own test) — but only via an
+// unstated property of a dependency. This asserts it outright.
+//
+// entries/ is deliberately absent: git cannot track an empty directory,
+// so a freshly-created vault commits four files and nothing else.
+func TestCreateCommitsTheSkeletonFiles(t *testing.T) {
+	spec := validSpec(t, "myvault")
+	if _, err := Create(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	got := committedFiles(t, spec.Path)
+	want := []string{".age-recipients", ".gage/config.toml", ".gitattributes", ".gitignore"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("committed files = %v, want %v", got, want)
 	}
 }
 
@@ -189,6 +248,17 @@ func TestCreateIntoNonEmptyDirectoryFailsWithoutTouchingFiles(t *testing.T) {
 	}
 }
 
+// requireNothingCreated asserts Create left no trace at its target path.
+// Every rejection below is specified as failing "before creating any
+// files", and an exit code alone can't tell a clean rejection apart from
+// one that bailed out halfway through writing a vault.
+func requireNothingCreated(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("Create touched the filesystem at %s despite rejecting the spec (stat err = %v)", path, err)
+	}
+}
+
 func TestCreateRejectsUnknownType(t *testing.T) {
 	spec := validSpec(t, "myvault")
 	spec.Type = "s3"
@@ -199,6 +269,10 @@ func TestCreateRejectsUnknownType(t *testing.T) {
 	if exitcode.CodeOf(err) != exitcode.Usage {
 		t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
 	}
+	if !strings.Contains(err.Error(), TypeGit) {
+		t.Errorf("error doesn't list the accepted value %q: %v", TypeGit, err)
+	}
+	requireNothingCreated(t, spec.Path)
 }
 
 func TestCreateAcceptsExplicitGitType(t *testing.T) {
@@ -221,6 +295,10 @@ func TestCreateRejectsUnknownMethod(t *testing.T) {
 			if exitcode.CodeOf(err) != exitcode.Usage {
 				t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
 			}
+			if !strings.Contains(err.Error(), MethodPassphrase) {
+				t.Errorf("error doesn't list the accepted value %q: %v", MethodPassphrase, err)
+			}
+			requireNothingCreated(t, spec.Path)
 		})
 	}
 }
@@ -243,6 +321,10 @@ func TestCreateRequiresAtLeastOneRecipient(t *testing.T) {
 	if exitcode.CodeOf(err) != exitcode.Usage {
 		t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
 	}
+	if !strings.Contains(err.Error(), "recipient") {
+		t.Errorf("error doesn't name the missing flag: %v", err)
+	}
+	requireNothingCreated(t, spec.Path)
 }
 
 func TestCreateRepeatedRecipientsAllWritten(t *testing.T) {
@@ -270,20 +352,23 @@ func TestCreateRejectsMalformedRecipient(t *testing.T) {
 	if exitcode.CodeOf(err) != exitcode.Usage {
 		t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
 	}
-	if _, statErr := os.Stat(spec.Path); !os.IsNotExist(statErr) {
-		t.Error("Create should not have touched the filesystem before validating recipients")
-	}
+	requireNothingCreated(t, spec.Path)
 }
 
 func TestCreateRejectsInvalidDeviceName(t *testing.T) {
-	spec := validSpec(t, "myvault")
-	spec.Device = "../../../etc/x"
-	_, err := Create(spec)
-	if err == nil {
-		t.Fatal("expected an error for an invalid device name")
-	}
-	if exitcode.CodeOf(err) != exitcode.Usage {
-		t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
+	for _, bad := range []string{"../../../etc/x", "/etc/passwd", `..\..\windows\x`, "UpperCase", ""} {
+		t.Run(bad, func(t *testing.T) {
+			spec := validSpec(t, "myvault")
+			spec.Device = bad
+			_, err := Create(spec)
+			if err == nil {
+				t.Fatalf("expected an error for device name %q", bad)
+			}
+			if exitcode.CodeOf(err) != exitcode.Usage {
+				t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
+			}
+			requireNothingCreated(t, spec.Path)
+		})
 	}
 }
 
