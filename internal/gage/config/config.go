@@ -45,6 +45,13 @@ type Global struct {
 
 // Read parses a global config file at path.
 func Read(path string) (Global, error) {
+	// #nosec G304 -- path is the caller-chosen global config location
+	// (resolved from $GAGE_CONFIG by xdgpaths), not attacker-controlled
+	// input. The place this rule genuinely bites is a path built from a
+	// vault's committed metadata — a device name out of .gage/config.toml,
+	// which any git-writer can edit — and that is validated against the
+	// character allowlist before any path is constructed from it. See
+	// "Device names are validated before they're ever used as a path".
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Global{}, err

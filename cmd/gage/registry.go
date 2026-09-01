@@ -35,18 +35,16 @@ func (a Availability) OneShotVisible() bool {
 	return a == AvailBoth || a == AvailOneShotOnly
 }
 
-// SessionVisible reports whether a command belongs in the in-session
-// help's rendered set (M6).
-func (a Availability) SessionVisible() bool {
-	return a == AvailBoth || a == AvailSessionOnly
-}
-
-// CommandInfo is one command's entry in the registry that both help
-// surfaces render from — name, aliases, description, group, and where
-// it's available. Per Q-HELP-SURFACES, this is the single source of
-// truth: a command can't appear on one help surface and go missing from
-// the other, because both render from this table rather than two
-// hand-maintained lists.
+// CommandInfo is one command's entry in the registry — name, aliases,
+// description, group, and where it's available. Per Q-HELP-SURFACES this
+// is the single source of truth for both help surfaces: a command can't
+// appear on one and go missing from the other, because both render from
+// this table rather than two hand-maintained lists.
+//
+// Only the one-shot surface reads it today (see oneShotCommands); the
+// session surface is M6's, and the filter it needs lands with the code
+// that renders it. What M0 fixes is the Availability tagging every later
+// milestone depends on, not a reader for a surface that doesn't exist.
 type CommandInfo struct {
 	Name         string
 	Aliases      []string
@@ -126,18 +124,6 @@ func oneShotCommands() []CommandInfo {
 	var out []CommandInfo
 	for _, ci := range registry {
 		if ci.Availability.OneShotVisible() {
-			out = append(out, ci)
-		}
-	}
-	return out
-}
-
-// sessionVisibleCommands returns the registry entries in-session help
-// (M6) renders.
-func sessionVisibleCommands() []CommandInfo {
-	var out []CommandInfo
-	for _, ci := range registry {
-		if ci.Availability.SessionVisible() {
 			out = append(out, ci)
 		}
 	}

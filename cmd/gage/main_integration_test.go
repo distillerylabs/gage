@@ -45,7 +45,7 @@ var (
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if binDir != "" {
-		os.RemoveAll(binDir)
+		_ = os.RemoveAll(binDir)
 	}
 	os.Exit(code)
 }
@@ -84,7 +84,7 @@ func TestRealBinaryWithRedirectedStdinPrintsHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening %s: %v", os.DevNull, err)
 	}
-	defer devNull.Close()
+	defer func() { _ = devNull.Close() }()
 
 	cmd := exec.Command(bin)
 	cmd.Stdin = devNull
@@ -125,7 +125,7 @@ func TestLinkTimeVersionInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	bin := filepath.Join(dir, exeName("gage"))
 	const wantVersion = "v9.9.9-testtag"

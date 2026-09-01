@@ -21,7 +21,9 @@ func Run(args []string, in io.Reader, out, errW io.Writer, isTerminal func() boo
 		return int(exitcode.Success)
 	}
 
-	fmt.Fprintln(errW, "gage:", err)
+	// If reporting the error itself fails there is nowhere left to
+	// report that to, and the exit code below still carries the outcome.
+	_, _ = fmt.Fprintln(errW, "gage:", err)
 
 	if exitcode.IsCoded(err) {
 		return int(exitcode.CodeOf(err))

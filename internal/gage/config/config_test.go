@@ -23,7 +23,7 @@ func statFile(t *testing.T, path string) os.FileInfo {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestFailedGlobalConfigWriteLeavesPreviousConfigParseable(t *testing.T) {
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	if err := Write(path, Global{Current: "work"}); err == nil {
 		t.Fatal("expected Write to fail in an unwritable directory")

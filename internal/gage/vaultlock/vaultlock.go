@@ -76,6 +76,12 @@ type Lock struct {
 // pointing at it closes — including on the holding process being killed
 // — so there is never a stale lock file to clean up by hand.
 func Acquire(path string, timeout time.Duration) (*Lock, error) {
+	// #nosec G304 -- path is the caller-chosen lock file for a vault gage
+	// already operates on; taking a path is this function's entire
+	// interface. Vault paths come from the local global config, and the
+	// one place vault metadata reaches the filesystem (device names out
+	// of a committed, git-writable config.toml) is allowlist-validated
+	// before a path is built from it.
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("vaultlock: opening %s: %w", path, err)
@@ -88,13 +94,16 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 			_ = writeHolderInfo(f, HolderInfo{PID: os.Getpid(), Since: time.Now()})
 			return &Lock{file: f, path: path}, nil
 		}
+		// On both failure paths the lock was never acquired, so closing
+		// is only releasing the descriptor — the acquisition error is
+		// what the caller needs, not a close error on top of it.
 		if !errors.Is(lockErr, errWouldBlock) {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("vaultlock: locking %s: %w", path, lockErr)
 		}
 		if timeout <= 0 || time.Now().After(deadline) {
 			holder := readHolderInfo(f)
-			f.Close()
+			_ = f.Close()
 			return nil, &ContendedError{Path: path, Holder: holder}
 		}
 		time.Sleep(pollInterval)

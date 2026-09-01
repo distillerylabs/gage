@@ -106,8 +106,8 @@ func spawnHolder(t *testing.T, path string) (*exec.Cmd, io.Closer, func()) {
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
-			stdin.Close()
-			cmd.Wait()
+			_ = stdin.Close()
+			_ = cmd.Wait()
 		})
 	}
 	return cmd, stdin, release
@@ -152,7 +152,7 @@ func TestReleaseLetsWaiterProceed(t *testing.T) {
 	go func() {
 		lock, err := Acquire(path, 5*time.Second)
 		if err == nil {
-			lock.Release()
+			_ = lock.Release()
 		}
 		acquired <- err
 	}()
@@ -192,7 +192,7 @@ func TestKilledHolderReleasesLock(t *testing.T) {
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatalf("killing lock-holder subprocess: %v", err)
 	}
-	cmd.Wait() // reap; exit status is expected to be non-zero (killed)
+	_ = cmd.Wait() // reap; exit status is expected to be non-zero (killed)
 
 	// No stale lock should survive the kill: a short-timeout Acquire
 	// (not a long blocking one) must succeed promptly.

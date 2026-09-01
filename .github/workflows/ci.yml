@@ -19,6 +19,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # `make lint` installs the pinned golangci-lint into ./bin on first
+      # use (see GOLANGCI_BIN in the Makefile). Caching that keyed on the
+      # pinned version avoids rebuilding it from source on every run,
+      # while still reinstalling automatically when the pin changes.
+      - name: Cache lint toolchain
+        uses: actions/cache@v4
+        with:
+          path: bin
+          key: golangci-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
       # windows-latest doesn't ship GNU make; every other platform in the
       # matrix already has it. The plan requires make build/test/lint to
       # run natively (not cross-compiled) on all three OSes, so this is

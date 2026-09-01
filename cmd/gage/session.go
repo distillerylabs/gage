@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
@@ -68,7 +66,9 @@ func dispatchRoot(app *App, root *cobra.Command) error {
 // builds the real REPL. cmd/gage is the CLI's I/O layer, so printing
 // here is fine — this is not internal/gage.
 func runSessionStub(app *App) error {
-	fmt.Fprintln(app.Out, "gage: interactive session mode isn't implemented yet (arrives in M6).")
-	fmt.Fprintln(app.Out, `Run "gage --help" for the commands available today.`)
+	writeOut(app.Out, []string{
+		"gage: interactive session mode isn't implemented yet (arrives in M6).",
+		`Run "gage --help" for the commands available today.`,
+	})
 	return nil
 }
