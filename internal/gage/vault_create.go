@@ -161,10 +161,11 @@ func requireEmptyOrAbsent(path string) error {
 // separately so the two concerns (what's on disk vs. how it's
 // versioned) stay easy to reason about independently.
 func writeSkeleton(spec CreateSpec) error {
-	// A vault's directories hold committed config and ciphertext, never
-	// key material (that lives under $GAGE_DATA/identities/, 0700 — see
-	// identity.go); 0750 is appropriate here.
-	if err := os.MkdirAll(filepath.Join(spec.Path, "entries"), 0o750); err != nil {
+	// entries/ holds ciphertext but its *listing* still leaks how many
+	// secrets exist and when each was last touched, so it gets the same
+	// 0700 as $GAGE_DATA/identities/ (see identity.go) rather than the
+	// more permissive 0750 the rest of the vault's committed config uses.
+	if err := os.MkdirAll(filepath.Join(spec.Path, "entries"), 0o700); err != nil {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
 	if err := os.MkdirAll(filepath.Join(spec.Path, ".gage"), 0o750); err != nil {
