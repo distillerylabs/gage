@@ -12,7 +12,7 @@ import (
 // and the Identity stops working rather than silently continuing to.
 func TestIdentityCloseReleasesTheLockAndZeroesTheKey(t *testing.T) {
 	v, _ := newUnlockableVault(t, "personal", "laptop-1")
-	counter := &countingLocker{inner: memLocker{}}
+	counter := &countingLocker{inner: alwaysLocks{}}
 	v.locker = counter
 
 	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
@@ -96,7 +96,7 @@ func TestUsingAnIdentityAfterCloseFails(t *testing.T) {
 // which only a counting Locker can prove.
 func TestIdentityCloseIsIdempotent(t *testing.T) {
 	v, _ := newUnlockableVault(t, "personal", "laptop-1")
-	counter := &countingLocker{inner: memLocker{}}
+	counter := &countingLocker{inner: alwaysLocks{}}
 	v.locker = counter
 
 	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
@@ -121,7 +121,7 @@ func TestIdentityCloseIsIdempotent(t *testing.T) {
 // Close, or a closed key would still look open through another copy.
 func TestIdentityCopiesShareOneClose(t *testing.T) {
 	v, _ := newUnlockableVault(t, "personal", "laptop-1")
-	counter := &countingLocker{inner: memLocker{}}
+	counter := &countingLocker{inner: alwaysLocks{}}
 	v.locker = counter
 
 	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
@@ -141,6 +141,49 @@ func TestIdentityCopiesShareOneClose(t *testing.T) {
 	}
 	if counter.unlocks != 1 {
 		t.Errorf("closing two copies produced %d page unlocks, want 1", counter.unlocks)
+	}
+}
+
+// TestDefaultLockerIsTheRealMemlockBackedOne pins what production
+// actually uses. The contract tests above inject a deterministic Locker
+// so they run identically everywhere; this is what stops that
+// convenience from quietly becoming "gage never page-locks at all."
+func TestDefaultLockerIsTheRealMemlockBackedOne(t *testing.T) {
+	if _, ok := lockerOrDefault(nil).(memLocker); !ok {
+		t.Errorf("lockerOrDefault(nil) = %T, want the memlock-backed memLocker", lockerOrDefault(nil))
+	}
+}
+
+// TestUnlockPageLocksOrWarnsButNeverBoth drives the *real* locker — no
+// injection — and asserts the invariant that holds on every platform,
+// whether or not the OS grants the lock: an unlocked identity either has
+// its pages pinned, or the user was told once that they aren't. Never
+// both, never neither.
+//
+// This is how the real memlock integration stays covered without the
+// suite depending on a machine's `ulimit -l`.
+func TestUnlockPageLocksOrWarnsButNeverBoth(t *testing.T) {
+	v, _ := newUnlockableVault(t, "personal", "laptop-1")
+
+	p := &fakePrompter{passphrases: []string{testPassphrase}}
+	id, err := v.Unlock(p)
+	if err != nil {
+		t.Fatalf("Unlock must succeed whether or not the platform grants a page lock: %v", err)
+	}
+	defer func() { _ = id.Close() }()
+
+	switch {
+	case id.PageLocked() && len(p.warnings) != 0:
+		t.Errorf("key material is page-locked but the user was warned anyway: %q", p.warnings)
+	case !id.PageLocked() && len(p.warnings) != 1:
+		t.Errorf("key material is not page-locked but the user got %d warnings, want exactly 1: %q",
+			len(p.warnings), p.warnings)
+	}
+
+	// Either way the identity is fully usable — that is the whole point
+	// of warn-and-proceed.
+	if _, err := id.ageIdentity(); err != nil {
+		t.Errorf("the identity is not usable: %v", err)
 	}
 }
 
@@ -191,7 +234,7 @@ func TestPageLockFailureWarnsOnceAndProceeds(t *testing.T) {
 // warning, structurally.
 func TestPageLockIsAttemptedExactlyOncePerUnlock(t *testing.T) {
 	v, _ := newUnlockableVault(t, "personal", "laptop-1")
-	counter := &countingLocker{inner: memLocker{}}
+	counter := &countingLocker{inner: alwaysLocks{}}
 	v.locker = counter
 
 	p := &fakePrompter{passphrases: []string{"wrong", "wrong again", testPassphrase}}

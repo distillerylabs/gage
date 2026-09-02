@@ -8,6 +8,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// coreDumpSuppressionIsIrrevocable says whether this platform lets a
+// process disable core dumps in a way it cannot then undo. POSIX does:
+// lowering RLIMIT_CORE's *hard* limit is one-way for the life of the
+// process. Windows does not, which is why this is a per-platform
+// constant the test branches on rather than an assertion every platform
+// is assumed to satisfy.
+const coreDumpSuppressionIsIrrevocable = true
+
 // undoCoreDumpSuppression raises RLIMIT_CORE back above zero so that
 // disableCoreDumps has something to actually do. Without it the core-dump
 // test is vacuous on any machine whose shell already sets `ulimit -c 0` —
@@ -33,11 +41,10 @@ func undoCoreDumpSuppression(t *testing.T) bool {
 	return true
 }
 
-// hardLimitIsAlsoZero reports whether the *hard* limit was lowered too,
-// which is what stops anything in the process from simply raising the
-// soft limit again. disableCoreDumps claims to do this, so it gets
-// asserted rather than assumed.
-func hardLimitIsAlsoZero(t *testing.T) bool {
+// hardLimitIsZero reports whether the hard limit was lowered too, which
+// is what stops anything in the process from raising the soft limit
+// again. disableCoreDumps claims to do this, so the claim gets asserted.
+func hardLimitIsZero(t *testing.T) bool {
 	t.Helper()
 	var lim unix.Rlimit
 	if err := unix.Getrlimit(unix.RLIMIT_CORE, &lim); err != nil {

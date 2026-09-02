@@ -23,6 +23,10 @@ import (
 // would leave the others unable to set up, silently skipping instead of
 // checking. One test means one order, whatever `go test -shuffle` does.
 //
+// What each platform actually guarantees differs, so the parts that are
+// POSIX-specific sit behind coreDumpSuppressionIsIrrevocable rather than
+// being assumed universal.
+//
 // This runs in the test binary's own process, which is the only process
 // there is to observe, and it's exactly the same call main() makes.
 func TestCoreDumpsAreDisabled(t *testing.T) {
@@ -49,10 +53,19 @@ func TestCoreDumpsAreDisabled(t *testing.T) {
 		t.Fatalf("core dumps are still enabled after disableCoreDumps; this platform promises: %s", coreDumpGuarantee)
 	}
 
-	// Lowering only the soft limit would leave anything in the process
-	// free to raise it again, which defeats the point. disableCoreDumps
-	// claims to lower the hard limit too, so the claim gets asserted.
-	if !hardLimitIsAlsoZero(t) {
+	// Everything above holds on every platform. Irrevocability does not:
+	// on POSIX, lowering only the soft limit would leave anything in the
+	// process free to raise it again, and disableCoreDumps claims to
+	// lower the hard limit too — but Windows has no equivalent one-way
+	// form at all. Asserting it everywhere would be asserting a fiction
+	// on Windows, which is exactly what this test did on its first CI
+	// run.
+	if !coreDumpSuppressionIsIrrevocable {
+		t.Logf("this platform's suppression is revocable by design, so irrevocability is not asserted; it promises only: %s",
+			coreDumpGuarantee)
+		return
+	}
+	if !hardLimitIsZero(t) {
 		t.Error("the hard limit was left above zero: the process can simply re-enable core dumps")
 	}
 	if undoCoreDumpSuppression(t) {

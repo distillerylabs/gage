@@ -60,6 +60,26 @@ func (mismatchedPrompter) Confirm(prompt string) (bool, error)       { return tr
 func (mismatchedPrompter) Choose(list CandidateList) (string, error) { return "", nil }
 func (mismatchedPrompter) Warn(msg string)                           {}
 
+// alwaysLocks is a Locker that succeeds without asking the OS for
+// anything.
+//
+// The Close contract — releases the lock, zeroes the key, does neither
+// twice — is about Identity's own logic, not about whether this
+// particular machine's kernel will honour an mlock. Wiring the real
+// memlock into those tests made them fail on any host that refuses to
+// lock pages: a restricted `ulimit -l`, a container, a locked-down
+// Windows policy. That is exactly the environment the design says gage
+// must keep working in ("a weaker guarantee beats an unusable tool"), so
+// a red test suite there would be the tests contradicting the product.
+//
+// The real memlock is still covered: by its own package's round-trip
+// test, and by TestUnlockPageLocksOrWarnsButNeverBoth, which drives the
+// default locker and asserts the invariant that holds either way.
+type alwaysLocks struct{}
+
+func (alwaysLocks) Lock(b []byte) error   { return nil }
+func (alwaysLocks) Unlock(b []byte) error { return nil }
+
 // countingLocker wraps the real Locker so a test can assert how many
 // times a page was locked and unlocked — the only way to prove Close is
 // idempotent in the sense that matters (it doesn't double-unlock a page),
