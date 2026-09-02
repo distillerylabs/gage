@@ -1,11 +1,13 @@
 package gage
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/denmark/gage/internal/gage/recipients"
 )
 
 // testDevice is one simulated machine: its own isolated XDG roots (so it
@@ -46,9 +49,11 @@ func newTestDevice(t *testing.T, vault, device string) testDevice {
 	return testDevice{name: device, root: root, pubkey: pubkey}
 }
 
-// withXDGRoot points the process's XDG environment at root for the
-// duration of fn. t.Setenv already restores the previous value at test
-// end, so nested/sequential uses across devices in one test are safe.
+// withXDGRoot repoints the process's XDG environment at root and runs
+// fn under it. The switch outlives fn — t.Setenv restores at test end,
+// not at fn's return — so a test that drives several devices must finish
+// with one before switching to the next, which is why unlockAs's result
+// has to be closed before the next device's turn.
 func withXDGRoot(t *testing.T, root string, fn func()) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
@@ -120,10 +125,10 @@ func sampleEntry(now time.Time) Entry {
 
 // TestEntryMarshalMatchesDesignDocShape pins the exact wire shape from
 // "Entry format" in the design doc: field order title/description/
-// created/updated/updated_by/value/fields. yaml.v3 sorts map keys
-// alphabetically, so fields' own two keys come out as totp_seed before
-// username — the design doc's ordering there is illustrative, not a
-// contract; the outer field order is.
+// created/updated/updated_by/value/fields, timestamps unquoted. Keys
+// inside fields are sorted, so its two come out as totp_seed before
+// username — the design doc's ordering there is illustrative, while the
+// outer field order is the contract.
 func TestEntryMarshalMatchesDesignDocShape(t *testing.T) {
 	created, err := time.Parse(time.RFC3339, "2026-01-14T10:32:00Z")
 	if err != nil {
@@ -171,6 +176,48 @@ func TestEntryMarshalMatchesDesignDocShape(t *testing.T) {
 	}
 	if !reflect.DeepEqual(back, e) {
 		t.Errorf("round-tripped entry = %+v, want %+v", back, e)
+	}
+}
+
+// TestEveryEntryFieldIsMarshaled guards the seam the hand-built encoder
+// creates: Entry's yaml tags drive decoding while marshalEntryNodes
+// writes the document field by field, so a field added to the struct and
+// forgotten there would read back fine in tests that only round-trip
+// through Unmarshal, and silently never persist. Reflection over the
+// struct's own tags is what makes that impossible to miss.
+func TestEveryEntryFieldIsMarshaled(t *testing.T) {
+	// Every field non-zero, so nothing is legitimately omitted.
+	e := Entry{
+		Title:       "t",
+		Description: "d",
+		Created:     NewTimestamp(time.Now()),
+		Updated:     NewTimestamp(time.Now()),
+		UpdatedBy:   "u",
+		Value:       "v",
+		Fields:      map[string]string{"k": "v"},
+		Extra:       map[string]any{"unknown_key": "x"},
+	}
+	data, err := MarshalEntry(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	typ := reflect.TypeOf(e)
+	for i := range typ.NumField() {
+		tag := typ.Field(i).Tag.Get("yaml")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" {
+			// The inline Extra map has no key of its own; its contents
+			// are checked below instead.
+			continue
+		}
+		if !strings.Contains(string(data), name+":") {
+			t.Errorf("Entry field %s (yaml %q) never reaches the marshaled document — "+
+				"marshalEntryNodes is missing a line for it:\n%s", typ.Field(i).Name, name, data)
+		}
+	}
+	if !strings.Contains(string(data), "unknown_key:") {
+		t.Errorf("inline Extra keys never reach the marshaled document:\n%s", data)
 	}
 }
 
@@ -295,19 +342,94 @@ func TestEntryPreservesUnknownFields(t *testing.T) {
 	}
 }
 
-// TestEntryValueRoundTripsYAMLHostileContent covers the M3 test list's
-// named hazards for a bare scalar value: a leading '-', embedded
-// newlines, a literal ':', trailing whitespace, and non-ASCII content.
+// hostileStrings is the corpus every string-carrying field is held to.
+//
+// It is deliberately much wider than the M3 test list's five named
+// hazards, because a benign representative of each named category passes
+// against an implementation that still corrupts secrets: an earlier
+// version of this package handed the struct straight to yaml.Marshal and
+// passed a table of "leading dash / embedded newline / literal colon /
+// trailing space / non-ASCII" while silently dropping the leading
+// newline of "\nsecret" and writing a tab-containing value as YAML it
+// could never parse again. The nasty cases are the point.
+var hostileStrings = map[string]string{
+	// The M3 test list's named hazards.
+	"leading dash":     "-not-a-list-item",
+	"embedded newline": "line one\nline two\nline three",
+	"literal colon":    "user:pass@host:1234",
+	"trailing space":   "trailing whitespace lives here   ",
+	"non-ASCII":        "pässwörd 日本語 🔒",
+	"empty":            "",
+
+	// Leading newlines: a block scalar cannot represent the first blank
+	// line, and the emitter drops it rather than picking another style.
+	"leading newline":      "\nsecret",
+	"two leading newlines": "\n\nsecret",
+	"leading and trailing": "\nsecret\n",
+	"only a newline":       "\n",
+	"only two newlines":    "\n\n",
+	"space then newline":   " \nsecret",
+
+	// Tabs: emitted inside a block scalar they produce a document the
+	// same library then refuses to parse.
+	"leading tab":           "\ttab-first",
+	"tab then newline":      "\tx\ny",
+	"tab inside a line":     "tab\tinside",
+	"tab and newline mixed": "mixed\ttab\nand newline",
+	"tab only":              "\t",
+
+	// Line endings and trailing whitespace inside multi-line values.
+	"crlf":                   "line1\r\nline2",
+	"lone cr":                "a\r b",
+	"trailing space on line": "line1\nline2   \nline3",
+	"trailing newline":       "secret\n",
+	"two trailing newlines":  "secret\n\n",
+	"indented first line":    "  indented\nnext",
+	"indented later line":    "x\n  indented",
+	"blank line between":     "para one\n\npara two\n",
+
+	// Scalars that would resolve to some other YAML type unquoted.
+	"yaml null word": "null",
+	"tilde":          "~",
+	"bool true":      "true",
+	"bool yes":       "yes",
+	"bool no":        "no",
+	"bool on":        "off",
+	"int-like":       "123",
+	"octal-like":     "0123",
+	"float-like":     "1.5",
+	"hex-like":       "0x1F",
+
+	// Indicator characters and other structural bait.
+	"doc start":     "---",
+	"doc end":       "...",
+	"comment hash":  "#not-a-comment",
+	"alias star":    "*anchor",
+	"anchor amp":    "&anchor",
+	"tag bang":      "!tag",
+	"directive pct": "%directive",
+	"flow mapping":  "{a: b}",
+	"flow sequence": "[a, b]",
+	"question key":  "? key",
+	"pipe":          "|literal",
+	"folded gt":     ">folded",
+	"backtick":      "`backtick",
+	"quotes":        "\"double\" and 'single'",
+
+	// Bytes and runes that are not text-shaped.
+	"nul byte":     "a\x00b",
+	"ansi escape":  "\x1b[31mred",
+	"single space": " ",
+	"nbsp":         "a b",
+	"bom":          "\ufeffbom",
+	"combining":    "écombining",
+	"long":         strings.Repeat("long secret ", 500),
+}
+
+// TestEntryValueRoundTripsYAMLHostileContent is the M3 test list's
+// "round-trips byte-for-byte" requirement for the payload field.
 func TestEntryValueRoundTripsYAMLHostileContent(t *testing.T) {
-	cases := map[string]string{
-		"leading dash":     "-not-a-list-item",
-		"embedded newline": "line one\nline two\nline three",
-		"literal colon":    "user:pass@host:1234",
-		"trailing space":   "trailing whitespace lives here   ",
-		"non-ASCII":        "pässwörd 日本語 🔒",
-		"empty":            "",
-	}
-	for name, value := range cases {
+	for name, value := range hostileStrings {
 		t.Run(name, func(t *testing.T) {
 			e := Entry{
 				Title:     "hostile value",
@@ -318,16 +440,135 @@ func TestEntryValueRoundTripsYAMLHostileContent(t *testing.T) {
 			}
 			data, err := MarshalEntry(e)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("MarshalEntry: %v", err)
 			}
 			back, err := UnmarshalEntry(data)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("UnmarshalEntry: %v (wire form: %q)", err, data)
 			}
 			if back.Value != value {
-				t.Errorf("round-tripped Value = %q, want %q (wire form:\n%s)", back.Value, value, data)
+				t.Errorf("round-tripped Value = %q, want %q (wire form: %q)", back.Value, value, data)
 			}
 		})
+	}
+}
+
+// TestEntryEveryStringFieldRoundTripsHostileContent holds title,
+// description, updated_by and both halves of a fields entry to the same
+// standard as value. They are all user-supplied text — a title is as
+// free-form as a note — so a hazard that corrupts one corrupts them all.
+func TestEntryEveryStringFieldRoundTripsHostileContent(t *testing.T) {
+	for name, s := range hostileStrings {
+		t.Run(name, func(t *testing.T) {
+			e := Entry{
+				Title:       s,
+				Description: s,
+				Created:     NewTimestamp(time.Now()),
+				Updated:     NewTimestamp(time.Now()),
+				UpdatedBy:   s,
+				Value:       "v",
+				Fields:      map[string]string{s: s, "ordinary": s},
+			}
+			data, err := MarshalEntry(e)
+			if err != nil {
+				t.Fatalf("MarshalEntry: %v", err)
+			}
+			back, err := UnmarshalEntry(data)
+			if err != nil {
+				t.Fatalf("UnmarshalEntry: %v (wire form: %q)", err, data)
+			}
+			if back.Title != s {
+				t.Errorf("Title = %q, want %q (wire: %q)", back.Title, s, data)
+			}
+			// An empty description is legitimately omitted, so it is the
+			// one field the empty case cannot assert on.
+			if s != "" && back.Description != s {
+				t.Errorf("Description = %q, want %q (wire: %q)", back.Description, s, data)
+			}
+			if back.UpdatedBy != s {
+				t.Errorf("UpdatedBy = %q, want %q (wire: %q)", back.UpdatedBy, s, data)
+			}
+			if back.Fields[s] != s {
+				t.Errorf("Fields[%q] = %q, want %q (wire: %q)", s, back.Fields[s], s, data)
+			}
+			if back.Fields["ordinary"] != s {
+				t.Errorf("Fields[ordinary] = %q, want %q (wire: %q)", back.Fields["ordinary"], s, data)
+			}
+		})
+	}
+}
+
+// TestEntryMarshalIsDeterministic pins the "field order is stable" half
+// of the M3 test list. Fields and Extra are maps, so without an explicit
+// ordering the same entry would marshal to different bytes on different
+// runs — which would turn every `edit` into a spurious git diff.
+func TestEntryMarshalIsDeterministic(t *testing.T) {
+	e := sampleEntry(time.Now())
+	e.Fields = map[string]string{"z": "1", "a": "2", "m": "3", "b": "4", "q": "5"}
+	e.Extra = map[string]any{"zeta": 1, "alpha": 2, "mu": 3}
+
+	first, err := MarshalEntry(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 200 {
+		got, err := MarshalEntry(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(first) {
+			t.Fatalf("marshal #%d differs from the first:\n%s\nvs\n%s", i, got, first)
+		}
+	}
+}
+
+// TestEntryQuotedFallbackRoundTripsEverything exercises the safety net
+// directly. MarshalEntry only reaches styleAlwaysQuoted when the
+// readable styling fails its own round-trip check, which no known input
+// does — so without driving it by hand this path would be untested
+// precisely because it is the one that has to work when something else
+// has already gone wrong.
+func TestEntryQuotedFallbackRoundTripsEverything(t *testing.T) {
+	for name, s := range hostileStrings {
+		t.Run(name, func(t *testing.T) {
+			e := Entry{
+				Title:       s,
+				Description: s,
+				Created:     NewTimestamp(time.Now()),
+				Updated:     NewTimestamp(time.Now()),
+				UpdatedBy:   s,
+				Value:       s,
+				Fields:      map[string]string{s: s},
+			}
+			data, err := marshalEntryNodes(e, styleAlwaysQuoted)
+			if err != nil {
+				t.Fatalf("marshalEntryNodes: %v", err)
+			}
+			if err := verifyFaithful(data, e); err != nil {
+				t.Errorf("the quoted fallback is not faithful: %v (wire: %q)", err, data)
+			}
+		})
+	}
+}
+
+// TestEntryMultiLineValueStaysReadable guards the other half of the
+// trade-off: the fix for the hostile cases must not turn every ordinary
+// multi-line note into one long escaped line, because M5 shows this file
+// to a human in $EDITOR.
+func TestEntryMultiLineValueStaysReadable(t *testing.T) {
+	e := Entry{
+		Title:     "Recovery codes",
+		Created:   NewTimestamp(time.Now()),
+		Updated:   NewTimestamp(time.Now()),
+		UpdatedBy: "laptop-1",
+		Value:     "aaaa-bbbb\ncccc-dddd\neeee-ffff",
+	}
+	data, err := MarshalEntry(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "value: |-\n    aaaa-bbbb\n    cccc-dddd\n    eeee-ffff\n") {
+		t.Errorf("a plain multi-line value was not written as a readable block scalar:\n%s", data)
 	}
 }
 
@@ -610,6 +851,138 @@ func TestEntryIDsListsFilesInEntriesDir(t *testing.T) {
 		if !wantSet[g] {
 			t.Errorf("EntryIDs returned unexpected id %s", g)
 		}
+	}
+
+	// EntryIDs promises a stable order; readdir order is not one.
+	if !sort.SliceIsSorted(got, func(i, j int) bool { return got[i].String() < got[j].String() }) {
+		t.Errorf("EntryIDs returned an unsorted listing: %v", got)
+	}
+}
+
+// TestWriteEntryTightensAnExistingLooseEntriesDir covers the branch that
+// exists for vaults created before entries/ was 0700 (M1 created it
+// 0750) and for a umask that widened it: WriteEntry corrects the mode
+// rather than trusting whatever it finds.
+func TestWriteEntryTightensAnExistingLooseEntriesDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits aren't modeled on Windows")
+	}
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	if err := os.Chmod(v.entriesDir(), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.WriteEntry(NewEntryID(), sampleEntry(time.Now())); err != nil {
+		t.Fatalf("WriteEntry: %v", err)
+	}
+	assertUnixPerm(t, statPath(t, v.entriesDir()), 0o700, "entries directory")
+}
+
+// TestEntryFileRevealsNothingInPlaintext is the property the whole
+// on-disk layout exists for: with opaque UUID filenames, someone with
+// read access but no key learns nothing — so no part of the entry may
+// appear in the file, and the filename must carry no metadata either.
+func TestEntryFileRevealsNothingInPlaintext(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	e := sampleEntry(time.Now())
+	entryID := NewEntryID()
+	if err := v.WriteEntry(entryID, e); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(v.entryPath(entryID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{
+		e.Title, e.Description, e.Value, e.UpdatedBy,
+		e.Fields["username"], e.Fields["totp_seed"],
+	} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Errorf("the entry file contains %q in the clear", secret)
+		}
+	}
+	if strings.Contains(filepath.Base(v.entryPath(entryID)), e.Title) {
+		t.Error("the filename leaks the entry's title")
+	}
+}
+
+// TestWriteEntryRejectsARecipientItCannotEncryptTo: .age-recipients may
+// legally contain a plugin recipient (age1yubikey1...) that this build
+// cannot encrypt to. WriteEntry must fail loudly rather than quietly
+// writing a file that recipient could never open.
+func TestWriteEntryRejectsARecipientItCannotEncryptTo(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	path := filepath.Join(v.Path, ".age-recipients")
+	existing, err := recipients.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recipients.Write(path, append(existing, testRecipient2)); err != nil {
+		t.Fatal(err)
+	}
+
+	err = v.WriteEntry(NewEntryID(), sampleEntry(time.Now()))
+	if err == nil {
+		t.Fatal("expected WriteEntry to fail on a recipient this build cannot encrypt to")
+	}
+	if !errors.Is(err, ErrInvalidRecipient) {
+		t.Errorf("error = %v, want it to wrap ErrInvalidRecipient", err)
+	}
+	// Nothing may have been written on the failing path.
+	ids, err := v.EntryIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("a failed WriteEntry left %d entries behind: %v", len(ids), ids)
+	}
+}
+
+// TestWriteEntryWithoutARecipientsFileFails: encrypting to nobody would
+// produce a file no one can ever read, so a vault missing its
+// .age-recipients has to be an error rather than a silent no-recipient
+// write.
+func TestWriteEntryWithoutARecipientsFileFails(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	if err := os.Remove(filepath.Join(v.Path, ".age-recipients")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.WriteEntry(NewEntryID(), sampleEntry(time.Now())); err == nil {
+		t.Fatal("expected WriteEntry to fail with no .age-recipients present")
+	}
+}
+
+// TestReadEntryOnCorruptCiphertextFails is the other half of the typed
+// error surface: a damaged file must not read as "wrong key", since the
+// two mean very different things to whoever has to fix it.
+func TestReadEntryOnCorruptCiphertextFails(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	entryID := NewEntryID()
+	if err := v.WriteEntry(entryID, sampleEntry(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	path := v.entryPath(entryID)
+	ct, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Truncating mid-payload leaves an intact header and a damaged body.
+	if err := os.WriteFile(path, ct[:len(ct)-8], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := v.ReadEntry(entryID, &id); !errors.Is(err, ErrCorruptCiphertext) {
+		t.Errorf("error = %v, want it to wrap ErrCorruptCiphertext", err)
 	}
 }
 

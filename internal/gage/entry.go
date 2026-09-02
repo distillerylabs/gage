@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,13 +48,14 @@ func NewTimestamp(t time.Time) Timestamp {
 	return Timestamp{t.UTC().Truncate(time.Second)}
 }
 
-// MarshalYAML hands back the underlying time.Time rather than a
-// formatted string, so yaml.v3 encodes it through its native !!timestamp
-// path (unquoted, exactly like the design doc's example) instead of the
-// generic string path — which would quote it, since an unquoted
-// "2026-01-14T10:32:00Z" reads back ambiguously as a timestamp rather
-// than a string. NewTimestamp has already truncated to second precision,
-// so no fractional component ever reaches the encoder.
+// MarshalYAML keeps a Timestamp correct as a yaml value in its own
+// right. MarshalEntry does not go through it — it emits timestamps via
+// timestampNode, along with every other scalar in the document — so this
+// exists for a caller who marshals a Timestamp or an Entry directly, and
+// its output has to agree with timestampNode's. It hands back the
+// underlying time.Time so the encoder uses its native !!timestamp path
+// (unquoted, as the design doc's example shows) rather than quoting a
+// string that would otherwise read back ambiguously as a timestamp.
 func (t Timestamp) MarshalYAML() (any, error) {
 	return t.Time, nil
 }
@@ -75,10 +77,13 @@ func (t *Timestamp) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // Entry is one vault secret, decrypted: the fixed metadata fields plus
-// the actual payload. See "Entry format" in the design doc. Field
-// declaration order here is the marshaled YAML's field order —
-// deliberately matching the design doc's example, since the file is
-// shown to a human in M5's $EDITOR flow.
+// the actual payload. See "Entry format" in the design doc.
+//
+// The yaml tags drive decoding only; marshalEntryNodes writes the
+// document field by field and is what actually fixes the on-the-wire
+// order (the design doc's, since M5 shows this file to a human in
+// $EDITOR). The two must stay in agreement — a field added here needs a
+// line there, or it will be read back but never written.
 type Entry struct {
 	// Title is what ls/search match against and display — required, and
 	// the closest thing to a "name" an entry has, though it only exists
@@ -112,12 +117,233 @@ type Entry struct {
 }
 
 // MarshalEntry renders e as the YAML shown in "Entry format".
+//
+// The document is built as an explicit node tree rather than by handing
+// the struct to yaml.Marshal, because the library's own scalar-style
+// selection silently corrupts values a password manager must store
+// exactly. Handing yaml.v3 a value with a leading newline emits a block
+// scalar that reads back one newline short ("\nsecret" -> "secret"), and
+// a value containing a tab emits a block scalar the same library then
+// refuses to parse — so the entry would encrypt cleanly and never open
+// again. goccy/go-yaml, the other library the M3 plan weighed, fixes the
+// first and fails the same way on tabs, CRLF and leading tabs, so this is
+// a property gage has to own rather than delegate. See entryScalar for
+// the style rule and verifyFaithful for the check that backs it up.
 func MarshalEntry(e Entry) ([]byte, error) {
-	data, err := yaml.Marshal(e)
+	// Stamp the wire's canonical timestamp form here rather than trusting
+	// every caller to have gone through NewTimestamp, so second precision
+	// is a property of the format instead of a convention.
+	e.Created = NewTimestamp(e.Created.Time)
+	e.Updated = NewTimestamp(e.Updated.Time)
+
+	data, err := marshalEntryNodes(e, styleReadable)
+	if err != nil {
+		return nil, err
+	}
+	if verifyFaithful(data, e) == nil {
+		return data, nil
+	}
+
+	// The readable styling did not survive its own round trip. Fall back
+	// to quoting every string, the one style that round-trips everything
+	// tested, and refuse outright if even that is not faithful — a
+	// corrupted secret written without complaint is the one outcome this
+	// layer must never produce.
+	data, err = marshalEntryNodes(e, styleAlwaysQuoted)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyFaithful(data, e); err != nil {
+		return nil, exitcode.Wrap(exitcode.Internal,
+			fmt.Errorf("gage: refusing to write an entry that does not survive its own YAML round trip: %w", err))
+	}
+	return data, nil
+}
+
+// quoting selects how far marshalEntryNodes goes to keep strings intact.
+type quoting int
+
+const (
+	// styleReadable keeps the file pleasant to edit by hand (M5's $EDITOR
+	// flow): block scalars for multi-line values that can survive one,
+	// quotes only where they are needed.
+	styleReadable quoting = iota
+	// styleAlwaysQuoted quotes every string, trading readability for the
+	// widest fidelity. Only the fallback path uses it.
+	styleAlwaysQuoted
+)
+
+// marshalEntryNodes builds the document node by node, in the field order
+// "Entry format" fixes, and emits it.
+func marshalEntryNodes(e Entry, q quoting) ([]byte, error) {
+	doc := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	add := func(key string, value *yaml.Node) {
+		doc.Content = append(doc.Content, entryScalar(key, q), value)
+	}
+
+	add("title", entryScalar(e.Title, q))
+	if e.Description != "" {
+		add("description", entryScalar(e.Description, q))
+	}
+	add("created", timestampNode(e.Created))
+	add("updated", timestampNode(e.Updated))
+	add("updated_by", entryScalar(e.UpdatedBy, q))
+	add("value", entryScalar(e.Value, q))
+	if len(e.Fields) > 0 {
+		fields := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		for _, k := range sortedKeys(e.Fields) {
+			fields.Content = append(fields.Content, entryScalar(k, q), entryScalar(e.Fields[k], q))
+		}
+		add("fields", fields)
+	}
+	// Unknown keys are emitted after the known ones. Their original
+	// position isn't recoverable — Extra is a map — so sorting them is
+	// what makes the output deterministic.
+	for _, k := range sortedKeys(e.Extra) {
+		add(k, unknownValueNode(e.Extra[k], q))
+	}
+
+	data, err := yaml.Marshal(doc)
 	if err != nil {
 		return nil, exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: encoding entry: %w", err))
 	}
 	return data, nil
+}
+
+// entryScalar builds one string scalar, choosing the style that both
+// round-trips and reads well.
+//
+// A multi-line value gets a literal block scalar only when it can
+// actually survive one: no leading blank line (the emitter drops it), no
+// tab or control character (the emitter writes a block it cannot re-read),
+// and no line ending in whitespace (block scalars strip it). Everything
+// else multi-line is double-quoted, which escapes those characters
+// explicitly. Single-line strings are left to the emitter, which quotes
+// "null", "true", "123" and friends on its own.
+func entryScalar(s string, q quoting) *yaml.Node {
+	n := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
+	switch {
+	case q == styleAlwaysQuoted:
+		n.Style = yaml.DoubleQuotedStyle
+	case blockScalarSafe(s):
+		n.Style = yaml.LiteralStyle
+	case strings.ContainsAny(s, "\n\r\t"):
+		n.Style = yaml.DoubleQuotedStyle
+	}
+	return n
+}
+
+// blockScalarSafe reports whether s can be written as a literal block
+// scalar and read back byte for byte.
+func blockScalarSafe(s string) bool {
+	if !strings.Contains(s, "\n") || strings.HasPrefix(s, "\n") {
+		return false
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if line != strings.TrimRight(line, " \t") {
+			return false
+		}
+		for _, r := range line {
+			if r < 0x20 || r == 0x7f {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// timestampNode emits created/updated as an RFC 3339 scalar. The
+// !!timestamp tag is what keeps it unquoted in the output — the tag
+// itself stays invisible, since it is the one YAML would infer anyway —
+// giving the bare `created: 2026-01-14T10:32:00Z` the design doc shows.
+func timestampNode(t Timestamp) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!timestamp", Value: t.Format(time.RFC3339)}
+}
+
+// unknownValueNode renders one value from Extra. It handles the closed
+// set of Go types a generic YAML decode produces, so a future gage's
+// fields get the same styling care as gage's own; anything else — only
+// reachable if a caller populated Extra by hand with an exotic type —
+// falls back to the library's own encoding.
+func unknownValueNode(v any, q quoting) *yaml.Node {
+	switch t := v.(type) {
+	case nil:
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+	case string:
+		return entryScalar(t, q)
+	case bool:
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: strconv.FormatBool(t)}
+	case int:
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(t)}
+	case int64:
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatInt(t, 10)}
+	case uint64:
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatUint(t, 10)}
+	case float64:
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: strconv.FormatFloat(t, 'g', -1, 64)}
+	case []any:
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, item := range t {
+			seq.Content = append(seq.Content, unknownValueNode(item, q))
+		}
+		return seq
+	case map[string]any:
+		m := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		for _, k := range sortedKeys(t) {
+			m.Content = append(m.Content, entryScalar(k, q), unknownValueNode(t[k], q))
+		}
+		return m
+	default:
+		var n yaml.Node
+		if err := n.Encode(v); err != nil {
+			return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: fmt.Sprint(v), Style: yaml.DoubleQuotedStyle}
+		}
+		return &n
+	}
+}
+
+// verifyFaithful re-reads freshly marshaled bytes and reports whether
+// every string gage itself owns came back unchanged. It is the check that
+// makes "an entry round-trips byte for byte" a property gage enforces
+// rather than one it inherits from a library's style heuristics.
+func verifyFaithful(data []byte, want Entry) error {
+	got, err := UnmarshalEntry(data)
+	if err != nil {
+		return fmt.Errorf("the entry did not parse back: %w", err)
+	}
+	for _, f := range []struct {
+		name      string
+		got, want string
+	}{
+		{"title", got.Title, want.Title},
+		{"description", got.Description, want.Description},
+		{"updated_by", got.UpdatedBy, want.UpdatedBy},
+		{"value", got.Value, want.Value},
+	} {
+		if f.got != f.want {
+			return fmt.Errorf("%s changed: wrote %q, read back %q", f.name, f.want, f.got)
+		}
+	}
+	if len(got.Fields) != len(want.Fields) {
+		return fmt.Errorf("fields changed: wrote %d keys, read back %d", len(want.Fields), len(got.Fields))
+	}
+	for k, v := range want.Fields {
+		if got.Fields[k] != v {
+			return fmt.Errorf("field %q changed: wrote %q, read back %q", k, v, got.Fields[k])
+		}
+	}
+	return nil
+}
+
+// sortedKeys returns m's keys in a deterministic order, so one entry
+// always marshals to one byte sequence.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // UnmarshalEntry parses the YAML MarshalEntry produces — or a
