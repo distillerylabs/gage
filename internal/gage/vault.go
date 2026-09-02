@@ -1,32 +1,24 @@
 package gage
 
-import "github.com/denmark/gage/internal/gage/exitcode"
-
 // Vault is a single vault's on-disk state: config, recipients, entries. It
 // stays a stateless, identity-agnostic operator over ciphertext in both
 // invocation modes — Session, not Vault, owns any "how long does this stay
 // unlocked" bookkeeping. See "Library architecture" in the design doc.
 //
-// This is an M0 skeleton: the real on-disk structure arrives in M1, and
-// real crypto in M2. What's fixed here is the shape everything after M1
-// builds against.
+// The on-disk structure arrived in M1 and real crypto in M2; what M0
+// fixed is the shape everything after it builds against.
 type Vault struct {
 	// Name and Path are the vault's registry name and its on-disk
 	// location. Set by Create, or by whatever M1+ adds for opening an
 	// already-registered vault.
 	Name string
 	Path string
+
+	// locker is the page-locking seam Unlock and Identity.Close go
+	// through. nil means the real memlock-backed implementation, so
+	// nothing outside this package's own tests ever sets it — see
+	// Locker.
+	locker Locker
 }
 
-// Unlock runs the method-specific unlock flow (passphrase prompt and
-// decrypt of the wrapped identity file, a YubiKey touch, whatever the
-// configured method needs) and returns an Identity the caller threads
-// through every subsequent Vault call. Callers own calling Identity.Close
-// when they're done with it — Vault.Unlock never does so itself.
-//
-// The real implementation lands in M2; until then this always fails, so
-// nothing upstream can silently proceed as though it had a usable
-// Identity.
-func (v *Vault) Unlock(p Prompter) (Identity, error) {
-	return Identity{}, exitcode.New(exitcode.Internal, "gage: vault unlock is not implemented yet (arrives in M2)")
-}
+// Unlock lives in unlock.go.

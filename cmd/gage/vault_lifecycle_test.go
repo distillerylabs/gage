@@ -1,12 +1,16 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/denmark/gage/internal/gage/agekey"
 	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
@@ -233,9 +237,20 @@ func TestInitExplicitTypeAndMethodEquivalentToDefault(t *testing.T) {
 	implicit := readVaultConfigForTest(t, "implicit")
 	explicit := readVaultConfigForTest(t, "explicit")
 
-	// Everything but the vault's own name must match.
+	// Everything but the vault's own name — and this device's own
+	// generated public key, which is freshly random per init — must
+	// match. The device key is checked for shape rather than value.
 	implicit.Vault.Name = ""
 	explicit.Vault.Name = ""
+	for _, f := range []*vaultconfig.File{&implicit, &explicit} {
+		if len(f.Recipients) == 0 {
+			t.Fatal("no recipients written")
+		}
+		if err := agekey.ValidateRecipient(f.Recipients[0].Pubkey); err != nil {
+			t.Errorf("this device's generated key is not a valid recipient: %v", err)
+		}
+		f.Recipients[0].Pubkey = "<this device's generated key>"
+	}
 	if !reflect.DeepEqual(implicit, explicit) {
 		t.Errorf("explicit flags produced a different vault config than omitting them:\nomitted: %+v\ngiven:   %+v", implicit, explicit)
 	}
@@ -289,14 +304,151 @@ func TestInitUnknownMethodFailsWithUsage(t *testing.T) {
 	}
 }
 
-func TestInitNoRecipientFailsClearly(t *testing.T) {
+// TestInitWithNoRecipientGeneratesThisDevicesIdentity replaces M1's
+// "init fails without --recipient": M2 is the milestone that gives init
+// an identity to generate the first key from, so the flag becomes
+// optional and purely additive.
+func TestInitWithNoRecipientGeneratesThisDevicesIdentity(t *testing.T) {
 	isolateXDG(t)
+
 	res := runCLI(t, []string{"init", "personal"}, "")
-	if res.Code != int(exitcode.Usage) {
-		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
+	if res.Code != 0 {
+		t.Fatalf("init without --recipient failed: %s", res.Stderr)
 	}
-	if !strings.Contains(res.Stderr, "recipient") {
-		t.Errorf("stderr doesn't name the missing flag: %q", res.Stderr)
+
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+	vf := readVaultConfigForTest(t, "personal")
+	if len(vf.Recipients) != 1 {
+		t.Fatalf("recipients = %d, want exactly this device's own key", len(vf.Recipients))
+	}
+	pubkey := vf.Recipients[0].Pubkey
+	if err := agekey.ValidateRecipient(pubkey); err != nil {
+		t.Errorf("generated key %q is not a valid recipient: %v", pubkey, err)
+	}
+	if vf.Recipients[0].Device != entry.Device {
+		t.Errorf("recipient label = %q, want this device's name %q", vf.Recipients[0].Device, entry.Device)
+	}
+
+	// The same key, in both recipient-defining files.
+	data, err := os.ReadFile(filepath.Join(entry.Path, ".age-recipients"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != pubkey {
+		t.Errorf(".age-recipients = %q, want exactly the key in config.toml (%q)", data, pubkey)
+	}
+}
+
+// TestInitWritesTheWrappedIdentityFile is the storage half: the wrapped
+// private key lands under $GAGE_DATA/identities/<vault>/<device>.age,
+// outside the vault's own git tree, with tight permissions.
+func TestInitWritesTheWrappedIdentityFile(t *testing.T) {
+	isolateXDG(t)
+
+	if res := runCLI(t, []string{"init", "personal"}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+
+	dir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities", "personal")
+	path := filepath.Join(dir, entry.Device+".age")
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("expected a wrapped identity at %s: %v", path, err)
+	}
+	di, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if got := fi.Mode().Perm(); got != 0o600 {
+			t.Errorf("identity file mode = %04o, want 0600", got)
+		}
+		if got := di.Mode().Perm(); got != 0o700 {
+			t.Errorf("identities directory mode = %04o, want 0700", got)
+		}
+	}
+
+	// It is not inside the vault, and therefore not in the git tree that
+	// syncs to a remote.
+	if strings.HasPrefix(path, entry.Path) {
+		t.Errorf("the identity file %q is inside the vault %q", path, entry.Path)
+	}
+}
+
+// TestInitExtraRecipientFollowsTheDeviceKey pins the order: this
+// device's own key first (so gage.Create labels it with the device
+// name), then each --recipient in the order given.
+func TestInitExtraRecipientFollowsTheDeviceKey(t *testing.T) {
+	isolateXDG(t)
+
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+	vf := readVaultConfigForTest(t, "personal")
+	if len(vf.Recipients) != 2 {
+		t.Fatalf("recipients = %d, want 2", len(vf.Recipients))
+	}
+	if vf.Recipients[0].Device != entry.Device {
+		t.Errorf("first recipient is labeled %q, want this device (%q)", vf.Recipients[0].Device, entry.Device)
+	}
+	if vf.Recipients[1].Pubkey != testRecipient1 {
+		t.Errorf("second recipient = %q, want the --recipient key %q", vf.Recipients[1].Pubkey, testRecipient1)
+	}
+
+	data, err := os.ReadFile(filepath.Join(entry.Path, ".age-recipients"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(data))
+	want := []string{vf.Recipients[0].Pubkey, testRecipient1}
+	if !reflect.DeepEqual(lines, want) {
+		t.Errorf(".age-recipients = %v, want %v — same keys, same order as config.toml", lines, want)
+	}
+}
+
+// TestInitRecordsThisDevicesDeviceAndMethod: Unlock resolves the identity
+// file from the recorded device name, and dispatches on the recorded
+// method (Q-DEVICE-NAME, Q-METHOD-SCOPE). Both must actually be written.
+func TestInitRecordsThisDevicesDeviceAndMethod(t *testing.T) {
+	isolateXDG(t)
+
+	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1"}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+	if entry.Device != "laptop-1" {
+		t.Errorf("recorded device = %q, want laptop-1", entry.Device)
+	}
+	if entry.Method != "passphrase" {
+		t.Errorf("recorded method = %q, want passphrase", entry.Method)
+	}
+}
+
+// TestInitDeviceFlagAgreesEverywhere is the M2 bullet spelling out that
+// --device NAME reaches all three places that must agree: the identity
+// file's path, the [[recipients]] label, and the global config record.
+func TestInitDeviceFlagAgreesEverywhere(t *testing.T) {
+	isolateXDG(t)
+
+	if res := runCLI(t, []string{"init", "personal", "--device", "workstation-7"}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+	if entry.Device != "workstation-7" {
+		t.Errorf("global config device = %q, want workstation-7", entry.Device)
+	}
+	vf := readVaultConfigForTest(t, "personal")
+	if vf.Recipients[0].Device != "workstation-7" {
+		t.Errorf("[[recipients]] label = %q, want workstation-7", vf.Recipients[0].Device)
+	}
+	path := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities", "personal", "workstation-7.age")
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("expected the identity file at %s: %v", path, err)
 	}
 }
 
@@ -377,7 +529,9 @@ func TestVaultInfoByNameReportsExpectedFields(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("vault info failed: %s", res.Stderr)
 	}
-	for _, want := range []string{"type: git", "method: passphrase", "recipients: 2", "remote: (none)", "status: clean"} {
+	// Three: this device's own generated key plus the two --recipient
+	// keys, which are additive to it rather than replacing it.
+	for _, want := range []string{"type: git", "method: passphrase", "recipients: 3", "remote: (none)", "status: clean"} {
 		if !strings.Contains(res.Stdout, want) {
 			t.Errorf("vault info output missing %q:\n%s", want, res.Stdout)
 		}
@@ -489,6 +643,7 @@ func TestTamperedDeviceNameRefusedByRealCommand(t *testing.T) {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 	path := readGlobalConfigForTest(t).Vaults["personal"].Path
+	before := identityTree(t)
 
 	for _, evil := range []string{"../../../etc/cron.d/x", "/etc/passwd", `..\..\windows\x`} {
 		t.Run(evil, func(t *testing.T) {
@@ -504,15 +659,39 @@ func TestTamperedDeviceNameRefusedByRealCommand(t *testing.T) {
 			if !strings.Contains(res.Stderr, "device name") {
 				t.Errorf("error doesn't explain the device name was rejected: %q", res.Stderr)
 			}
-			// M1 writes no identity files at all (that's M2), so the
-			// assertion available here is that the rejection happens
-			// before anything is created under identities/ — the
-			// directory a resolved traversal would have escaped from.
-			if _, err := os.Stat(filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities")); !os.IsNotExist(err) {
-				t.Errorf("something was created under identities/ while handling device name %q", evil)
+			// init legitimately wrote one identity file for this
+			// device; what must not happen is anything *else* appearing,
+			// under identities/ or anywhere a traversal would have
+			// escaped to.
+			if got := identityTree(t); !reflect.DeepEqual(got, before) {
+				t.Errorf("handling device name %q changed the data directory:\nbefore: %v\nafter:  %v", evil, before, got)
 			}
 		})
 	}
+}
+
+// identityTree lists every path under $GAGE_DATA, so a test can assert
+// that handling a hostile device name created, moved, or removed nothing.
+func identityTree(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage")
+	var found []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		found = append(found, rel)
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	sort.Strings(found)
+	return found
 }
 
 func TestVaultRemoveDropsRegistrationButLeavesFiles(t *testing.T) {

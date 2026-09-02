@@ -12,12 +12,37 @@ const (
 	KindPassphrase UnlockKind = "passphrase"
 )
 
+// UnlockPurpose distinguishes the two directions the same method-agnostic
+// exchange runs in: proving possession of an identity that already exists,
+// and choosing the secret that will protect a new one. They need the same
+// answer type but not the same presentation — a CLI asks the second one
+// twice and checks the two match, a GUI shows a strength meter — so the
+// distinction is data the Prompter can render on, not two interface
+// methods.
+type UnlockPurpose string
+
+const (
+	// PurposeUnlock is the default: open an identity that already exists.
+	PurposeUnlock UnlockPurpose = "unlock"
+	// PurposeCreate asks for the secret a brand-new identity will be
+	// protected with. There is nothing to check the answer against, so a
+	// typo here is unrecoverable — which is exactly why it's marked as a
+	// distinct purpose rather than left indistinguishable from an unlock.
+	PurposeCreate UnlockPurpose = "create"
+)
+
 // UnlockRequest is what Vault.Unlock hands a Prompter when it needs a
 // human (or a GUI, or a script) to prove this device can decrypt a vault.
 type UnlockRequest struct {
-	Kind   UnlockKind
-	Vault  string
-	Device string
+	Kind UnlockKind
+	// Purpose says whether this request opens an existing identity or
+	// establishes a new one. Every request gage builds sets it
+	// explicitly; a Prompter that ignores it entirely still behaves
+	// correctly for the unlock case, which is what every request before
+	// M2 was.
+	Purpose UnlockPurpose
+	Vault   string
+	Device  string
 	// Attempt counts retries within a single Unlock call, starting at 1,
 	// so a Prompter can render "wrong passphrase, try again" without the
 	// library baking in a retry policy of its own.
@@ -68,4 +93,15 @@ type Prompter interface {
 	// the session-mode side of an ambiguous query (see "Addressing
 	// entries"). Returns the chosen candidate's ID.
 	Choose(list CandidateList) (string, error)
+
+	// Warn delivers a non-fatal advisory the caller should surface once:
+	// today, only that page-locking this process's key material failed
+	// and the unlock is proceeding without it (see "Session model").
+	//
+	// It returns nothing on purpose. Every caller of Warn is on a path
+	// that has already decided to continue — a warning that could fail
+	// would give the library a way to turn a degraded-but-working unlock
+	// into a failed one, which is the opposite of what this path exists
+	// for.
+	Warn(msg string)
 }

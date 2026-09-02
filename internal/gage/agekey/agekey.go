@@ -1,9 +1,15 @@
 // Package agekey validates the shape of an age public key — an
 // "age1..." Bech32 string (BIP-173) — without performing any
-// cryptographic operation. M1 has no crypto at all (see the M1 plan's
-// "Why no crypto here"): this exists so a malformed --recipient fails at
+// cryptographic operation. It exists so a malformed --recipient fails at
 // the CLI boundary, at init time, rather than surfacing as a confusing
-// encrypt failure in M3.
+// encrypt failure later.
+//
+// Shape-only validation is deliberately weaker than gage.ParseRecipient,
+// which parses a key gage is about to encrypt to. This one accepts every
+// recipient .age-recipients may legally contain, including the plugin
+// recipients (age1yubikey1...) this build cannot encrypt to itself, so
+// that a vault shared with a device using one still round-trips its
+// config.
 package agekey
 
 import (
@@ -28,8 +34,7 @@ const checksumConst = 1
 // a plain X25519 recipient (hrp "age") and a plugin recipient like
 // age-plugin-yubikey's (hrp "age1yubikey", per Bech32's own rule that
 // the hrp/data split is just "everything before the last '1'"). It
-// checks shape only — it never decodes key material, since M1 does no
-// crypto at all.
+// checks shape only — it never decodes key material.
 func ValidateRecipient(s string) error {
 	if len(s) < 8 || len(s) > maxLength {
 		return fmt.Errorf("agekey: %q is not a valid age recipient: wrong length", s)

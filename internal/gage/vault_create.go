@@ -39,9 +39,10 @@ const initialRecipientCommitMessage = "gage: initialize vault"
 
 // CreateSpec is everything Create needs to lay out a new vault: no
 // identity, no crypto — just a name, type, method, target path, and the
-// recipients' already-generated public keys as plain strings. See the M1
-// plan's "Why no crypto here": generating those keys is M2's job, and
-// this milestone requires at least one to already exist.
+// recipients' already-generated public keys as plain strings. Create
+// stays identity-agnostic on purpose: generating this device's key is
+// CreateIdentity's job, and `gage init` calls that first and hands the
+// resulting public key in here like any other recipient.
 type CreateSpec struct {
 	// Name is the vault's name, recorded in .gage/config.toml. It does
 	// not have to match Path's base name.
@@ -62,11 +63,11 @@ type CreateSpec struct {
 	Device string
 	// Recipients are already-generated age public keys, in the order
 	// they should appear in .age-recipients and .gage/config.toml. Must
-	// contain at least one. The first is labeled Device in
-	// .gage/config.toml; any beyond it — extra recipients such as a
-	// recovery key, added via repeated --recipient — get a generic
-	// "recipient-N" label, since M1 has no way to learn a real device
-	// name for a bare public key handed to it on the command line. Real
+	// contain at least one, and the first must be this device's own —
+	// that is what Device labels. Any beyond it — extra recipients such
+	// as a recovery key, added via repeated --recipient — get a generic
+	// "recipient-N" label, since there is no way to learn a real device
+	// name for a bare public key handed in on the command line. Real
 	// per-recipient device naming arrives with M9's `recipient add`.
 	Recipients []string
 	// Remote is an optional git remote ("origin") URL. Empty means the
@@ -98,7 +99,7 @@ func Create(spec CreateSpec) (*Vault, error) {
 		return nil, exitcode.Newf(exitcode.Usage, "gage: device name %q is invalid", spec.Device)
 	}
 	if len(spec.Recipients) == 0 {
-		return nil, exitcode.New(exitcode.Usage, "gage: at least one --recipient is required (M1 has no local identity to generate one from; see M2)")
+		return nil, exitcode.New(exitcode.Usage, "gage: a vault needs at least one recipient; the first must be this device's own public key")
 	}
 	for _, r := range spec.Recipients {
 		if err := agekey.ValidateRecipient(r); err != nil {

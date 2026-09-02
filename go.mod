@@ -3,6 +3,8 @@ module github.com/denmark/gage
 go 1.26.5
 
 require (
+	filippo.io/age v1.3.2
+	github.com/creack/pty v1.1.24
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/spf13/cobra v1.10.2
@@ -12,6 +14,7 @@ require (
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
@@ -29,7 +32,7 @@ require (
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )

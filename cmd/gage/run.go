@@ -13,6 +13,17 @@ import (
 // inspect the int without a subprocess.
 func Run(args []string, in io.Reader, out, errW io.Writer, isTerminal func() bool, build BuildInfo) int {
 	app := &App{Out: out, Err: errW, In: in, Build: build, IsTerminal: isTerminal}
+	// Prompts and warnings go to stderr, not stdout: a `gage show foo >
+	// secret.txt` must put only the secret in the file, while the human
+	// still sees the passphrase prompt they're answering.
+	app.Prompter = newTerminalPrompter(in, errW)
+	return runApp(app, args)
+}
+
+// runApp is Run with the App already assembled, so tests can supply a
+// fake Prompter and in-memory IO without Run having to grow a parameter
+// for every seam.
+func runApp(app *App, args []string) int {
 	root := NewRootCmd(app)
 	root.SetArgs(args)
 
@@ -23,7 +34,7 @@ func Run(args []string, in io.Reader, out, errW io.Writer, isTerminal func() boo
 
 	// If reporting the error itself fails there is nowhere left to
 	// report that to, and the exit code below still carries the outcome.
-	_, _ = fmt.Fprintln(errW, "gage:", err)
+	_, _ = fmt.Fprintln(app.Err, "gage:", err)
 
 	if exitcode.IsCoded(err) {
 		return int(exitcode.CodeOf(err))
