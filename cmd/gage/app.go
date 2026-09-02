@@ -46,9 +46,19 @@ func NewRootCmd(app *App) *cobra.Command {
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.CompletionOptions.DisableDefaultCmd = true
 
+	// Only the session-only meta-verbs get the generic "not implemented
+	// yet" stub (they have no real logic to run outside a session at
+	// all — see newStubCommand). Every other registry entry gets a
+	// dedicated command tree below, built for real starting in M1.
 	for _, ci := range registry {
-		root.AddCommand(newStubCommand(app, ci))
+		if ci.Availability == AvailSessionOnly {
+			root.AddCommand(newStubCommand(app, ci))
+		}
 	}
+
+	root.AddCommand(newInitCommand(app))
+	root.AddCommand(newVaultCommand(app))
+	root.AddCommand(newGitCommand(app))
 
 	installHelp(app, root)
 

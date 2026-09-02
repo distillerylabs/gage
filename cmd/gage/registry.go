@@ -116,6 +116,58 @@ var registry = []CommandInfo{
 		Group:        GroupSession,
 		Availability: AvailSessionOnly,
 	},
+	{
+		Name:         "init",
+		Short:        "Create a new vault",
+		Group:        GroupVault,
+		Availability: AvailOneShotOnly,
+	},
+	{
+		Name:         "vault list",
+		Short:        "List registered vaults",
+		Group:        GroupVault,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "vault info",
+		Short:        "Show a vault's type, method, recipient count, and (for git) remote/status",
+		Group:        GroupVault,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "vault remove",
+		Short:        "Forget a vault locally, leaving its files untouched",
+		Group:        GroupVault,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "vault set-default",
+		Short:        "Change which vault is used when none is given",
+		Group:        GroupVault,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "git set-remote",
+		Short:        "Set or change a vault's git remote (origin)",
+		Group:        GroupGit,
+		Availability: AvailBoth,
+	},
+}
+
+// commandShort looks up a registry entry's Short description by its
+// (possibly space-joined, for a nested command) name. It exists so a
+// dedicated command builder — anything beyond the generic
+// newStubCommand — still sources its help text from the registry
+// rather than duplicating it, keeping the registry the single source of
+// truth for both help surfaces (see CommandInfo's doc comment). Called
+// only with names this file itself defines above, so a missing entry is
+// a programming error, not a runtime condition to recover from.
+func commandShort(name string) string {
+	ci, ok := findCommand(name)
+	if !ok {
+		panic("registry: no entry for " + name)
+	}
+	return ci.Short
 }
 
 // oneShotCommands returns the registry entries gage --help/gage help

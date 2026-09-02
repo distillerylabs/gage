@@ -95,10 +95,13 @@ func TestRegistryCompletenessDetectsNestedDrift(t *testing.T) {
 	app := testApp()
 	root := NewRootCmd(app)
 
-	parent := &cobra.Command{Use: "vault", Short: "vault management"}
+	// A name guaranteed not to collide with any real, already-registered
+	// nested command (M1 on genuinely has "vault list" registered, so
+	// reusing that name here would no longer prove anything).
+	parent := &cobra.Command{Use: "zzz-fake-group", Short: "fake group for this test only"}
 	parent.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "list vaults",
+		Use:   "leaf",
+		Short: "fake leaf for this test only",
 		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
 	})
 	root.AddCommand(parent)
@@ -107,21 +110,21 @@ func TestRegistryCompletenessDetectsNestedDrift(t *testing.T) {
 
 	var sawLeaf, sawParent bool
 	for _, p := range paths {
-		if p == "vault list" {
+		if p == "zzz-fake-group leaf" {
 			sawLeaf = true
 		}
-		if p == "vault" {
+		if p == "zzz-fake-group" {
 			sawParent = true
 		}
 	}
 	if !sawLeaf {
-		t.Errorf("tree walk missed nested command %q; paths = %v", "vault list", paths)
+		t.Errorf("tree walk missed nested command %q; paths = %v", "zzz-fake-group leaf", paths)
 	}
 	if sawParent {
-		t.Errorf("tree walk treated non-runnable group %q as an invocable command; paths = %v", "vault", paths)
+		t.Errorf("tree walk treated non-runnable group %q as an invocable command; paths = %v", "zzz-fake-group", paths)
 	}
-	if _, ok := findCommand("vault list"); ok {
-		t.Error("findCommand resolved \"vault list\", which is not in the registry — the drift this test simulates would go undetected")
+	if _, ok := findCommand("zzz-fake-group leaf"); ok {
+		t.Error("findCommand resolved \"zzz-fake-group leaf\", which is not in the registry — the drift this test simulates would go undetected")
 	}
 }
 
