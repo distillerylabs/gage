@@ -10,6 +10,18 @@ import (
 // page-locked for its lifetime.
 const keySized = 74
 
+// KNOWN LIMIT, recorded deliberately: this test cannot distinguish a
+// working mlock from a Lock that returns nil without doing anything.
+// Neither POSIX nor Windows offers a portable "is this page locked?"
+// query — on Linux it can be read out of /proc/self/smaps, but there is
+// no macOS or Windows equivalent, so the check would hold on one of the
+// three platforms CI runs and give false confidence on the other two.
+// What is verified here is that the syscalls are reached, accept a
+// key-sized buffer, agree about the empty case, and don't corrupt what
+// they protect. The consequence of a silent no-op is bounded: a key that
+// could reach swap, which is the same outcome as the warn-and-proceed
+// path gage already supports and tests.
+//
 // TestLockUnlockRoundTrip is the M2 test list's "the memlock package's
 // Lock/Unlock round-trip succeeds on the current platform for a
 // representative key-sized byte slice."

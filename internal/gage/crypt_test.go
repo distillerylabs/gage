@@ -3,6 +3,8 @@ package gage
 import (
 	"bytes"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 
 	"filippo.io/age"
@@ -253,6 +255,59 @@ func TestPassphraseRecipientAloneRoundTrips(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Errorf("round-tripped payload = %q, want %q", got, payload)
 	}
+}
+
+// TestScryptWorkFactorIsActuallyApplied is the half that matters. The
+// constant below can be correct and never reach age: dropping the
+// SetWorkFactor call would silently write every identity file at age's
+// default of 18 while every other test in this milestone stayed green.
+//
+// age records the factor in the file's own scrypt stanza
+// ("-> scrypt <salt> <logN>"), so it is readable straight off the
+// ciphertext — no need to time anything or reach into the library.
+func TestScryptWorkFactorIsActuallyApplied(t *testing.T) {
+	r, err := PassphraseRecipient("hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, err := Encrypt([]byte("x"), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := scryptStanzaWorkFactor(string(ct))
+	if !ok {
+		t.Fatalf("no scrypt stanza found in the header:\n%q", firstLines(string(ct), 3))
+	}
+	if got != scryptWorkFactor {
+		t.Errorf("identity ciphertext was wrapped at work factor %d, want %d — "+
+			"the deliberate factor is not reaching age", got, scryptWorkFactor)
+	}
+}
+
+// scryptStanzaWorkFactor pulls logN out of an age header's scrypt stanza,
+// whose wire format is "-> scrypt <base64 salt> <logN>".
+func scryptStanzaWorkFactor(header string) (int, bool) {
+	for _, line := range strings.Split(header, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 4 || fields[0] != "->" || fields[1] != "scrypt" {
+			continue
+		}
+		n, err := strconv.Atoi(fields[3])
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+func firstLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // TestScryptWorkFactorIsDeliberate guards the M2 decision from being

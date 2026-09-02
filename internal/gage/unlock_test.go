@@ -242,6 +242,64 @@ func TestUnlockWithAWellFormedButWrongKindOfFileIsCorruptNotWrongPassphrase(t *t
 	}
 }
 
+// TestUnlockRejectsAnEmptyPassphrase: an empty answer is a Prompter bug
+// or an empty stdin, never a real passphrase. Deriving a key from it
+// would be worse than failing — it would produce a plausible-looking
+// unlock attempt against a passphrase nobody chose.
+func TestUnlockRejectsAnEmptyPassphrase(t *testing.T) {
+	v, _ := newUnlockableVault(t, "personal", "laptop-1")
+
+	p := &fakePrompter{passphrases: []string{""}}
+	id, err := v.Unlock(p)
+	if err == nil {
+		_ = id.Close()
+		t.Fatal("expected an empty passphrase to be refused")
+	}
+	if exitcode.CodeOf(err) != exitcode.LockedOrAuth {
+		t.Errorf("CodeOf(err) = %v, want LockedOrAuth", exitcode.CodeOf(err))
+	}
+	// Refused outright rather than retried: an empty answer means the
+	// Prompter has nothing to give, so re-asking would spin.
+	if len(p.requests) != 1 {
+		t.Errorf("Prompter.Unlock called %d times for an empty passphrase, want 1", len(p.requests))
+	}
+}
+
+// TestCreateIdentityRejectsAnEmptyPassphrase is the same rule on the
+// write path, where accepting it would be worse still: it would produce a
+// real, long-lived key file protected by nothing.
+func TestCreateIdentityRejectsAnEmptyPassphrase(t *testing.T) {
+	isolateXDG(t)
+
+	if _, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{""}}); err == nil {
+		t.Fatal("expected CreateIdentity to refuse an empty passphrase")
+	}
+	path, err := IdentityFilePath("personal", "laptop-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("an identity file was written despite the empty passphrase being refused")
+	}
+}
+
+// TestUnlockRejectsAPrompterAnsweringTheWrongKind: a response carrying a
+// different Kind than the request means the frontend and the library
+// disagree about what was asked, and proceeding would use whatever
+// happened to be in the Passphrase field.
+func TestUnlockRejectsAPrompterAnsweringTheWrongKind(t *testing.T) {
+	v, _ := newUnlockableVault(t, "personal", "laptop-1")
+
+	id, err := v.Unlock(&mismatchedPrompter{})
+	if err == nil {
+		_ = id.Close()
+		t.Fatal("expected a mismatched response Kind to be refused")
+	}
+	if !strings.Contains(err.Error(), "yubikey") {
+		t.Errorf("error %v does not name the mismatched kind", err)
+	}
+}
+
 func TestUnlockWithNoLocalIdentityIsDistinguishable(t *testing.T) {
 	t.Run("no identity file", func(t *testing.T) {
 		isolateXDG(t)
@@ -295,32 +353,38 @@ func assertNoLocalIdentity(t *testing.T, err error) {
 	}
 }
 
-// TestUnlockNeverBuildsAPathFromAnUnvalidatedDeviceName is Q-DEVICE-NAME's
-// rule at the one place it bites: a device name is a filename component
-// that arrives from config, and config is editable — by a git-writer for
-// the vault's own file, by anything with local write access for the
-// global one. A traversal-style name must fail, not resolve.
-func TestUnlockNeverBuildsAPathFromAnUnvalidatedDeviceName(t *testing.T) {
-	traversals := []string{
-		"../../../../etc/cron.d/x",
-		"..",
-		".",
-		"sub/dir",
-		`sub\dir`,
-		"C:evil",
-		"",
-		strings.Repeat("a", 200),
-	}
+// unsafeDeviceNames are the shapes a device name must never be allowed
+// to take, given it becomes a filename component. They arrive from
+// config — the vault's own committed file, which any git-writer can
+// edit, or the global one.
+var unsafeDeviceNames = []string{
+	"../../../../etc/cron.d/x",
+	"..",
+	".",
+	"sub/dir",
+	`sub\dir`,
+	"C:evil",
+	"with space",
+	"UPPER",
+	strings.Repeat("a", 200),
+}
 
-	for _, device := range traversals {
+// TestUnlockNeverBuildsAPathFromAnUnvalidatedDeviceName is Q-DEVICE-NAME's
+// rule at the one place it bites.
+//
+// The assertion is specifically ErrUnsafePathComponent, and that
+// precision is the whole test. Asserting merely that Unlock *failed*
+// would prove nothing: with validation removed, the traversed path
+// simply wouldn't exist, Unlock would report ErrNoLocalIdentity, and a
+// weaker test would go green while gage happily built and opened a path
+// outside $GAGE_DATA/identities/. The distinguishing evidence that the
+// name was rejected — rather than resolved and found empty — is the
+// error type.
+func TestUnlockNeverBuildsAPathFromAnUnvalidatedDeviceName(t *testing.T) {
+	for _, device := range unsafeDeviceNames {
 		t.Run(device, func(t *testing.T) {
 			isolateXDG(t)
 			registerVault(t, "personal", device, MethodPassphrase)
-
-			// A canary outside the identities directory. If a traversal
-			// resolved, this is where it would land.
-			dataDir := os.Getenv("XDG_DATA_HOME")
-			canary := filepath.Join(dataDir, "escaped.age")
 
 			v := &Vault{Name: "personal"}
 			id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
@@ -328,14 +392,62 @@ func TestUnlockNeverBuildsAPathFromAnUnvalidatedDeviceName(t *testing.T) {
 				_ = id.Close()
 				t.Fatal("expected Unlock with a traversal-style device name to fail")
 			}
+			if !errors.Is(err, ErrUnsafePathComponent) {
+				t.Errorf("error = %v, want it to wrap ErrUnsafePathComponent; "+
+					"anything else means the name was resolved rather than refused", err)
+			}
+			if errors.Is(err, ErrNoLocalIdentity) {
+				t.Errorf("the name was resolved into a path that merely didn't exist, not refused: %v", err)
+			}
 			if exitcode.CodeOf(err) != exitcode.LockedOrAuth {
 				t.Errorf("CodeOf(err) = %v, want LockedOrAuth", exitcode.CodeOf(err))
 			}
-			if _, statErr := os.Stat(canary); statErr == nil {
-				t.Errorf("Unlock touched %s — a path was constructed outside the identities directory", canary)
+
+			// Unlock reads; it never creates. Nothing at all should have
+			// appeared under $GAGE_DATA while handling a hostile name.
+			dataDir := os.Getenv("XDG_DATA_HOME")
+			if _, statErr := os.Stat(filepath.Join(dataDir, "gage", "identities")); !os.IsNotExist(statErr) {
+				t.Errorf("handling device name %q created something under identities/", device)
 			}
 		})
 	}
+}
+
+// TestIdentityFilePathRefusesAnUnsafeDeviceName is the same rule at the
+// constructor rather than through Unlock, so the refusal is pinned to the
+// one function every caller — present and future — goes through.
+func TestIdentityFilePathRefusesAnUnsafeDeviceName(t *testing.T) {
+	for _, device := range append([]string{""}, unsafeDeviceNames...) {
+		t.Run(device, func(t *testing.T) {
+			got, err := IdentityFilePath("personal", device)
+			if err == nil {
+				t.Fatalf("IdentityFilePath(_, %q) = %q, want an error", device, got)
+			}
+			if !errors.Is(err, ErrUnsafePathComponent) {
+				t.Errorf("error = %v, want it to wrap ErrUnsafePathComponent", err)
+			}
+			if got != "" {
+				t.Errorf("a refused name still produced a path: %q", got)
+			}
+		})
+	}
+}
+
+// TestUnlockWithNoRecordedDeviceIsAMissingIdentityNotAnUnsafeName: an
+// empty device name never reaches the path builder — the global config
+// record is incomplete, which is a different failure with a different
+// error. Pinned separately so it isn't mistaken for path validation.
+func TestUnlockWithNoRecordedDeviceIsAMissingIdentityNotAnUnsafeName(t *testing.T) {
+	isolateXDG(t)
+	registerVault(t, "personal", "", MethodPassphrase)
+
+	v := &Vault{Name: "personal"}
+	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
+	if err == nil {
+		_ = id.Close()
+		t.Fatal("expected Unlock with no recorded device to fail")
+	}
+	assertNoLocalIdentity(t, err)
 }
 
 // TestIdentityFilePathRefusesAnUnsafeVaultName covers the other half of
@@ -513,6 +625,14 @@ func TestCreateIdentityFileIsPassphraseWrappedAndSoleRecipient(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("-> scrypt")) {
 		t.Error("the identity file has no scrypt recipient stanza")
+	}
+	// The stanza also records the work factor the file was wrapped at,
+	// so the deliberate choice is checked on a real identity file and not
+	// only on a synthetic Encrypt call.
+	if got, ok := scryptStanzaWorkFactor(string(data)); !ok {
+		t.Error("could not read the work factor out of the identity file's scrypt stanza")
+	} else if got != scryptWorkFactor {
+		t.Errorf("identity file wrapped at work factor %d, want %d", got, scryptWorkFactor)
 	}
 	if bytes.Contains(data, []byte("-> X25519")) {
 		t.Error("the identity file has a second, non-scrypt recipient — the sole-recipient invariant (A3) is broken")

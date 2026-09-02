@@ -92,3 +92,42 @@ func TestValidRejectsOverLength(t *testing.T) {
 		t.Errorf("Valid(%d-char name) = true, want false", len(long))
 	}
 }
+
+// TestValidRejectsAllDotsNames covers the names the allowlist would
+// otherwise wave through: '.' is a legal device-name character, so ".",
+// "..", and "..." satisfy every other rule. They are never legitimate
+// device names, and one of them is the classic parent-directory
+// traversal — see allDots for why this is refused at the gate rather
+// than left to each caller to neutralize.
+func TestValidRejectsAllDotsNames(t *testing.T) {
+	for _, name := range []string{".", "..", "...", "....."} {
+		if Valid(name) {
+			t.Errorf("Valid(%q) = true, want false", name)
+		}
+	}
+}
+
+// TestValidStillAcceptsNamesContainingDots guards the fix from
+// overreaching: a dot inside a real name is ordinary and must stay legal.
+func TestValidStillAcceptsNamesContainingDots(t *testing.T) {
+	for _, name := range []string{"laptop.1", "a.b.c", ".hidden", "trailing."} {
+		if !Valid(name) {
+			t.Errorf("Valid(%q) = false, want true", name)
+		}
+	}
+}
+
+// TestNormalizeNeverProducesAnAllDotsName is the other half: whatever a
+// hostname looks like, normalization must not manufacture a name Valid
+// would reject.
+func TestNormalizeNeverProducesAnAllDotsName(t *testing.T) {
+	for _, hostname := range []string{".", "..", "...", ".local", "..foo..", "a.b.c"} {
+		got, ok := Normalize(hostname)
+		if !ok {
+			continue
+		}
+		if !Valid(got) {
+			t.Errorf("Normalize(%q) = %q, which Valid rejects", hostname, got)
+		}
+	}
+}

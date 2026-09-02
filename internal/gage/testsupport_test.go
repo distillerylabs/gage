@@ -48,6 +48,18 @@ func (f *fakePrompter) Confirm(prompt string) (bool, error)       { return true,
 func (f *fakePrompter) Choose(list CandidateList) (string, error) { return "", nil }
 func (f *fakePrompter) Warn(msg string)                           { f.warnings = append(f.warnings, msg) }
 
+// mismatchedPrompter answers a passphrase request with a different Kind,
+// which is what a buggy or mismatched frontend looks like from the
+// library's side.
+type mismatchedPrompter struct{}
+
+func (mismatchedPrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
+	return UnlockResponse{Kind: "yubikey"}, nil
+}
+func (mismatchedPrompter) Confirm(prompt string) (bool, error)       { return true, nil }
+func (mismatchedPrompter) Choose(list CandidateList) (string, error) { return "", nil }
+func (mismatchedPrompter) Warn(msg string)                           {}
+
 // countingLocker wraps the real Locker so a test can assert how many
 // times a page was locked and unlocked — the only way to prove Close is
 // idempotent in the sense that matters (it doesn't double-unlock a page),

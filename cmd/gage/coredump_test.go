@@ -11,9 +11,33 @@ import (
 // made: on Linux/macOS RLIMIT_CORE must read as 0, on Windows the process
 // error mode must carry the crash-dialog suppression bits.
 //
+// It first *undoes* the suppression, and that step is the entire point.
+// Core dumps are already off by default on macOS and under most shells'
+// `ulimit -c 0`, so a test that simply called disableCoreDumps and read
+// the limit back would pass against an implementation that did nothing —
+// which is exactly what it did before this was added.
+//
+// The undo, the assertion, and the irrevocability check are one test
+// rather than three on purpose. Lowering RLIMIT_CORE's *hard* limit is
+// permanent for the life of a process, so any test that lowered it first
+// would leave the others unable to set up, silently skipping instead of
+// checking. One test means one order, whatever `go test -shuffle` does.
+//
 // This runs in the test binary's own process, which is the only process
-// there is to observe — and it's exactly the same call main() makes.
+// there is to observe, and it's exactly the same call main() makes.
 func TestCoreDumpsAreDisabled(t *testing.T) {
+	if !undoCoreDumpSuppression(t) {
+		t.Skip("core dumps are already irrevocably disabled for this process; " +
+			"nothing for disableCoreDumps to change, so this proves nothing either way")
+	}
+	// Guard the guard: if undoing didn't take, everything below is
+	// vacuous again and should say so rather than quietly pass.
+	if off, err := coreDumpsDisabled(); err != nil {
+		t.Fatal(err)
+	} else if off {
+		t.Fatal("core dumps still read as disabled after undoing the suppression; this test would prove nothing")
+	}
+
 	if err := disableCoreDumps(); err != nil {
 		t.Fatalf("disableCoreDumps: %v", err)
 	}
@@ -22,7 +46,17 @@ func TestCoreDumpsAreDisabled(t *testing.T) {
 		t.Fatalf("reading the setting back from the OS: %v", err)
 	}
 	if !ok {
-		t.Errorf("core dumps are still enabled after disableCoreDumps; this platform promises: %s", coreDumpGuarantee)
+		t.Fatalf("core dumps are still enabled after disableCoreDumps; this platform promises: %s", coreDumpGuarantee)
+	}
+
+	// Lowering only the soft limit would leave anything in the process
+	// free to raise it again, which defeats the point. disableCoreDumps
+	// claims to lower the hard limit too, so the claim gets asserted.
+	if !hardLimitIsAlsoZero(t) {
+		t.Error("the hard limit was left above zero: the process can simply re-enable core dumps")
+	}
+	if undoCoreDumpSuppression(t) {
+		t.Error("core-dump suppression could be undone after disableCoreDumps")
 	}
 }
 

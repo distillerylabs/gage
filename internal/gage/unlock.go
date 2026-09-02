@@ -146,6 +146,12 @@ func isWrongPassphrase(err error) bool {
 			return false
 		}
 	}
+	// A header with no stanzas at all can't reach here — age's own parser
+	// rejects it as a malformed header long before any identity is tried,
+	// so this is unreachable defensive code rather than a case with a
+	// test. It stays because the alternative reading of an empty list
+	// ("every stanza was scrypt") is the wrong one, and a future age
+	// version that admits such a file should get the safe answer.
 	return len(noMatch.StanzaTypes) > 0
 }
 

@@ -70,17 +70,45 @@ func Normalize(hostname string) (string, bool) {
 }
 
 // Valid reports whether name is safe to use as-is: non-empty, within
-// MaxLength, and built entirely from the same allowlist Normalize
-// produces. Every device name gage ever turns into a path component —
-// whether it came from --device or was read back from a vault's
-// committed config.toml — must pass this before it touches the
+// MaxLength, not an all-dots name, and built entirely from the same
+// allowlist Normalize produces. Every device name gage ever turns into a
+// path component — whether it came from --device or was read back from a
+// vault's committed config.toml — must pass this before it touches the
 // filesystem.
 func Valid(name string) bool {
 	if name == "" || len(name) > MaxLength {
 		return false
 	}
+	if allDots(name) {
+		return false
+	}
 	for _, r := range name {
 		if !allowed(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// allDots reports whether name is made only of '.' characters — "." and
+// ".." above all, but "..." too.
+//
+// The allowlist permits '.' because real device names contain it, which
+// means "." and ".." pass every other check here. Today's single
+// consumer appends ".age" before joining, so "." would become the
+// harmless "..age" rather than the parent directory — but that safety is
+// an accident of the suffix, not of the validation, and it evaporates
+// the moment a caller uses a device name as a directory component (M9's
+// `identity add`, a future per-device subdirectory). A name whose only
+// meaning to a filesystem is "this directory" or "the parent directory"
+// is never a legitimate device name, so it's refused here, at the gate
+// the design points every path construction at, rather than relying on
+// each caller to neutralize it. Windows adds a second reason: it strips
+// trailing dots from filenames, so an all-dots component is doubly
+// ill-defined there.
+func allDots(name string) bool {
+	for _, r := range name {
+		if r != '.' {
 			return false
 		}
 	}
