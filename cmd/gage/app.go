@@ -4,6 +4,8 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+
+	"github.com/denmark/gage/internal/gage"
 )
 
 // App holds everything cmd/gage's Cobra layer needs that isn't itself
@@ -17,6 +19,13 @@ type App struct {
 	In  io.Reader
 
 	Build BuildInfo
+
+	// Prompter is how internal/gage asks this frontend for a human
+	// decision — a passphrase, a yes/no, a pick from a list. It lives on
+	// App rather than being constructed where it's needed so that tests
+	// drive the whole command tree with an in-memory fake and never
+	// touch a terminal. See "Library architecture".
+	Prompter gage.Prompter
 
 	// IsTerminal reports whether stdin is a real terminal, for the bare
 	// `gage` TTY-vs-piped dispatch (Q-ROOT-CMD). Kept separate from In

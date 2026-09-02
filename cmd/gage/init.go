@@ -14,12 +14,13 @@ import (
 )
 
 // newInitCommand builds `gage init`, a thin wiring layer over
-// gage.Create: it resolves the flags' defaults (device name, target
-// path), rejects a name that's already registered before touching
-// anything, calls Create, and — only once that on-disk skeleton exists —
-// registers the new vault in global config. --type and --method default
-// to (and, today, can only be) "git"/"passphrase"; gage.Create is what
-// actually enforces the allowlist, so this command doesn't duplicate
+// gage.CreateIdentity and gage.Create: it resolves the flags' defaults
+// (device name, target path), rejects a name that's already registered
+// before touching anything, generates this device's identity, calls
+// Create with its public key, and — only once that on-disk skeleton
+// exists — registers the new vault in global config. --type and --method
+// default to (and, today, can only be) "git"/"passphrase"; gage.Create is
+// what actually enforces the allowlist, so this command doesn't duplicate
 // that check.
 func newInitCommand(app *App) *cobra.Command {
 	var (
@@ -35,8 +36,12 @@ func newInitCommand(app *App) *cobra.Command {
 		Use:   "init <name>",
 		Short: commandShort("init"),
 		Long: commandShort("init") + ".\n\n" +
-			"M1 requires at least one --recipient: there is no local identity to\n" +
-			"generate one from yet (that arrives in M2, which makes the flag optional).",
+			"Generates this device's identity, wraps its private key with a passphrase\n" +
+			"you choose, and writes the public half into the vault's recipient files.\n" +
+			"The wrapped key is stored outside the vault and is never committed or synced.\n\n" +
+			"--recipient is additive: each one is written alongside this device's own key,\n" +
+			"which is how a recovery key gets into a vault from the start. A vault that\n" +
+			"depends on exactly one identity file surviving forever has no recovery story.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(app, initOptions{
@@ -58,7 +63,7 @@ func newInitCommand(app *App) *cobra.Command {
 		fmt.Sprintf("default identity method for devices joining this vault (accepted: %v)", gage.AllowedMethods()))
 	cmd.Flags().StringVar(&deviceFlag, "device", "", "this device's name (default: normalized hostname)")
 	cmd.Flags().StringArrayVar(&recipientFlags, "recipient", nil,
-		"recipient public key (repeatable; required in M1, since there's no identity to generate one from yet)")
+		"additional recipient public key, e.g. a recovery key (repeatable; this device's own key is always included)")
 	cmd.Flags().StringVar(&remoteFlag, "remote", "", "git remote (origin) URL; omit to start local-only")
 	return cmd
 }
@@ -108,16 +113,43 @@ func runInit(app *App, opt initOptions) error {
 		path = filepath.Join(vaultsDir, opt.name)
 	}
 
+	// The identity comes first, and with it the passphrase prompt. Every
+	// later step can fail on something already knowable (a non-empty
+	// target directory, a bad recipient), so asking a human to type a
+	// passphrase twice and only then reporting one of those would be the
+	// wrong order to fail in. CreateIdentity also refuses to overwrite an
+	// existing identity file, which is the one collision `gage init`
+	// could otherwise turn into an unrecoverable key loss.
+	pubkey, err := gage.CreateIdentity(opt.name, device, app.Prompter)
+	if err != nil {
+		return err
+	}
+
+	// This device's own key leads, and --recipient keys follow in the
+	// order given: gage.Create labels the first recipient with the device
+	// name and the rest generically, so the order is what makes the label
+	// correct.
+	recipients := append([]string{pubkey}, opt.recipients...)
+
 	spec := gage.CreateSpec{
 		Name:       opt.name,
 		Path:       path,
 		Type:       opt.typ,
 		Method:     opt.method,
 		Device:     device,
-		Recipients: opt.recipients,
+		Recipients: recipients,
 		Remote:     opt.remote,
 	}
 	if _, err := gage.Create(spec); err != nil {
+		// Nothing references this key yet — Create wrote no vault at all —
+		// so the identity generated a moment ago is an orphan. Left in
+		// place it would block every retry, because CreateIdentity
+		// refuses to overwrite an existing identity file. Rolling it back
+		// is what makes "fix the problem and run init again" work.
+		if rmErr := gage.RemoveIdentity(opt.name, device); rmErr != nil {
+			return exitcode.Newf(exitcode.Internal,
+				"gage: %v (and rolling back the generated identity failed: %v)", err, rmErr)
+		}
 		return err
 	}
 
@@ -141,7 +173,10 @@ func runInit(app *App, opt initOptions) error {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
 
-	writeOut(app.Out, []string{fmt.Sprintf("gage: initialized vault %q at %s", opt.name, path)})
+	writeOut(app.Out, []string{
+		fmt.Sprintf("gage: initialized vault %q at %s", opt.name, path),
+		fmt.Sprintf("gage: this device is %q, public key %s", device, pubkey),
+	})
 	return nil
 }
 

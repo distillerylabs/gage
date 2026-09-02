@@ -9,10 +9,10 @@ import (
 
 // TestBareGageOnTTYEntersSessionMode asserts the dispatch-level decision
 // from Q-ROOT-CMD: a TTY on stdin means bare `gage` goes to the session
-// path, not help. A real pty isn't available until M2 introduces
-// creack/pty, so this is asserted at the dispatch level — the pure
-// decision function, and Run wired up with a forced-true IsTerminal —
-// exactly as the plan calls for. The session implementation itself is
+// path, not help. A real pty is used only where the terminal itself is
+// the thing under test (see prompter_pty_test.go); the dispatch decision
+// isn't, so it's asserted at the dispatch level — the pure decision
+// function, and the command tree wired up with a forced-true IsTerminal. The session implementation itself is
 // M6's; the stub's own message is incidental, not part of the contract.
 func TestBareGageOnTTYEntersSessionMode(t *testing.T) {
 	if got := chooseRootMode(true); got != "session" {
