@@ -16,7 +16,7 @@ func TestEditRestampsUpdatedAndUpdatedByAndCommits(t *testing.T) {
 	path := initEntryTestVault(t, "personal")
 	device := readGlobalConfigForTest(t).Vaults["personal"].Device
 
-	if res, _ := runCLIWithValue(t, []string{"insert", "ProtonMail"}, "v1"); res.Code != 0 {
+	if res, _ := runCLIWithValue(t, []string{"insert", "ProtonMail", "--description", "personal email"}, "v1"); res.Code != 0 {
 		t.Fatalf("insert failed: %s", res.Stderr)
 	}
 	before := catEntry(t, "ProtonMail")
@@ -44,6 +44,15 @@ func TestEditRestampsUpdatedAndUpdatedByAndCommits(t *testing.T) {
 	if after.Value != before.Value {
 		t.Errorf("Value changed on an unedited save: got %q, want unchanged %q", after.Value, before.Value)
 	}
+	if after.Title != before.Title {
+		t.Errorf("Title changed on an unedited save: got %q, want unchanged %q", after.Title, before.Title)
+	}
+	if after.Description != before.Description {
+		t.Errorf("Description changed on an unedited save: got %q, want unchanged %q", after.Description, before.Description)
+	}
+	if len(after.Fields) != len(before.Fields) {
+		t.Errorf("Fields changed on an unedited save: got %v, want unchanged %v", after.Fields, before.Fields)
+	}
 
 	afterCommits, err := gitrepo.CommitCount(path)
 	if err != nil {
@@ -51,6 +60,47 @@ func TestEditRestampsUpdatedAndUpdatedByAndCommits(t *testing.T) {
 	}
 	if afterCommits != beforeCommits+1 {
 		t.Errorf("commit count = %d, want %d (exactly one new commit)", afterCommits, beforeCommits+1)
+	}
+}
+
+// TestEditRestampIsAuthoritativeOverTheEditedFile is the assertion the
+// unedited-save test above structurally cannot make: because the editing
+// device is the same one that inserted the entry, `updated_by` is
+// already correct before the edit, so that test passes whether or not
+// gage re-stamps anything.
+//
+// Here the fake editor rewrites the three fields gage owns to values it
+// must overrule — a foreign updated_by and a 1999 created/updated — so
+// each guarantee becomes observable: updated_by comes from the unlocked
+// identity, updated from the clock, and created from the *original*
+// entry rather than from whatever the file came back saying.
+func TestEditRestampIsAuthoritativeOverTheEditedFile(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	device := readGlobalConfigForTest(t).Vaults["personal"].Device
+
+	if res, _ := runCLIWithValue(t, []string{"insert", "ProtonMail"}, "v1"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+	before := catEntry(t, "ProtonMail")
+
+	setFakeEditor(t, "tamper-stamps", nil)
+	if res := runCLI(t, []string{"edit", "ProtonMail"}, ""); res.Code != 0 {
+		t.Fatalf("edit failed: %s", res.Stderr)
+	}
+
+	after := catEntry(t, "ProtonMail")
+	if after.UpdatedBy != device {
+		t.Errorf("updated_by = %q, want it re-stamped to this device %q rather than taken from the edited file", after.UpdatedBy, device)
+	}
+	if after.Updated.Year() == 1999 {
+		t.Errorf("updated = %v, want it re-stamped from the clock rather than taken from the edited file", after.Updated)
+	}
+	if !after.Updated.After(before.Updated.Time) {
+		t.Errorf("updated = %v, want it bumped past %v", after.Updated, before.Updated)
+	}
+	if after.Created != before.Created {
+		t.Errorf("created = %v, want the original %v preserved — created is set once and never touched again", after.Created, before.Created)
 	}
 }
 

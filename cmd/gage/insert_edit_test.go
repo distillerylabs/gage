@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
 )
@@ -25,6 +28,53 @@ func TestInsertEditOpensTemplateAndInsertsEditedValueAndFields(t *testing.T) {
 	}
 	if got.Description != "personal email" {
 		t.Errorf("Description = %q, want the pre-filled %q", got.Description, "personal email")
+	}
+}
+
+// TestInsertEditOpensAPreFilledTemplateWithEmptyValueAndFields asserts
+// what the editor was actually handed, which is the half of the bullet
+// the round-trip tests can't see: title and description pre-filled from
+// the command line, value empty, and no fields at all. The fake editor
+// records the file's contents before touching it, since editYAML deletes
+// the scratch file before returning.
+func TestInsertEditOpensAPreFilledTemplateWithEmptyValueAndFields(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	template := filepath.Join(t.TempDir(), "template.yaml")
+	setFakeEditor(t, "set-value", map[string]string{
+		"GAGE_TEST_FAKE_EDITOR_VALUE": "v",
+		fakeEditorTemplateEnvVar:      template,
+	})
+	if res := runCLI(t, []string{"insert", "ProtonMail", "--description", "personal email", "-e"}, ""); res.Code != 0 {
+		t.Fatalf("insert -e failed: %s", res.Stderr)
+	}
+
+	data, err := os.ReadFile(template)
+	if err != nil {
+		t.Fatalf("the fake editor never recorded the template: %v", err)
+	}
+	seeded, err := gage.UnmarshalEntry(data)
+	if err != nil {
+		t.Fatalf("the template gage opened doesn't parse as an Entry: %v\n%s", err, data)
+	}
+
+	if seeded.Title != "ProtonMail" {
+		t.Errorf("template title = %q, want the <title> argument %q pre-filled", seeded.Title, "ProtonMail")
+	}
+	if seeded.Description != "personal email" {
+		t.Errorf("template description = %q, want --description %q pre-filled", seeded.Description, "personal email")
+	}
+	if seeded.Value != "" {
+		t.Errorf("template value = %q, want it empty", seeded.Value)
+	}
+	if len(seeded.Fields) != 0 {
+		t.Errorf("template fields = %v, want none", seeded.Fields)
+	}
+	// An empty `fields:` key would be noise in a file a human edits; the
+	// entry format omits it entirely when empty.
+	if strings.Contains(string(data), "fields:") {
+		t.Errorf("template carries an empty fields: key:\n%s", data)
 	}
 }
 
