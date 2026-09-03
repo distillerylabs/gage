@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/denmark/gage/internal/gage"
@@ -77,6 +79,7 @@ func newInsertCommand(app *App) *cobra.Command {
 		descriptionFlag string
 		multilineFlag   bool
 		valueStdinFlag  bool
+		editFlag        bool
 		forceFlag       bool
 	)
 
@@ -87,10 +90,18 @@ func newInsertCommand(app *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			title := args[0]
 
-			// Validated before any I/O — prompt, read, or unlock.
-			if multilineFlag && valueStdinFlag {
+			// Validated before any I/O — prompt, read, or unlock. Extends
+			// M4's two-flag check to three modes: at most one of
+			// -m/--value-stdin/-e may be given.
+			modes := 0
+			for _, on := range []bool{multilineFlag, valueStdinFlag, editFlag} {
+				if on {
+					modes++
+				}
+			}
+			if modes > 1 {
 				return exitcode.New(exitcode.Usage,
-					"gage: -m/--multiline and --value-stdin are mutually exclusive")
+					"gage: -m/--multiline, --value-stdin, and -e/--edit are mutually exclusive")
 			}
 
 			// Unlock -> use -> Close, per the one-shot handler contract:
@@ -98,6 +109,10 @@ func newInsertCommand(app *App) *cobra.Command {
 			// secret, so a failed unlock never makes them type it for
 			// nothing.
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
+				if editFlag {
+					return runInsertEdit(app, v, ident, title, descriptionFlag, forceFlag)
+				}
+
 				value, err := resolveInsertValue(app, title, multilineFlag, valueStdinFlag)
 				if err != nil {
 					return err
@@ -129,8 +144,58 @@ func newInsertCommand(app *App) *cobra.Command {
 		"read the value as multiple lines from the terminal until EOF")
 	cmd.Flags().BoolVar(&valueStdinFlag, "value-stdin", false,
 		"read the value verbatim from stdin (one trailing newline trimmed)")
+	cmd.Flags().BoolVarP(&editFlag, "edit", "e", false,
+		"open a template in $EDITOR to fill in value/fields (and optionally title/description)")
 	cmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "allow inserting a duplicate title")
 	return cmd
+}
+
+// runInsertEdit is insert -e's path: seed a stub Entry (title/description
+// pre-filled, value/fields empty) into the shared editYAML round trip,
+// then insert whatever comes back — using the *edited* title/description
+// for both the saved entry and Insert's own duplicate-title/-f check, per
+// the design doc's note that the template lets title itself be edited.
+//
+// Aborts with nothing written and no commit — the same "empty message
+// aborts the commit" convention `git commit` uses — if the file comes
+// back unchanged, or changed but with value and fields both still empty
+// (title/description-only edits don't count as "something to save").
+func runInsertEdit(app *App, v *gage.Vault, ident *gage.Identity, title, description string, force bool) error {
+	now := gage.NewTimestamp(time.Now())
+	stub := gage.Entry{
+		Title:       title,
+		Description: description,
+		Created:     now,
+		Updated:     now,
+		UpdatedBy:   ident.Device(),
+	}
+
+	edited, unchanged, err := editYAML(stub)
+	if err != nil {
+		return err
+	}
+	if unchanged || (edited.Value == "" && len(edited.Fields) == 0) {
+		return exitcode.New(exitcode.Usage,
+			"gage: insert -e aborted: nothing to save (the file was unchanged, or value and fields were both left empty)")
+	}
+
+	stamp := gage.NewTimestamp(time.Now())
+	e := gage.Entry{
+		Title:       edited.Title,
+		Description: edited.Description,
+		Created:     stamp,
+		Updated:     stamp,
+		UpdatedBy:   ident.Device(),
+		Value:       edited.Value,
+		Fields:      edited.Fields,
+		Extra:       edited.Extra,
+	}
+	id, err := v.Insert(e, force, ident)
+	if err != nil {
+		return err
+	}
+	writeOut(app.Out, []string{fmt.Sprintf("gage: inserted %q (%s)", e.Title, id)})
+	return nil
 }
 
 // resolveInsertValue gets insert's value from whichever of the three
@@ -167,9 +232,50 @@ func trimOneTrailingNewline(s string) string {
 	return strings.TrimSuffix(s, "\n")
 }
 
+// resolveQuery runs the shared resolver and, on an ambiguous result,
+// prints the candidate list to stderr before returning the error — the
+// one-shot side of "the library returns a candidate list as a value, the
+// CLI decides what to do with it" (see the M5 plan and "Addressing
+// entries & the metadata index"). One-shot mode has nobody to prompt, so
+// listing the candidates and failing is the whole story; M6's session
+// mode is what turns the same list into an interactive picker instead.
+func resolveQuery(app *App, v *gage.Vault, query string, ident *gage.Identity) (uuid.UUID, gage.Entry, error) {
+	id, e, err := v.Resolve(query, ident)
+	if err != nil {
+		reportAmbiguous(app, err)
+		return uuid.Nil, gage.Entry{}, err
+	}
+	return id, e, nil
+}
+
+// reportAmbiguous prints err's candidate list to stderr if it wraps
+// *gage.AmbiguousQueryError, and is a no-op otherwise. Every
+// query-taking command's one-shot handler calls this on a resolve
+// failure before returning it — including gage rm/gage rename, whose
+// error comes back through Remove/Rename rather than a direct Resolve
+// call — so an ambiguous query lists its candidates exactly once
+// regardless of which command reached the resolver.
+func reportAmbiguous(app *App, err error) {
+	var amb *gage.AmbiguousQueryError
+	if errors.As(err, &amb) {
+		printCandidates(app, amb.List)
+	}
+}
+
+// printCandidates renders an ambiguous query's candidate list to stderr —
+// the design doc's numbered-picker shape, minus the "which one?" prompt
+// one-shot mode never asks.
+func printCandidates(app *App, list gage.CandidateList) {
+	lines := []string{fmt.Sprintf("gage: %q matches %d entries:", list.Query, len(list.Candidates))}
+	for i, c := range list.Candidates {
+		lines = append(lines, fmt.Sprintf("  %d. %s (%s)", i+1, c.Title, shortEntryID(c.ID)))
+	}
+	writeOut(app.Err, lines)
+}
+
 // newCatCommand builds `gage cat`: always the full decrypted entry, for
 // scripting/piping — see "Notes on show" in the design doc for how this
-// differs from the (later) `gage show`.
+// differs from `gage show`.
 func newCatCommand(app *App) *cobra.Command {
 	var useFlag string
 	cmd := &cobra.Command{
@@ -178,7 +284,7 @@ func newCatCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				_, e, err := v.Resolve(args[0], ident)
+				_, e, err := resolveQuery(app, v, args[0], ident)
 				if err != nil {
 					return err
 				}
@@ -198,6 +304,145 @@ func newCatCommand(app *App) *cobra.Command {
 	return cmd
 }
 
+// newShowCommand builds `gage show`: the value field only, not the full
+// YAML `gage cat` prints — see "Notes on show" in the design doc.
+// --field/-c/-q are deferred to M12.
+func newShowCommand(app *App) *cobra.Command {
+	var useFlag string
+	cmd := &cobra.Command{
+		Use:   "show <query>",
+		Short: commandShort("show"),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
+				_, e, err := resolveQuery(app, v, args[0], ident)
+				if err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintln(app.Out, e.Value); err != nil {
+					return exitcode.Wrap(exitcode.Internal, err)
+				}
+				return nil
+			})
+		},
+	}
+	addUseFlag(cmd, &useFlag)
+	return cmd
+}
+
+// newEditCommand builds `gage edit`: resolve query, run the shared
+// editYAML round trip seeded with the decrypted entry, re-stamp
+// updated/updated_by (created is never touched — the field is "set once,
+// at insert time, and never touched again" regardless of what the file
+// comes back showing), and commit. Unlike gage insert -e, edit has no
+// "unchanged" abort: it commits every time the file parses, the same way
+// `git commit --amend` with no new message still amends.
+func newEditCommand(app *App) *cobra.Command {
+	var useFlag string
+	cmd := &cobra.Command{
+		Use:   "edit <query>",
+		Short: commandShort("edit"),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
+				id, e, err := resolveQuery(app, v, args[0], ident)
+				if err != nil {
+					return err
+				}
+
+				edited, _, err := editYAML(e)
+				if err != nil {
+					return err
+				}
+				edited.Created = e.Created
+				edited.Updated = gage.NewTimestamp(time.Now())
+				edited.UpdatedBy = ident.Device()
+
+				if err := v.Update(id, edited); err != nil {
+					return err
+				}
+				writeOut(app.Out, []string{fmt.Sprintf("gage: updated %q (%s)", edited.Title, shortEntryID(id.String()))})
+				return nil
+			})
+		},
+	}
+	addUseFlag(cmd, &useFlag)
+	return cmd
+}
+
+// newRenameCommand builds `gage rename`: a quick metadata-only edit, no
+// $EDITOR — changes only the title.
+func newRenameCommand(app *App) *cobra.Command {
+	var (
+		useFlag   string
+		forceFlag bool
+	)
+	cmd := &cobra.Command{
+		Use:   "rename <query> <new-title>",
+		Short: commandShort("rename"),
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
+				id, err := v.Rename(args[0], args[1], forceFlag, ident)
+				if err != nil {
+					reportAmbiguous(app, err)
+					return err
+				}
+				writeOut(app.Out, []string{fmt.Sprintf("gage: renamed to %q (%s)", args[1], shortEntryID(id.String()))})
+				return nil
+			})
+		},
+	}
+	addUseFlag(cmd, &useFlag)
+	cmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "allow renaming to a duplicate title")
+	return cmd
+}
+
+// newGenerateCommand builds `gage generate`: like insert, but the value
+// is drawn from gage.GenerateValue instead of coming from the human.
+// -l/--no-symbols customization is deferred to M12.
+func newGenerateCommand(app *App) *cobra.Command {
+	var (
+		useFlag         string
+		descriptionFlag string
+		forceFlag       bool
+	)
+	cmd := &cobra.Command{
+		Use:   "generate <title>",
+		Short: commandShort("generate"),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			title := args[0]
+			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
+				value, err := gage.GenerateValue()
+				if err != nil {
+					return err
+				}
+
+				now := gage.NewTimestamp(time.Now())
+				e := gage.Entry{
+					Title:       title,
+					Description: descriptionFlag,
+					Created:     now,
+					Updated:     now,
+					UpdatedBy:   ident.Device(),
+					Value:       value,
+				}
+				id, err := v.Insert(e, forceFlag, ident)
+				if err != nil {
+					return err
+				}
+				writeOut(app.Out, []string{fmt.Sprintf("gage: generated %q (%s)", title, id)})
+				return nil
+			})
+		},
+	}
+	addUseFlag(cmd, &useFlag)
+	cmd.Flags().StringVar(&descriptionFlag, "description", "", "optional description")
+	cmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "allow inserting a duplicate title")
+	return cmd
+}
+
 // newRmCommand builds `gage rm`.
 func newRmCommand(app *App) *cobra.Command {
 	var useFlag string
@@ -209,6 +454,7 @@ func newRmCommand(app *App) *cobra.Command {
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
 				id, err := v.Remove(args[0], ident)
 				if err != nil {
+					reportAmbiguous(app, err)
 					return err
 				}
 				writeOut(app.Out, []string{fmt.Sprintf("gage: removed %s", id)})

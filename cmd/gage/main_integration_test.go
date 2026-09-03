@@ -42,7 +42,17 @@ var (
 // builtGageBinary creates, so a `go test ./...` doesn't leave a
 // gage-integration-* directory behind in the system temp dir on every
 // invocation.
+//
+// It also doubles as the reentrant "fake $EDITOR" this package's editor
+// tests use: when GAGE_TEST_FAKE_EDITOR is set, this same compiled test
+// binary — pointed to by $EDITOR — is what actually runs, and it acts as
+// the editor instead of running any tests. See runFakeEditor in
+// editor_fake_test.go for why this is more portable across CI's three
+// platforms than a shell script would be.
 func TestMain(m *testing.M) {
+	if mode := os.Getenv("GAGE_TEST_FAKE_EDITOR"); mode != "" {
+		os.Exit(runFakeEditor(mode, os.Args[len(os.Args)-1]))
+	}
 	code := m.Run()
 	if binDir != "" {
 		_ = os.RemoveAll(binDir)

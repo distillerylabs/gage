@@ -32,23 +32,31 @@ sites.
 - ["A few decisions worth calling out"](../tdds/gage-cli-design.md) — the
   `$EDITOR` scratch file's tmpfs-where-available posture
 
-## Decisions to make first
+## Decisions made
 
-- **[A2 / `generate`'s argument](open-questions.md)** — the design doc
-  contradicts itself: "Addressing entries" lists `generate` among the
-  query-taking commands, the command reference says
-  `gage generate <title>`. `generate` creates an entry, so it takes a
-  title. Confirm before writing the tests, and amend the design doc.
-- **Substring matching semantics** — case sensitivity (recommend
-  case-insensitive), and whether `description` is matched or only
-  `title`. The design says titles; `search` is the command that spans
-  description and body.
-- **UUID prefix minimum length.** A one-character prefix will collide
-  constantly. Decide a floor (or accept any length and let ambiguity
-  handle it).
-- **Does `rename` enforce the duplicate-title check?** `insert` does,
-  with `-f` to override. `rename` can produce a duplicate just as easily
-  and the design doesn't say.
+- **`generate` takes `<title>`, not a query.** Confirms A2: it creates an
+  entry, so it addresses nothing existing. "Addressing entries" already
+  listed only `show`/`cat`/`edit`/`rename`/`rm`/`mv`/`cp` as query-taking;
+  the stray mention of `generate` there was the leftover A2 flags, not a
+  second, correct statement.
+- **Substring matching is case-insensitive and title-only.** Description
+  and body stay `search`'s job (alias `grep`), not addressing's.
+- **UUID prefix matching accepts any length (down to one hex
+  character) and lets ambiguity handle collisions**, rather than
+  enforcing a floor. A query that looks like a UUID prefix (hex digits
+  and hyphens only) is tried as one first; if it matches many entries,
+  that's reported as an ordinary ambiguous result — the same outcome an
+  overly short title substring produces — not a separate "too short"
+  error. Worth knowing: a single hex character that happens to prefix
+  exactly one entry's UUID resolves to *that* entry even if the query
+  was meant as a text substring search for something else entirely; this
+  is the accepted tradeoff of no floor.
+- **`rename` enforces the same duplicate-title check as `insert`,
+  with the same `-f` override.** Even though M5's resolver now handles an
+  ambiguous title gracefully instead of failing unrecoverably, silently
+  letting `rename` produce a collision would still be a worse default
+  than `insert`'s — consistency between the two creating/retitling
+  operations means one rule to remember rather than two.
 
 ## Tests (write first)
 

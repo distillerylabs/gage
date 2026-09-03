@@ -159,8 +159,32 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "show",
+		Short:        "Print an entry's value",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
 		Name:         "cat",
 		Short:        "Print an entry's full decrypted contents",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "edit",
+		Short:        "Edit an entry's full YAML in $EDITOR",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "rename",
+		Short:        "Change an entry's title",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "generate",
+		Short:        "Create a new entry with a randomly generated value",
 		Group:        GroupEntry,
 		Availability: AvailBoth,
 	},
