@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,10 +11,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
 )
+
+// soleEntryID returns the UUID of the one entry file in a vault's
+// entries/ directory, so a test can compare what the CLI printed or
+// committed against the id that actually exists on disk.
+func soleEntryID(t *testing.T, vaultPath string) uuid.UUID {
+	t.Helper()
+	des, err := os.ReadDir(filepath.Join(vaultPath, "entries"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(des) != 1 {
+		t.Fatalf("entries/ holds %d files, want exactly 1", len(des))
+	}
+	id, err := uuid.Parse(strings.TrimSuffix(des[0].Name(), ".age"))
+	if err != nil {
+		t.Fatalf("entry filename %q is not a UUID: %v", des[0].Name(), err)
+	}
+	return id
+}
 
 // initEntryTestVault registers a fresh vault (via the real `gage init`
 // CLI path) for entry-command tests and returns its on-disk path.
@@ -66,14 +88,18 @@ func TestInsertThenCatRoundTripsValueThroughTheCLI(t *testing.T) {
 
 // TestInsertDefaultPromptsForValueViaPrompter: with none of
 // -m/--value-stdin given, insert must ask through the Prompter (a fake in
-// this test) rather than reading stdin directly — stdin here is left
-// empty, so a stdin-reading implementation would insert an empty value.
+// this test) rather than reading stdin directly.
+//
+// stdin carries a decoy rather than being empty: an implementation that
+// quietly read stdin would store "stdin-decoy" and be caught, where
+// against empty stdin it would store "" and could be mistaken for some
+// unrelated failure.
 func TestInsertDefaultPromptsForValueViaPrompter(t *testing.T) {
 	isolateXDG(t)
 	initEntryTestVault(t, "personal")
 
 	p := &fakePrompter{passphrases: []string{testPassphrase}, values: []string{"prompted-value"}}
-	res, _ := runCLIWithPrompter(t, []string{"insert", "Site"}, "", false, p)
+	res, _ := runCLIWithPrompter(t, []string{"insert", "Site"}, "stdin-decoy\n", false, p)
 	if res.Code != 0 {
 		t.Fatalf("insert failed: %s", res.Stderr)
 	}
@@ -90,8 +116,61 @@ func TestInsertDefaultPromptsForValueViaPrompter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e.Value != "prompted-value" {
-		t.Errorf("value = %q, want the Prompter's answer %q", e.Value, "prompted-value")
+		t.Errorf("value = %q, want the Prompter's answer %q (a stdin-reading insert would store the decoy)", e.Value, "prompted-value")
 	}
+}
+
+// TestValueStdinAndPromptPathsStoreIdenticalEntries is the "round-trips
+// through cat identically to the default prompt path" half of the
+// --value-stdin bullet: the two input modes are different ways of
+// getting the same bytes, so the stored entry they produce must not
+// differ in anything but the fields that are legitimately per-entry.
+func TestValueStdinAndPromptPathsStoreIdenticalEntries(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	const value = "same-secret"
+	if res, _ := runCLIWithValue(t, []string{"insert", "ViaPrompt"}, value); res.Code != 0 {
+		t.Fatalf("insert via prompt failed: %s", res.Stderr)
+	}
+	if res := runCLI(t, []string{"insert", "ViaStdin", "--value-stdin"}, value+"\n"); res.Code != 0 {
+		t.Fatalf("insert via --value-stdin failed: %s", res.Stderr)
+	}
+
+	viaPrompt := catEntry(t, "ViaPrompt")
+	viaStdin := catEntry(t, "ViaStdin")
+
+	if viaPrompt.Value != viaStdin.Value {
+		t.Errorf("value differs between input modes: prompt=%q stdin=%q", viaPrompt.Value, viaStdin.Value)
+	}
+	if viaPrompt.Value != value {
+		t.Errorf("value = %q, want %q", viaPrompt.Value, value)
+	}
+	// Everything else the two entries carry must agree too — only the
+	// title (deliberately different here) and the timestamps may differ.
+	if viaPrompt.Description != viaStdin.Description {
+		t.Errorf("description differs: prompt=%q stdin=%q", viaPrompt.Description, viaStdin.Description)
+	}
+	if viaPrompt.UpdatedBy != viaStdin.UpdatedBy {
+		t.Errorf("updated_by differs: prompt=%q stdin=%q", viaPrompt.UpdatedBy, viaStdin.UpdatedBy)
+	}
+	if len(viaPrompt.Fields) != 0 || len(viaStdin.Fields) != 0 {
+		t.Errorf("fields should be empty for both: prompt=%v stdin=%v", viaPrompt.Fields, viaStdin.Fields)
+	}
+}
+
+// catEntry runs `gage cat <query>` and parses the entry it prints.
+func catEntry(t *testing.T, query string) gage.Entry {
+	t.Helper()
+	res := runCLI(t, []string{"cat", query}, "")
+	if res.Code != 0 {
+		t.Fatalf("cat %q failed: %s", query, res.Stderr)
+	}
+	e, err := gage.UnmarshalEntry([]byte(res.Stdout))
+	if err != nil {
+		t.Fatalf("parsing cat %q output: %v\n%s", query, err, res.Stdout)
+	}
+	return e
 }
 
 // TestInsertValueStdinTrimsOneTrailingNewlineAndRoundTrips covers
@@ -141,16 +220,48 @@ func TestInsertValueStdinTrimsExactlyOneNewline(t *testing.T) {
 
 // TestInsertMutuallyExclusiveValueFlagsRejectedBeforeAnyIO: passing both
 // -m and --value-stdin is a usage error before any prompt, read, or
-// unlock happens — asserted here by using a Prompter that fails the test
-// if it's ever asked anything, and no vault even needs to be registered.
+// unlock happens.
+//
+// A vault is registered first on purpose. Without one, "no current vault
+// is set" is *also* a Usage rejection reached before any prompt, so the
+// test would pass just as well with the mutual-exclusion check deleted
+// outright — it would be asserting the wrong refusal. With a working
+// vault registered, the flag conflict is the only thing left that can
+// refuse. The error message is checked for the same reason, and stdin
+// carries a payload no correct implementation may consume: explodingIn
+// fails the test if the command reads it, which is what "before any
+// read" means beyond "before any prompt".
 func TestInsertMutuallyExclusiveValueFlagsRejectedBeforeAnyIO(t *testing.T) {
 	isolateXDG(t)
+	initEntryTestVault(t, "personal")
 
 	p := &explodingPrompter{t: t}
-	res, _ := runCLIWithPrompter(t, []string{"insert", "Site", "-m", "--value-stdin"}, "", false, p)
+	in := &explodingReader{t: t}
+	res, _ := runCLIWithPrompterAndStdin(t, []string{"insert", "Site", "-m", "--value-stdin"}, in, false, p)
 	if res.Code != int(exitcode.Usage) {
 		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
 	}
+	if !strings.Contains(res.Stderr, "mutually exclusive") {
+		t.Errorf("stderr = %q, want it to explain the flags are mutually exclusive", res.Stderr)
+	}
+
+	// Sanity check on the guard above: the same vault, same prompter, with
+	// only one of the two flags must get past the rejection and reach the
+	// prompter — otherwise "rejected" above could mean anything.
+	ok, _ := runCLIWithValue(t, []string{"insert", "Site"}, "v")
+	if ok.Code != 0 {
+		t.Fatalf("a single value-input mode should be accepted, but insert exited %d: %s", ok.Code, ok.Stderr)
+	}
+}
+
+// explodingReader fails the test if anything reads from it — used to
+// prove a rejection happens before stdin is consumed.
+type explodingReader struct{ t *testing.T }
+
+func (r *explodingReader) Read([]byte) (int, error) {
+	r.t.Helper()
+	r.t.Error("stdin was read; expected the command to fail before reading any input")
+	return 0, io.EOF
 }
 
 // explodingPrompter fails the test the moment anything asks it for
@@ -218,32 +329,81 @@ func TestInsertProducesExactlyOneCommit(t *testing.T) {
 }
 
 // TestInsertCommitMessageIsUUIDOnly is the confidentiality decision,
-// checked through the real CLI: the commit message carries no title or
-// other plaintext, only the entry's UUID.
+// checked through the real CLI.
+//
+// The assertion is equality against the id that actually exists under
+// entries/, not merely "contains no title": checking only for absent
+// plaintext would pass for a message of "x", or an empty one, which is
+// not what the decision says. The absence checks stay as the direct
+// statement of the confidentiality property.
 func TestInsertCommitMessageIsUUIDOnly(t *testing.T) {
 	isolateXDG(t)
 	path := initEntryTestVault(t, "personal")
 
-	res, _ := runCLIWithValue(t, []string{"insert", "ProtonMail — very secret"}, "v")
+	const title = "ProtonMail — very secret"
+	res, _ := runCLIWithValue(t, []string{"insert", title, "--description", "leaky description"}, "v")
 	if res.Code != 0 {
 		t.Fatalf("insert failed: %s", res.Stderr)
 	}
+	want := soleEntryID(t, path)
 
 	message, authorName, authorEmail, err := gitrepo.HeadCommit(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(message, "ProtonMail") || strings.Contains(message, "insert") {
-		t.Errorf("commit message leaks plaintext: %q", message)
+	if message != want.String() {
+		t.Errorf("commit message = %q, want exactly the entry's UUID %q", message, want)
 	}
-	// "gage: inserted %q (%s)" is what the CLI prints on success; the
-	// commit message must be exactly that trailing UUID, not the whole
-	// human-facing line.
-	if strings.Contains(message, " ") || strings.Contains(message, "\"") {
-		t.Errorf("commit message = %q, want exactly a bare UUID", message)
+	for _, leak := range []string{title, "ProtonMail", "leaky description", "insert", "rm"} {
+		if strings.Contains(message, leak) {
+			t.Errorf("commit message %q leaks %q", message, leak)
+		}
 	}
 	if authorName != "gage" || authorEmail != "gage@localhost" {
 		t.Errorf("commit author = %q <%s>, want the fixed anonymous identity", authorName, authorEmail)
+	}
+}
+
+// TestCommitAuthorIgnoresTheUsersGitConfig is the other half of the
+// author decision: "never the user's git config, regardless of who runs
+// the command." The vault's own repo-local config names a user, which is
+// what go-git would otherwise pick up — the commit must still be
+// attributed to the fixed anonymous identity, for rm as well as insert.
+func TestCommitAuthorIgnoresTheUsersGitConfig(t *testing.T) {
+	isolateXDG(t)
+	path := initEntryTestVault(t, "personal")
+
+	cfgPath := filepath.Join(path, ".git", "config")
+	cfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = append(cfg, []byte("[user]\n\tname = Real Human\n\temail = human@example.invalid\n")...)
+	if err := os.WriteFile(cfgPath, cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ins, _ := runCLIWithValue(t, []string{"insert", "Site"}, "v")
+	if ins.Code != 0 {
+		t.Fatalf("insert failed: %s", ins.Stderr)
+	}
+	assertAnonymousAuthor(t, path, "after insert")
+
+	rm := runCLI(t, []string{"rm", "Site"}, "")
+	if rm.Code != 0 {
+		t.Fatalf("rm failed: %s", rm.Stderr)
+	}
+	assertAnonymousAuthor(t, path, "after rm")
+}
+
+func assertAnonymousAuthor(t *testing.T, vaultPath, when string) {
+	t.Helper()
+	_, name, email, err := gitrepo.HeadCommit(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "gage" || email != "gage@localhost" {
+		t.Errorf("commit author %s = %q <%s>, want the fixed \"gage\" <gage@localhost> identity", when, name, email)
 	}
 }
 
@@ -271,33 +431,47 @@ func TestInsertSetsTimestampsAndUpdatedBy(t *testing.T) {
 	}
 }
 
-// TestLsListsInsertedTitleAlongsidePartialUUID.
+// TestLsListsInsertedTitleAlongsidePartialUUID covers the ls-output
+// decision: title first, then a partial UUID.
+//
+// The id is checked against the entry's real UUID on disk — a prefix of
+// it, and shorter than the whole thing. Checking only "some short token
+// is printed" would pass for a hardcoded string, which would make the id
+// useless for the very thing the decision wants it for (addressing an
+// entry straight from ls output).
 func TestLsListsInsertedTitleAlongsidePartialUUID(t *testing.T) {
 	isolateXDG(t)
-	initEntryTestVault(t, "personal")
+	path := initEntryTestVault(t, "personal")
 
 	ins, _ := runCLIWithValue(t, []string{"insert", "ProtonMail"}, "v")
 	if ins.Code != 0 {
 		t.Fatalf("insert failed: %s", ins.Stderr)
 	}
+	full := soleEntryID(t, path).String()
 
 	res := runCLI(t, []string{"ls"}, "")
 	if res.Code != 0 {
 		t.Fatalf("ls failed: %s", res.Stderr)
 	}
-	if !strings.Contains(res.Stdout, "ProtonMail") {
-		t.Errorf("ls output missing the title: %q", res.Stdout)
-	}
-	// A partial id: some contiguous run of hex characters, shorter than a
-	// full 36-character UUID, printed on the same line as the title.
+
 	line := strings.TrimSpace(res.Stdout)
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
 		t.Fatalf("ls line %q doesn't look like \"title  id\"", line)
 	}
+	// Title first, per the decision.
+	if fields[0] != "ProtonMail" {
+		t.Errorf("ls line %q doesn't lead with the title", line)
+	}
 	id := fields[len(fields)-1]
-	if len(id) == 0 || len(id) >= 36 {
-		t.Errorf("ls's id field = %q, want a short partial id", id)
+	if !strings.HasPrefix(full, id) {
+		t.Errorf("ls printed id %q, which is not a prefix of the entry's UUID %q", id, full)
+	}
+	if len(id) >= len(full) {
+		t.Errorf("ls printed id %q (%d chars), want a partial one shorter than the full UUID (%d chars)", id, len(id), len(full))
+	}
+	if id == "" {
+		t.Error("ls printed an empty id")
 	}
 }
 
@@ -489,6 +663,9 @@ func TestUseUnregisteredVaultFailsBeforePromptingForAPassphrase(t *testing.T) {
 			res, _ := runCLIWithPrompter(t, args, "", false, p)
 			if res.Code != int(exitcode.NotFound) {
 				t.Errorf("exit code = %d, want %d (NotFound)", res.Code, exitcode.NotFound)
+			}
+			if !strings.Contains(res.Stderr, "nonexistent") {
+				t.Errorf("stderr = %q, want it to name the unregistered vault", res.Stderr)
 			}
 		})
 	}

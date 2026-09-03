@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 
@@ -88,11 +89,19 @@ func runCLIWithTerminal(t *testing.T, args []string, stdin string, isTerminal bo
 // test can assert what the command asked a human for.
 func runCLIWithPrompter(t *testing.T, args []string, stdin string, isTerminal bool, p gage.Prompter) (cliResult, gage.Prompter) {
 	t.Helper()
+	return runCLIWithPrompterAndStdin(t, args, strings.NewReader(stdin), isTerminal, p)
+}
+
+// runCLIWithPrompterAndStdin is runCLIWithPrompter with stdin supplied as
+// an arbitrary reader rather than a string, so a test can hand the CLI a
+// reader that records — or refuses — being read from.
+func runCLIWithPrompterAndStdin(t *testing.T, args []string, stdin io.Reader, isTerminal bool, p gage.Prompter) (cliResult, gage.Prompter) {
+	t.Helper()
 	var stdout, stderr bytes.Buffer
 	app := &App{
 		Out:        &stdout,
 		Err:        &stderr,
-		In:         strings.NewReader(stdin),
+		In:         stdin,
 		Build:      BuildInfo{Version: "v1.2.3", Commit: "abcdef1"},
 		IsTerminal: func() bool { return isTerminal },
 		Prompter:   p,
