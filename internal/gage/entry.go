@@ -15,6 +15,7 @@ import (
 
 	"github.com/denmark/gage/internal/gage/atomicfile"
 	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/denmark/gage/internal/gage/gitrepo"
 	"github.com/denmark/gage/internal/gage/recipients"
 )
 
@@ -26,8 +27,19 @@ const entriesDirName = "entries"
 // <uuid>.age; nothing else lives in entries/ by construction.
 const entryFileExt = ".age"
 
-// ErrEntryNotFound is ReadEntry finding no file at entries/<id>.age.
+// ErrEntryNotFound is ReadEntry finding no file at entries/<id>.age, or a
+// title query matching nothing.
 var ErrEntryNotFound = errors.New("gage: no entry with that id in this vault")
+
+// ErrDuplicateTitle is Insert refusing to create a second entry with a
+// title that already matches an existing one, without force.
+var ErrDuplicateTitle = errors.New("gage: an entry with this title already exists")
+
+// ErrAmbiguousQuery is Resolve finding more than one entry whose title
+// matches a query — possible once a duplicate title has been forced into
+// existence. M5's shared resolver replaces this with an interactive pick;
+// one-shot mode here has nobody to ask, so it fails instead.
+var ErrAmbiguousQuery = errors.New("gage: more than one entry matches that title")
 
 // Timestamp is created/updated's wire representation: RFC 3339, UTC,
 // truncated to second precision — the design doc's example
@@ -472,6 +484,132 @@ func (v *Vault) EntryIDs() ([]uuid.UUID, error) {
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
 	return ids, nil
+}
+
+// Insert creates a brand-new entry: unless force is set, it refuses a
+// title that already matches an existing entry; otherwise it assigns a
+// fresh id, encrypts and writes the entry under entries/, and commits —
+// the whole read-modify-commit sequence under this vault's write lock
+// (see withWriteLock). It returns the new entry's id.
+func (v *Vault) Insert(e Entry, force bool, ident *Identity) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := v.withWriteLock(func() error {
+		if !force {
+			exists, err := v.titleExists(e.Title, ident)
+			if err != nil {
+				return err
+			}
+			if exists {
+				return exitcode.Wrap(exitcode.Conflict,
+					fmt.Errorf("%w: %q", ErrDuplicateTitle, e.Title))
+			}
+		}
+
+		id = NewEntryID()
+		if err := v.WriteEntry(id, e); err != nil {
+			return err
+		}
+		if _, err := gitrepo.CommitAll(v.Path, id.String()); err != nil {
+			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: committing entry %s: %w", id, err))
+		}
+		return nil
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
+// Remove resolves query (an id or an exact title match — see Resolve) and
+// deletes its entry file, then commits the deletion — the whole
+// read-modify-commit sequence under this vault's write lock. It returns
+// the removed entry's id.
+func (v *Vault) Remove(query string, ident *Identity) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := v.withWriteLock(func() error {
+		var err error
+		id, _, err = v.Resolve(query, ident)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(v.entryPath(id)); err != nil {
+			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: removing entry %s: %w", id, err))
+		}
+		if _, err := gitrepo.CommitAll(v.Path, id.String()); err != nil {
+			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: committing removal of %s: %w", id, err))
+		}
+		return nil
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
+// Resolve addresses one entry by id or by exact title match — cat and
+// rm's only addressing mode until M5's shared query resolver replaces it
+// (see the M4 plan's "Affects later milestones"). query is tried as a
+// UUID first; anything else is matched against every entry's decrypted
+// title, exactly. It never takes the write lock: resolving is a read.
+func (v *Vault) Resolve(query string, ident *Identity) (uuid.UUID, Entry, error) {
+	if id, err := uuid.Parse(query); err == nil {
+		e, err := v.ReadEntry(id, ident)
+		if err != nil {
+			return uuid.Nil, Entry{}, err
+		}
+		return id, e, nil
+	}
+
+	ids, err := v.EntryIDs()
+	if err != nil {
+		return uuid.Nil, Entry{}, err
+	}
+
+	var matchID uuid.UUID
+	var match Entry
+	found := 0
+	for _, id := range ids {
+		e, err := v.ReadEntry(id, ident)
+		if err != nil {
+			return uuid.Nil, Entry{}, err
+		}
+		if e.Title == query {
+			matchID, match = id, e
+			found++
+		}
+	}
+
+	switch found {
+	case 0:
+		return uuid.Nil, Entry{}, exitcode.Wrap(exitcode.NotFound,
+			fmt.Errorf("%w: %q", ErrEntryNotFound, query))
+	case 1:
+		return matchID, match, nil
+	default:
+		return uuid.Nil, Entry{}, exitcode.Wrap(exitcode.Ambiguous,
+			fmt.Errorf("%w: %q matches %d entries", ErrAmbiguousQuery, query, found))
+	}
+}
+
+// titleExists reports whether any entry currently has exactly title,
+// decrypting every entry to check — there is no index yet (M4 explicitly
+// decrypts everything every time; M7 adds a cache). Used by Insert's
+// duplicate-title guard.
+func (v *Vault) titleExists(title string, ident *Identity) (bool, error) {
+	ids, err := v.EntryIDs()
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		e, err := v.ReadEntry(id, ident)
+		if err != nil {
+			return false, err
+		}
+		if e.Title == title {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // encryptRecipients reads and parses the vault's .age-recipients — every

@@ -53,6 +53,35 @@ func InitAndCommit(dir, message string) (string, error) {
 	return hash.String(), nil
 }
 
+// CommitAll stages every change in dir's working tree — additions,
+// modifications, and deletions alike, equivalent to `git add -A` — and
+// commits with message under gage's fixed, anonymous commit identity (see
+// commitAuthorName/commitAuthorEmail). It returns the new commit's hash.
+//
+// This is M4's per-write commit: one CommitAll call per insert/rm, message
+// the entry's UUID and nothing else — see the M4 plan's "Decisions made"
+// on why the message carries no title, description, or verb.
+func CommitAll(dir, message string) (string, error) {
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return "", fmt.Errorf("gitrepo: opening %s: %w", dir, err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		return "", fmt.Errorf("gitrepo: opening worktree: %w", err)
+	}
+	if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+		return "", fmt.Errorf("gitrepo: staging files: %w", err)
+	}
+
+	sig := &object.Signature{Name: commitAuthorName, Email: commitAuthorEmail, When: time.Now()}
+	hash, err := wt.Commit(message, &git.CommitOptions{Author: sig})
+	if err != nil {
+		return "", fmt.Errorf("gitrepo: committing: %w", err)
+	}
+	return hash.String(), nil
+}
+
 // SetRemote sets (or, if one already exists, changes) dir's "origin"
 // remote to url — equivalent to `git remote add origin <url>` or
 // `git remote set-url origin <url>`, whichever applies.
@@ -95,6 +124,25 @@ func RemoteURL(dir string) (string, error) {
 		return "", nil
 	}
 	return cfg.URLs[0], nil
+}
+
+// HeadCommit returns HEAD's message and author identity (name, email) —
+// mainly so tests can assert on what CommitAll/InitAndCommit actually
+// wrote without each one re-deriving the same handful of go-git calls.
+func HeadCommit(dir string) (message, authorName, authorEmail string, err error) {
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return "", "", "", fmt.Errorf("gitrepo: opening %s: %w", dir, err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return "", "", "", fmt.Errorf("gitrepo: reading HEAD: %w", err)
+	}
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return "", "", "", fmt.Errorf("gitrepo: reading HEAD commit: %w", err)
+	}
+	return commit.Message, commit.Author.Name, commit.Author.Email, nil
 }
 
 // IsClean reports whether dir's working tree has no staged or unstaged

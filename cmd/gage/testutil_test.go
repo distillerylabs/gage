@@ -24,6 +24,14 @@ type fakePrompter struct {
 
 	requests []gage.UnlockRequest
 	warnings []string
+
+	// values is answered in order, one per Value call, standing in for a
+	// human typing gage insert's value at a masked prompt. valuePrompts
+	// records what each call was asked, so a test can assert insert
+	// actually went through the Prompter rather than reading stdin.
+	values       []string
+	valueCalls   int
+	valuePrompts []string
 }
 
 func (f *fakePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, error) {
@@ -39,6 +47,19 @@ func (f *fakePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, erro
 func (f *fakePrompter) Confirm(prompt string) (bool, error)            { return true, nil }
 func (f *fakePrompter) Choose(list gage.CandidateList) (string, error) { return "", nil }
 func (f *fakePrompter) Warn(msg string)                                { f.warnings = append(f.warnings, msg) }
+
+func (f *fakePrompter) Value(prompt string) (string, error) {
+	f.valuePrompts = append(f.valuePrompts, prompt)
+	f.valueCalls++
+	i := f.valueCalls - 1
+	if i >= len(f.values) {
+		i = len(f.values) - 1
+	}
+	if i < 0 {
+		return "", nil
+	}
+	return f.values[i], nil
+}
 
 // cliResult is one in-process invocation of the CLI via runApp — the
 // "rootCmd.Execute() in-process with injected IO and a fake Prompter"

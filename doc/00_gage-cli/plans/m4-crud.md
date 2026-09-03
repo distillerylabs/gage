@@ -2,7 +2,7 @@
 
 [← M3](m3-entry-format.md) · [plan index](index.md) · next: [M5 — Query resolution](m5-query-resolution.md)
 
-> **Recommended model: Sonnet.** Straightforward CRUD. The two judgment calls — commit-message confidentiality and commit author identity — are decisions to make before starting, not things to work out while coding.
+> **Recommended model: Sonnet.** Straightforward CRUD. The two judgment calls — commit-message confidentiality and commit author identity — are already settled below (see "Decisions made"), not things to work out while coding.
 
 ## Goal
 
@@ -44,21 +44,27 @@ round trip exists for it to share.
 - ["Session model"](../tdds/gage-cli-design.md) — one-shot mode's
   unlock-use-close contract
 
-## Decisions to make first
+## Decisions made
 
-- **Commit message format.** Every write is a commit and the messages are
-  permanent, greppable history. They must not leak entry titles —
-  filenames are opaque UUIDs precisely so someone with read access learns
-  nothing, and a commit message reading `insert: ProtonMail` would undo
-  that entirely. Recommend UUID-only messages (`insert 4b9d7710`).
-  **This is a confidentiality decision, not a cosmetic one.**
-- **Commit author identity.** go-git requires a name/email on the commit
-  object. Using the user's git config leaks their identity into a vault
-  that may be shared; using a fixed `gage <gage@localhost>` doesn't.
-  Decide, and note it interacts with `updated_by` (which is already
-  inside the ciphertext, where it's safe).
-- **`ls` output format** — sort order and columns; whether it prints
-  UUIDs alongside titles.
+- **Commit message format: the UUID alone, nothing else.** Every write is
+  a commit and the messages are permanent, greppable history. They must
+  not leak entry titles — filenames are opaque UUIDs precisely so someone
+  with read access learns nothing, and a commit message reading `insert:
+  ProtonMail` would undo that entirely. No `insert `/`rm ` verb prefix
+  either — that would still leak which operation touched an entry across
+  history, so the message body is exactly the entry's UUID (e.g.
+  `4b9d7710-...`) and nothing more. **This is a confidentiality decision,
+  not a cosmetic one.**
+- **Commit author identity: fixed and anonymous.** go-git requires a
+  name/email on the commit object. Using the user's git config leaks
+  their identity into a vault that may be shared, so every commit uses a
+  fixed, anonymous identity — `gage <gage@localhost>` — regardless of who
+  is running the command or which device made the change. That per-device
+  detail already lives in `updated_by`, safely inside the ciphertext, so
+  nothing is lost by keeping the git-visible author generic.
+- **`ls` output format:** one entry per line, title first, sorted, with a
+  partial (short, unambiguous-prefix) UUID printed alongside each title
+  so entries are addressable from `ls` output without a full `cat`.
 
 ## Tests (write first)
 
@@ -77,11 +83,13 @@ round trip exists for it to share.
 - [ ] `gage insert --description TEXT` stores the description, and `cat`
       shows it
 - [ ] `gage insert` produces exactly one new git commit
-- [ ] The commit message contains no entry title or other plaintext
-      metadata — only the UUID (or whatever the decision above settles on)
+- [ ] The commit message is exactly the entry's UUID — no verb prefix,
+      title, or other plaintext metadata
+- [ ] Every commit's author is the fixed `gage <gage@localhost>` identity,
+      never the user's git config, regardless of who runs the command
 - [ ] `gage insert` sets `created`, `updated`, and `updated_by`;
       `updated_by` matches the device name recorded in M2
-- [ ] `gage ls` lists the inserted entry's title
+- [ ] `gage ls` lists the inserted entry's title alongside a partial UUID
 - [ ] `gage ls` on an empty vault succeeds with no output and exit 0 —
       not an error
 - [ ] `gage rm` deletes the file under `entries/` and commits the deletion; a
@@ -117,9 +125,9 @@ round trip exists for it to share.
       `current` — same resolution `vault set-default` (M1) writes into
 - [ ] `gage cat` (exact UUID/title only)
 - [ ] `gage rm`
-- [ ] `gage ls`
-- [ ] Commit-per-write (go-git worktree add + commit), with the commit
-      message and author policy decided above
+- [ ] `gage ls`, printing each title with its partial UUID
+- [ ] Commit-per-write (go-git worktree add + commit) with the UUID-only
+      message and fixed `gage <gage@localhost>` author decided above
 - [ ] Vault lock acquisition around every write, using M0's `vaultlock`;
       released on every exit path
 - [ ] One-shot command handler in `cmd/gage`: `Unlock` → CRUD method →

@@ -152,6 +152,30 @@ var registry = []CommandInfo{
 		Group:        GroupGit,
 		Availability: AvailBoth,
 	},
+	{
+		Name:         "insert",
+		Short:        "Create a new entry",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "cat",
+		Short:        "Print an entry's full decrypted contents",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "rm",
+		Short:        "Delete an entry",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "ls",
+		Short:        "List entry titles",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
 }
 
 // commandShort looks up a registry entry's Short description by its
