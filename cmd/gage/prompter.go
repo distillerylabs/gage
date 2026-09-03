@@ -115,6 +115,13 @@ func (p *terminalPrompter) newPassphrase(req gage.UnlockRequest) (gage.UnlockRes
 		"gage: gave up after %d attempts to enter a matching passphrase", maxPassphraseAttempts)
 }
 
+// Value reads one masked line of free-form text — gage insert's value
+// prompt. Unlike Unlock there's nothing to check the answer against and
+// no retry policy: whatever comes back is what gets stored.
+func (p *terminalPrompter) Value(prompt string) (string, error) {
+	return p.readSecret(prompt)
+}
+
 // Confirm asks a yes/no question. A bare Enter means no: every caller of
 // Confirm is about to do something a user might not want, so the safe
 // answer is the default.

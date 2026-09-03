@@ -47,6 +47,7 @@ func (f *fakePrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 func (f *fakePrompter) Confirm(prompt string) (bool, error)       { return true, nil }
 func (f *fakePrompter) Choose(list CandidateList) (string, error) { return "", nil }
 func (f *fakePrompter) Warn(msg string)                           { f.warnings = append(f.warnings, msg) }
+func (f *fakePrompter) Value(prompt string) (string, error)       { return "", nil }
 
 // mismatchedPrompter answers a passphrase request with a different Kind,
 // which is what a buggy or mismatched frontend looks like from the
@@ -59,6 +60,7 @@ func (mismatchedPrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 func (mismatchedPrompter) Confirm(prompt string) (bool, error)       { return true, nil }
 func (mismatchedPrompter) Choose(list CandidateList) (string, error) { return "", nil }
 func (mismatchedPrompter) Warn(msg string)                           {}
+func (mismatchedPrompter) Value(prompt string) (string, error)       { return "", nil }
 
 // alwaysLocks is a Locker that succeeds without asking the OS for
 // anything.

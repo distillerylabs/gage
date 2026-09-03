@@ -65,6 +65,23 @@ func IdentityFilePath(vault, device string) (string, error) {
 	return filepath.Join(dir, device+".age"), nil
 }
 
+// LockFilePath returns a vault's advisory write-lock file:
+// $GAGE_STATE/locks/<vault>.lock — see vaultlock and "Concurrent
+// processes and the vault lock" in the design doc. It lives under the
+// state root, not the vault's own git working tree or $GAGE_DATA: a lock
+// file is ephemeral, machine-local coordination, not something to commit,
+// sync, or back up.
+func LockFilePath(vault string) (string, error) {
+	if err := checkPathComponent("vault name", vault); err != nil {
+		return "", err
+	}
+	stateDir, err := xdgpaths.StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(stateDir, "locks", vault+".lock"), nil
+}
+
 // checkPathComponent rejects anything that wouldn't stay a single path
 // component. It is deliberately more permissive than devicename.Valid:
 // device names are gage's own normalized creation and can be held to a

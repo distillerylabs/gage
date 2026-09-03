@@ -68,6 +68,10 @@ func NewRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newInitCommand(app))
 	root.AddCommand(newVaultCommand(app))
 	root.AddCommand(newGitCommand(app))
+	root.AddCommand(newInsertCommand(app))
+	root.AddCommand(newCatCommand(app))
+	root.AddCommand(newRmCommand(app))
+	root.AddCommand(newLsCommand(app))
 
 	installHelp(app, root)
 

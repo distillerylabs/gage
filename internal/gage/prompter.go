@@ -84,6 +84,14 @@ type Prompter interface {
 	// a vault's chosen method expects.
 	Unlock(req UnlockRequest) (UnlockResponse, error)
 
+	// Value asks for one line of free-form secret text — e.g. gage
+	// insert's value when none of -m/--value-stdin/-e is given. It's
+	// masked the same way a passphrase is, but distinct from Unlock:
+	// nothing here proves possession of a key, so it carries no
+	// vault/device/attempt context and has no retry policy — there's
+	// nothing "wrong" to retry.
+	Value(prompt string) (string, error)
+
 	// Confirm asks a yes/no question — e.g. the recipient-change warning
 	// in "Local trust cache". A false answer means the caller should
 	// abort whatever it was about to do.
