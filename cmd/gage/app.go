@@ -69,7 +69,11 @@ func NewRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newVaultCommand(app))
 	root.AddCommand(newGitCommand(app))
 	root.AddCommand(newInsertCommand(app))
+	root.AddCommand(newShowCommand(app))
 	root.AddCommand(newCatCommand(app))
+	root.AddCommand(newEditCommand(app))
+	root.AddCommand(newRenameCommand(app))
+	root.AddCommand(newGenerateCommand(app))
 	root.AddCommand(newRmCommand(app))
 	root.AddCommand(newLsCommand(app))
 

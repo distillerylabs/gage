@@ -35,11 +35,30 @@ var ErrEntryNotFound = errors.New("gage: no entry with that id in this vault")
 // title that already matches an existing one, without force.
 var ErrDuplicateTitle = errors.New("gage: an entry with this title already exists")
 
-// ErrAmbiguousQuery is Resolve finding more than one entry whose title
-// matches a query — possible once a duplicate title has been forced into
-// existence. M5's shared resolver replaces this with an interactive pick;
-// one-shot mode here has nobody to ask, so it fails instead.
-var ErrAmbiguousQuery = errors.New("gage: more than one entry matches that title")
+// ErrAmbiguousQuery is Resolve finding more than one entry at whichever
+// resolution stage first produced a match — possible once a duplicate
+// title has been forced into existence, or whenever a query's prefix or
+// substring match isn't unique. Session mode (M6) turns the same
+// candidate list into an interactive pick; one-shot mode here has nobody
+// to ask, so it fails instead.
+var ErrAmbiguousQuery = errors.New("gage: more than one entry matches that query")
+
+// AmbiguousQueryError is Resolve's ambiguous outcome, carrying the
+// candidate list as data rather than as printed text — see "Addressing
+// entries & the metadata index" and the M5 plan's "the resolver returns a
+// candidate list as a *value*; no library code path prints it." A
+// one-shot CLI renders List and fails; a session-mode CLI would render it
+// as a picker instead. Callers match ErrAmbiguousQuery via errors.Is, or
+// this type via errors.As when they need the candidates themselves.
+type AmbiguousQueryError struct {
+	List CandidateList
+}
+
+func (e *AmbiguousQueryError) Error() string {
+	return fmt.Sprintf("%s: %q matches %d entries", ErrAmbiguousQuery, e.List.Query, len(e.List.Candidates))
+}
+
+func (e *AmbiguousQueryError) Unwrap() error { return ErrAmbiguousQuery }
 
 // Timestamp is created/updated's wire representation: RFC 3339, UTC,
 // truncated to second precision — the design doc's example
@@ -546,11 +565,27 @@ func (v *Vault) Remove(query string, ident *Identity) (uuid.UUID, error) {
 	return id, nil
 }
 
-// Resolve addresses one entry by id or by exact title match — cat and
-// rm's only addressing mode until M5's shared query resolver replaces it
-// (see the M4 plan's "Affects later milestones"). query is tried as a
-// UUID first; anything else is matched against every entry's decrypted
-// title, exactly. It never takes the write lock: resolving is a read.
+// Resolve addresses one entry by query, in the order "Addressing entries
+// & the metadata index" fixes: exact UUID or a prefix of one, then an
+// exact title match, then a unique case-insensitive substring match on
+// title, then ambiguous. Every `show`/`cat`/`edit`/`rename`/`rm` command
+// goes through this one method — see the M5 plan's "no command should be
+// left on M4's exact-match path."
+//
+// A stage that produces zero matches falls through to the next; a stage
+// that produces more than one stops there and reports *that* stage's
+// matches as ambiguous, never spilling into a later stage — an exact
+// title match always wins over a substring match of a different entry,
+// even when the substring stage would itself have been unique.
+//
+// A UUID-prefix query has no minimum length beyond one hex character —
+// see the M5 plan's "Decisions made": an overly short prefix simply
+// tends to be ambiguous, the same outcome an overly short title
+// substring produces, rather than a distinct "too short" error.
+//
+// It never takes the write lock: resolving is a read. There's no
+// metadata index yet — like every other read in this package, it
+// decrypts every entry on every call; M7 adds the cache.
 func (v *Vault) Resolve(query string, ident *Identity) (uuid.UUID, Entry, error) {
 	if id, err := uuid.Parse(query); err == nil {
 		e, err := v.ReadEntry(id, ident)
@@ -564,31 +599,112 @@ func (v *Vault) Resolve(query string, ident *Identity) (uuid.UUID, Entry, error)
 	if err != nil {
 		return uuid.Nil, Entry{}, err
 	}
-
-	var matchID uuid.UUID
-	var match Entry
-	found := 0
+	entries := make(map[uuid.UUID]Entry, len(ids))
 	for _, id := range ids {
 		e, err := v.ReadEntry(id, ident)
 		if err != nil {
 			return uuid.Nil, Entry{}, err
 		}
-		if e.Title == query {
-			matchID, match = id, e
-			found++
+		entries[id] = e
+	}
+
+	if looksLikeUUIDPrefix(query) {
+		stripped := strings.ToLower(strings.ReplaceAll(query, "-", ""))
+		var matches []uuid.UUID
+		for id := range entries {
+			if strings.HasPrefix(strings.ReplaceAll(id.String(), "-", ""), stripped) {
+				matches = append(matches, id)
+			}
+		}
+		if id, e, err, done := resolveStage(query, matches, entries); done {
+			return id, e, err
 		}
 	}
 
-	switch found {
-	case 0:
-		return uuid.Nil, Entry{}, exitcode.Wrap(exitcode.NotFound,
-			fmt.Errorf("%w: %q", ErrEntryNotFound, query))
-	case 1:
-		return matchID, match, nil
-	default:
-		return uuid.Nil, Entry{}, exitcode.Wrap(exitcode.Ambiguous,
-			fmt.Errorf("%w: %q matches %d entries", ErrAmbiguousQuery, query, found))
+	var exactTitle []uuid.UUID
+	for id, e := range entries {
+		if e.Title == query {
+			exactTitle = append(exactTitle, id)
+		}
 	}
+	if id, e, err, done := resolveStage(query, exactTitle, entries); done {
+		return id, e, err
+	}
+
+	// Substring matching is case-insensitive and title-only — description
+	// and body are `search`'s job, not addressing's; see the M5 plan's
+	// "Decisions made."
+	lowerQuery := strings.ToLower(query)
+	var substr []uuid.UUID
+	for id, e := range entries {
+		if strings.Contains(strings.ToLower(e.Title), lowerQuery) {
+			substr = append(substr, id)
+		}
+	}
+	if id, e, err, done := resolveStage(query, substr, entries); done {
+		return id, e, err
+	}
+
+	return uuid.Nil, Entry{}, exitcode.Wrap(exitcode.NotFound,
+		fmt.Errorf("%w: %q", ErrEntryNotFound, query))
+}
+
+// resolveStage turns one resolution stage's match set into either "not
+// this stage, keep going" (done == false, zero matches) or a final
+// outcome (done == true): the sole match, or an AmbiguousQueryError over
+// every match at this stage.
+func resolveStage(query string, matches []uuid.UUID, entries map[uuid.UUID]Entry) (id uuid.UUID, e Entry, err error, done bool) {
+	switch len(matches) {
+	case 0:
+		return uuid.Nil, Entry{}, nil, false
+	case 1:
+		return matches[0], entries[matches[0]], nil, true
+	default:
+		return uuid.Nil, Entry{}, ambiguousError(query, matches, entries), true
+	}
+}
+
+// ambiguousError builds an AmbiguousQueryError over ids, sorted by title
+// then id for a deterministic, human-sensible candidate list.
+func ambiguousError(query string, ids []uuid.UUID, entries map[uuid.UUID]Entry) error {
+	sorted := append([]uuid.UUID(nil), ids...)
+	sort.Slice(sorted, func(i, j int) bool {
+		ti, tj := entries[sorted[i]].Title, entries[sorted[j]].Title
+		if ti != tj {
+			return ti < tj
+		}
+		return sorted[i].String() < sorted[j].String()
+	})
+	candidates := make([]Candidate, len(sorted))
+	for i, id := range sorted {
+		candidates[i] = Candidate{ID: id.String(), Title: entries[id].Title}
+	}
+	return exitcode.Wrap(exitcode.Ambiguous,
+		&AmbiguousQueryError{List: CandidateList{Query: query, Candidates: candidates}})
+}
+
+// looksLikeUUIDPrefix reports whether query is plausibly a (possibly
+// hyphenated) prefix of a UUID's canonical string form: hex digits and
+// hyphens only, at least one hex character once hyphens are stripped, and
+// no longer than a full UUID's 32 hex characters. A query that fails
+// this check skips UUID-prefix matching entirely and goes straight to
+// title matching — cheaper, and it keeps an ordinary word with no hex
+// characters at all from ever being treated as a hex prefix.
+func looksLikeUUIDPrefix(query string) bool {
+	stripped := strings.ReplaceAll(query, "-", "")
+	if len(stripped) < 1 || len(stripped) > 32 {
+		return false
+	}
+	for _, r := range stripped {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // titleExists reports whether any entry currently has exactly title,
