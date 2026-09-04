@@ -49,14 +49,30 @@ func resolveVaultEntry(use string) (name string, entry config.VaultEntry, err er
 	return name, entry, nil
 }
 
-// withUnlockedVault is every entry command's one-shot handler: resolve
-// --use, Unlock, run fn, Close the Identity — guaranteed on every exit
-// path, including fn's own error return. Every entry command goes
-// through this rather than repeating the Unlock/defer-Close pair, so
-// "Close always runs" is structural rather than a convention each
-// command has to remember (see the M4 plan's Unlock -> use -> Close
-// contract, which M6's Session reuses unchanged).
+// withUnlockedVault is every entry command's handler, in both invocation
+// modes, and it is the only place that differs between them.
+//
+// One-shot: resolve --use, Unlock, run fn, Close the Identity —
+// guaranteed on every exit path, including fn's own error return. In a
+// session: borrow the Identity the Session already holds for that vault
+// (unlocking it there, once, if this is the first command to need it)
+// and leave it open, since Lock, the idle timeout, and session exit are
+// what close it.
+//
+// Every entry command goes through this rather than repeating the
+// Unlock/defer-Close pair, which is what makes "the same Vault methods
+// run in both modes" structural: fn is handed a *gage.Vault and a
+// *gage.Identity and cannot tell which mode produced them. See the M4
+// plan's Unlock -> use -> Close contract, which M6 reuses unchanged.
 func withUnlockedVault(app *App, use string, fn func(v *gage.Vault, ident *gage.Identity) error) error {
+	if app.Session != nil {
+		v, ident, err := app.Session.Vault(use)
+		if err != nil {
+			return err
+		}
+		return fn(v, ident)
+	}
+
 	name, entry, err := resolveVaultEntry(use)
 	if err != nil {
 		return err
@@ -102,6 +118,19 @@ func newInsertCommand(app *App) *cobra.Command {
 			if modes > 1 {
 				return exitcode.New(exitcode.Usage,
 					"gage: -m/--multiline, --value-stdin, and -e/--edit are mutually exclusive")
+			}
+
+			// Both stdin-reading modes read to EOF, and inside a session
+			// stdin is the terminal the session itself is reading — so
+			// they would consume the rest of it and end the session as a
+			// side effect of inserting one entry. Refused with somewhere
+			// to go instead: -e/--edit is the in-session way to author a
+			// multi-line value, and one-shot mode is where a pipe
+			// belongs. Conservative and reversible, the same posture
+			// init/clone's one-shot-only rule takes.
+			if app.Session != nil && (multilineFlag || valueStdinFlag) {
+				return exitcode.New(exitcode.Usage,
+					"gage: -m/--multiline and --value-stdin read stdin to EOF, which is this session's own input; use -e/--edit here, or run `gage insert` from your shell")
 			}
 
 			// Unlock -> use -> Close, per the one-shot handler contract:
@@ -240,12 +269,41 @@ func trimOneTrailingNewline(s string) string {
 // listing the candidates and failing is the whole story; M6's session
 // mode is what turns the same list into an interactive picker instead.
 func resolveQuery(app *App, v *gage.Vault, query string, ident *gage.Identity) (uuid.UUID, gage.Entry, error) {
+	if app.Session != nil {
+		// Session mode has someone to ask, so the same candidate list
+		// becomes a picker instead of a failure — the decision lives on
+		// Session (which calls Prompter.Choose), not here.
+		id, e, err := app.Session.Resolve(v.Name, query)
+		if err != nil {
+			return uuid.Nil, gage.Entry{}, err
+		}
+		return id, e, nil
+	}
+
 	id, e, err := v.Resolve(query, ident)
 	if err != nil {
 		reportAmbiguous(app, err)
 		return uuid.Nil, gage.Entry{}, err
 	}
 	return id, e, nil
+}
+
+// mutationQuery is what rm/rename pass to the library methods that
+// resolve a query themselves. In one-shot mode that's the typed query,
+// unchanged. In a session it's the id the query resolved to — pre-
+// resolving is what lets those two commands prompt on an ambiguous query
+// like every other command, rather than being the odd pair that fails
+// where `show` asks. The library then re-resolves the id through its
+// exact-UUID stage, which can only match the entry just chosen.
+func mutationQuery(app *App, v *gage.Vault, query string, ident *gage.Identity) (string, error) {
+	if app.Session == nil {
+		return query, nil
+	}
+	id, _, err := resolveQuery(app, v, query, ident)
+	if err != nil {
+		return "", err
+	}
+	return id.String(), nil
 }
 
 // reportAmbiguous prints err's candidate list to stderr if it wraps
@@ -383,7 +441,11 @@ func newRenameCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				id, err := v.Rename(args[0], args[1], forceFlag, ident)
+				query, err := mutationQuery(app, v, args[0], ident)
+				if err != nil {
+					return err
+				}
+				id, err := v.Rename(query, args[1], forceFlag, ident)
 				if err != nil {
 					reportAmbiguous(app, err)
 					return err
@@ -452,7 +514,11 @@ func newRmCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				id, err := v.Remove(args[0], ident)
+				query, err := mutationQuery(app, v, args[0], ident)
+				if err != nil {
+					return err
+				}
+				id, err := v.Remove(query, ident)
 				if err != nil {
 					reportAmbiguous(app, err)
 					return err

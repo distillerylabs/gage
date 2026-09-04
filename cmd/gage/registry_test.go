@@ -55,13 +55,13 @@ func commandTreePaths(root *cobra.Command) []string {
 // test immediately, and a registry entry nothing ever wires up to a real
 // command fails it too.
 //
-// Cobra's own "help" command is exempted by name: it's CLI/framework
-// plumbing (wired by installHelp so `gage help <unknown>` can fail with
-// the usage exit code, which Cobra's default help command doesn't), not
-// a vault-domain command the design doc's command reference describes —
-// see registry.go's doc comment on the registry itself. Shell completion
-// is disabled outright (CompletionOptions.DisableDefaultCmd) so there's
-// nothing else to exempt.
+// "help" is counted as present but not required to have been reached
+// through the registry-driven stub loop: it is both a real Cobra command
+// (wired by installHelp, so `gage help <unknown>` fails with the usage
+// exit code, which Cobra's default help command doesn't) and a registry
+// entry, since M6's in-session help has to list it. Shell completion is
+// disabled outright (CompletionOptions.DisableDefaultCmd) so there's
+// nothing else to special-case.
 func TestRegistryCompleteness(t *testing.T) {
 	app := testApp()
 	root := NewRootCmd(app)
@@ -69,9 +69,6 @@ func TestRegistryCompleteness(t *testing.T) {
 
 	seen := map[string]bool{}
 	for _, path := range commandTreePaths(root) {
-		if path == "help" {
-			continue
-		}
 		seen[path] = true
 		if _, ok := findCommand(path); !ok {
 			t.Errorf("Cobra command %q exists with no registry entry", path)

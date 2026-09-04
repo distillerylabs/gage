@@ -33,6 +33,13 @@ type App struct {
 	// only means anything against a real file descriptor — this is the
 	// one seam production code and tests genuinely need to differ on.
 	IsTerminal func() bool
+
+	// Session is non-nil only while the REPL is running. It's what makes
+	// every entry command work unchanged in both modes: the handlers all
+	// go through withUnlockedVault, which unlocks and closes per command
+	// when this is nil and borrows the session's already-unlocked
+	// Identity when it isn't. No command has a session-only variant.
+	Session *gage.Session
 }
 
 // NewRootCmd builds gage's full one-shot-mode command tree: every
@@ -55,12 +62,19 @@ func NewRootCmd(app *App) *cobra.Command {
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.CompletionOptions.DisableDefaultCmd = true
 
-	// Only the session-only meta-verbs get the generic "not implemented
-	// yet" stub (they have no real logic to run outside a session at
-	// all — see newStubCommand). Every other registry entry gets a
-	// dedicated command tree below, built for real starting in M1.
+	// Only the session-only meta-verbs get the generic "you need a
+	// session for this" stub (they have no real logic to run outside a
+	// session at all — see newStubCommand). Every other registry entry
+	// gets a dedicated command tree below, built for real starting in
+	// M1.
+	//
+	// help is the one session-only entry that already exists as a real
+	// command: it's registered so in-session help can list it (the
+	// design doc keeps it out of gage --help's listing, which is what
+	// AvailSessionOnly governs), but `gage help` itself works one-shot
+	// and is wired by installHelp below.
 	for _, ci := range registry {
-		if ci.Availability == AvailSessionOnly {
+		if ci.Availability == AvailSessionOnly && ci.Name != "help" {
 			root.AddCommand(newStubCommand(app, ci))
 		}
 	}

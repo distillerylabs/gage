@@ -35,6 +35,14 @@ func (a Availability) OneShotVisible() bool {
 	return a == AvailBoth || a == AvailOneShotOnly
 }
 
+// SessionVisible reports whether a command belongs in in-session help's
+// rendered set — and, since the two surfaces render from this one
+// predicate pair, whether the REPL should accept it at all. Everything
+// except init/clone, per Q-CMD-AVAILABILITY.
+func (a Availability) SessionVisible() bool {
+	return a == AvailBoth || a == AvailSessionOnly
+}
+
 // CommandInfo is one command's entry in the registry — name, aliases,
 // description, group, and where it's available. Per Q-HELP-SURFACES this
 // is the single source of truth for both help surfaces: a command can't
@@ -46,11 +54,32 @@ func (a Availability) OneShotVisible() bool {
 // that renders it. What M0 fixes is the Availability tagging every later
 // milestone depends on, not a reader for a surface that doesn't exist.
 type CommandInfo struct {
-	Name         string
-	Aliases      []string
-	Short        string
-	Group        string
+	Name    string
+	Aliases []string
+	Short   string
+	Group   string
+
+	// Usage is the argument syntax rendered after the name — "<vault>"
+	// for use, "[vault]" for lock. It exists for the session-only
+	// meta-verbs, whose Cobra commands are generated from this table
+	// (see newStubCommand) rather than hand-written: recording the
+	// syntax here is what lets in-session help present vault selection
+	// as the bare `use <vault>` (Q-HELP-SURFACES) without a second list
+	// to keep in step. Empty for commands that take no arguments, and
+	// for the vault-domain commands whose own Cobra definition already
+	// carries their use line.
+	Usage string
+
 	Availability Availability
+}
+
+// UsageName renders a command the way both help surfaces list it: the
+// canonical name plus its argument syntax, if it declares any.
+func (ci CommandInfo) UsageName() string {
+	if ci.Usage == "" {
+		return ci.Name
+	}
+	return ci.Name + " " + ci.Usage
 }
 
 // Groups mirror the design doc's own command-reference sections, in the
@@ -92,12 +121,14 @@ var groupOrder = []string{
 var registry = []CommandInfo{
 	{
 		Name:         "use",
+		Usage:        "<vault>",
 		Short:        "Switch/unlock the active vault for this session",
 		Group:        GroupSession,
 		Availability: AvailSessionOnly,
 	},
 	{
 		Name:         "lock",
+		Usage:        "[vault]",
 		Short:        "Drop key material for one vault (or all) without exiting",
 		Group:        GroupSession,
 		Availability: AvailSessionOnly,
@@ -113,6 +144,19 @@ var registry = []CommandInfo{
 		Name:         "exit",
 		Aliases:      []string{"quit"},
 		Short:        "Leave the session",
+		Group:        GroupSession,
+		Availability: AvailSessionOnly,
+	},
+	{
+		// help is session-only *for listing purposes*, which is the only
+		// thing Availability governs. `gage help` itself works one-shot
+		// and always has (installHelp wires it); what the design doc
+		// rules out is gage --help *listing* it alongside the
+		// vault-domain commands, exactly as for the other meta-verbs.
+		// See "Help".
+		Name:         "help",
+		Usage:        "[command]",
+		Short:        "Show help for gage's commands",
 		Group:        GroupSession,
 		Availability: AvailSessionOnly,
 	},
@@ -221,9 +265,22 @@ func commandShort(name string) string {
 // oneShotCommands returns the registry entries gage --help/gage help
 // render, in registry order.
 func oneShotCommands() []CommandInfo {
+	return filterCommands(Availability.OneShotVisible)
+}
+
+// sessionCommands returns the registry entries in-session help renders —
+// the session-only meta-verbs plus every vault-domain command available
+// in a session. Same table, different filter: that is the whole
+// mechanism behind "a command can't appear in one surface and go missing
+// from the other" (Q-HELP-SURFACES).
+func sessionCommands() []CommandInfo {
+	return filterCommands(Availability.SessionVisible)
+}
+
+func filterCommands(visible func(Availability) bool) []CommandInfo {
 	var out []CommandInfo
 	for _, ci := range registry {
-		if ci.Availability.OneShotVisible() {
+		if visible(ci.Availability) {
 			out = append(out, ci)
 		}
 	}
@@ -246,28 +303,30 @@ func findCommand(name string) (CommandInfo, bool) {
 	return CommandInfo{}, false
 }
 
-// groupedOneShotCommands buckets oneShotCommands by Group, in
-// groupOrder, for the help renderer.
-func groupedOneShotCommands() []struct {
+// commandGroup is one section of a rendered help listing.
+type commandGroup struct {
 	Group    string
 	Commands []CommandInfo
-} {
+}
+
+// groupedOneShotCommands buckets oneShotCommands by Group, in
+// groupOrder, for the help renderer.
+func groupedOneShotCommands() []commandGroup { return groupCommands(oneShotCommands()) }
+
+// groupedSessionCommands is the same bucketing for in-session help.
+func groupedSessionCommands() []commandGroup { return groupCommands(sessionCommands()) }
+
+func groupCommands(cmds []CommandInfo) []commandGroup {
 	byGroup := map[string][]CommandInfo{}
-	for _, ci := range oneShotCommands() {
+	for _, ci := range cmds {
 		byGroup[ci.Group] = append(byGroup[ci.Group], ci)
 	}
 
 	seen := map[string]bool{}
-	var out []struct {
-		Group    string
-		Commands []CommandInfo
-	}
+	var out []commandGroup
 	for _, g := range groupOrder {
 		if cmds, ok := byGroup[g]; ok {
-			out = append(out, struct {
-				Group    string
-				Commands []CommandInfo
-			}{g, cmds})
+			out = append(out, commandGroup{g, cmds})
 			seen[g] = true
 		}
 	}
@@ -275,10 +334,7 @@ func groupedOneShotCommands() []struct {
 	// ones, so a forgotten groupOrder update doesn't hide a command.
 	for g, cmds := range byGroup {
 		if !seen[g] {
-			out = append(out, struct {
-				Group    string
-				Commands []CommandInfo
-			}{g, cmds})
+			out = append(out, commandGroup{g, cmds})
 		}
 	}
 	return out

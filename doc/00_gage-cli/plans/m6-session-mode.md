@@ -56,115 +56,142 @@ decrypt-on-demand per command.
   `identity`, and `recipient` families. Those commands land in M1, M9,
   and M9 respectively, so M6 only needs the registry filter to be
   correct; the commands themselves tag in as they arrive.
-- **Readline implementation.** History, line editing, and Ctrl-C/Ctrl-D
-  handling in the REPL. Not in the locked dependency list; needs one
-  (`chzyer/readline`, `peterh/liner`, or hand-rolled over `x/term`).
-  Whatever's chosen must be able to *not* write selected lines to
-  history, and must work on Windows.
-- **Idle-timeout clock injection.** The tests need simulated elapsed
-  time, so the timeout must read from an injectable clock rather than
-  `time.Now()` directly. Decide the seam before writing the timer.
-- **What `lock` with no argument does** — the design says "one vault, or
-  all, if omitted." Confirm.
-- **Does an idle re-lock interrupt an in-flight command?** Recommend no:
-  the timeout is evaluated at the start of each call, never mid-operation.
+- **Readline implementation.** Resolved: [`chzyer/readline`](https://github.com/chzyer/readline).
+  Must be able to *not* write selected lines to history, and must work
+  on Windows.
+- **Idle-timeout clock injection.** Resolved: a `now func() time.Time`
+  field on `Session`, defaulting to `time.Now`, overridden in tests.
+  No new types, no dependency — sufficient because the check is a plain
+  "now vs. last-activity" read at the start of each call, never a
+  background timer, so nothing needs `Sleep`/`Timer`/`After` semantics.
+  (`testing/synctest`, available on this Go version, was considered and
+  rejected: it fakes time only for goroutines durably blocked on
+  bubble-tracked primitives, and this milestone's REPL tests may drive a
+  real pty for Ctrl-C/Ctrl-D, which doesn't mix well with a synctest
+  bubble.)
+- **What `lock` with no argument does** — resolved: locks all vaults in
+  the session, confirming the design doc's "one vault, or all, if
+  omitted."
+- **Does an idle re-lock interrupt an in-flight command?** Resolved: no.
+  The timeout is evaluated at the start of each call, never
+  mid-operation.
 
 ## Tests (write first)
 
-- [ ] `Session.Use(vault)` unlocks once; subsequent entry calls against
+- [x] `Session.Use(vault)` unlocks once; subsequent entry calls against
       the same session don't re-prompt for the passphrase
-- [ ] Entry commands routed through `Session` (`show`, `insert`, ...)
+- [x] Entry commands routed through `Session` (`show`, `insert`, ...)
       call the exact same `Vault` methods as one-shot mode — no method
       gained a session-only signature or a duplicate implementation
-- [ ] An ambiguous query resolved through `Session` invokes `Prompter`'s
+- [x] An ambiguous query resolved through `Session` invokes `Prompter`'s
       candidate-list callback (a fake in tests) and returns the entry
       selected from it — the session-mode counterpart to M5's one-shot
       ambiguous-fails behavior, proven at the `Session` level rather than
       by driving a real terminal
-- [ ] `Session.Lock(vault)` drops that vault's key; the next entry call
+- [x] `Session.Lock(vault)` drops that vault's key; the next entry call
       against it re-prompts, while other unlocked vaults in the same
       session are unaffected
-- [ ] `Session.Lock()` with no vault locks all of them (per the decision
+- [x] `Session.Lock()` with no vault locks all of them (per the decision
       above)
-- [ ] `Session.Status()` reports correct lock state for multiple vaults
+- [x] `Session.Status()` reports correct lock state for multiple vaults
       touched in one session
-- [ ] `--use NAME` inside a session, naming a vault not yet `use`d,
+- [x] `--use NAME` inside a session, naming a vault not yet `use`d,
       prompts to unlock it and then operates against it — without
       changing which vault is current
-- [ ] `exit`/EOF terminates the REPL cleanly, and every held `Identity`
+- [x] `exit`/EOF terminates the REPL cleanly, and every held `Identity`
       is `Close()`d on the way out
-- [ ] Idle timeout: with simulated/injected elapsed time past
+- [x] Idle timeout: with simulated/injected elapsed time past
       `idle_timeout`, the next `Session` call against that vault re-prompts
       as if `Lock` had been called
-- [ ] An idle timeout re-lock calls `Identity.Close()` — the same code
+- [x] An idle timeout re-lock calls `Identity.Close()` — the same code
       path as an explicit `Lock`, not a parallel one
-- [ ] Session command history contains typed command lines (e.g. `show
+- [x] Session command history contains typed command lines (e.g. `show
       protonmail`) but never a decrypted `value`/`fields` value
-- [ ] The history file is created `0600`
-- [ ] The prompt renders `{vault}`, `{lock}`, and `{dirty}` tokens from
+- [x] The history file is created `0600`
+- [x] The prompt renders `{vault}`, `{lock}`, and `{dirty}` tokens from
       `[shell].prompt` in global config, and reflects lock state changing
       within a session
-- [ ] the REPL is a thin wiring layer: it parses a typed line into the
+- [x] the REPL is a thin wiring layer: it parses a typed line into the
       corresponding `Session` call and renders the result — one wiring
       test suffices here, not a re-test of `Session` behavior
-- [ ] Bare `gage` on a TTY reaches the REPL — the M0 dispatch decision,
+- [x] Bare `gage` on a TTY reaches the REPL — the M0 dispatch decision,
       re-asserted end-to-end now that there's a session to reach
-- [ ] In-session `help` lists the session-only commands
+- [x] In-session `help` lists the session-only commands
       (`use`/`lock`/`status`/`exit`/`help`) *and* every command the
       registry marks session-available — entry commands and the
       `vault`/`identity`/`recipient` families alike
-- [ ] In-session `help` and `gage --help` derive from the same command
+- [x] In-session `help` and `gage --help` derive from the same command
       registry: a command registered as available in both modes appears
       in both surfaces with the same description, asserted by comparing
       the rendered sets rather than by eyeballing two hand-written lists
-- [ ] No command available in a session is missing from in-session
+- [x] No command available in a session is missing from in-session
       `help`, and no session-only command leaks into `gage --help`
-- [ ] `init` and `clone` do not appear in in-session `help`, and
+- [x] `init` and `clone` do not appear in in-session `help`, and
       invoking either inside a session reports plainly that it's a
       one-shot command rather than failing obscurely
-- [ ] `help <command>` in-session prints that command's usage, mirroring
+- [x] `help <command>` in-session prints that command's usage, mirroring
       `gage help <subcommand>`; `help <unknown>` reports usage without
       terminating the session
-- [ ] Top-level in-session `help` presents vault selection as bare
+- [x] Top-level in-session `help` presents vault selection as bare
       `use <vault>`, not as `-u|--use NAME`
-- [ ] `help show` (per-command) *does* list `-u|--use`, which still works
+- [x] `help show` (per-command) *does* list `-u|--use`, which still works
       ad hoc inside a session
-- [ ] An unknown REPL command reports usage and does not terminate the
+- [x] An unknown REPL command reports usage and does not terminate the
       session, and points at `help`
 - [ ] The full M6 test suite passes unmodified on Windows, not just
       Linux/macOS — `Session`'s locking/idle-timeout behavior doesn't
-      depend on any POSIX-only mechanism
+      depend on any POSIX-only mechanism. *Written for it and verified as
+      far as a non-Windows host can (`GOOS=windows go build`/`go vet`,
+      which type-checks the test files too); the mode assertion follows
+      this suite's existing `runtime.GOOS == "windows"` convention and
+      the one pty test is tagged `linux || darwin`. Still needs an actual
+      run of the CI matrix to check off.*
 
 ## Implementation
 
-- [ ] `Session` library type: `Use`/`Lock`/`Status`, holding each vault's
+- [x] `Session` library type: `Use`/`Lock`/`Status`, holding each vault's
       `Identity` (already page-locked and core-dump-protected per M2)
       across multiple calls; idle timeout re-lock calls `Identity.Close()`
       the same as an explicit `Lock`
-- [ ] Injectable clock behind the idle timeout
-- [ ] REPL loop in `cmd/gage`: thin terminal wiring over `Session`
+- [x] Injectable clock behind the idle timeout
+- [x] REPL loop in `cmd/gage`: thin terminal wiring over `Session`
       (`use`/`lock`/`status`/`exit`/`help`), including rendering an
       ambiguous-query candidate list as the `[1-2]` prompt shown in the
       design doc — the one place this wiring is more than plain dispatch
-- [ ] In-session `help` and `help <command>`, rendered from M0's command
+- [x] In-session `help` and `help <command>`, rendered from M0's command
       registry filtered to session availability — not a second
       hand-maintained list
-- [ ] Session dispatch rejects the one-shot-only commands (`init`,
+- [x] Session dispatch rejects the one-shot-only commands (`init`,
       `clone`) with a clear "one-shot only" message rather than an
       unknown-command error
-- [ ] Session dispatch routes the `vault`/`identity`/`recipient`
+- [x] Session dispatch routes the `vault`/`identity`/`recipient`
       families the same as entry commands, against the session's current
       vault (Q-CMD-AVAILABILITY)
-- [ ] Prompt template rendering (`{vault}`, `{lock}`, `{dirty}`) from
+- [x] Prompt template rendering (`{vault}`, `{lock}`, `{dirty}`) from
       `[shell].prompt`
-- [ ] History file handling: `[shell].history_file`, `0600`, command
+- [x] The `Prompter` reads through the session's line editor while a
+      session is running. Not in the original list, but not optional:
+      `chzyer/readline` holds the terminal in raw mode and reads stdin
+      from its own goroutine for the life of an instance, so a passphrase
+      prompt that reached for stdin itself would race it. Both readers —
+      and both writers — go through one `lineReader` (which also made the
+      whole REPL testable without a pty). The same wiring correction
+      applies to raw mode and to readline's masked-input config, which
+      otherwise judge "is this a terminal" from the *process's*
+      stdin/stdout rather than the descriptors they were handed — the
+      second of those silently skips drawing the passphrase prompt when
+      the two differ.
+- [x] History file handling: `[shell].history_file`, `0600`, command
       lines only — never a decrypted value
-- [ ] Entry commands ported to work against `Session`'s current vault,
+- [x] Entry commands ported to work against `Session`'s current vault,
       including ad-hoc `--use NAME`
-- [ ] CI/test coverage on Windows in addition to Linux/macOS for this
+- [x] CI/test coverage on Windows in addition to Linux/macOS for this
       milestone specifically — it's the first point session state (idle
       timeout, multi-vault `Identity` caching) needs to be proven to
-      behave identically across all three, not just compile
+      behave identically across all three, not just compile. *No workflow
+      change was needed: `.github/workflows/ci.yml` already runs
+      `build`/`test`/`lint` on the full three-OS matrix, and M6 added
+      nothing that opts out of it.*
 
 ## Definition of done
 
