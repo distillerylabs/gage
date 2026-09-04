@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/denmark/gage/internal/gage"
 )
 
 // exeName returns name with the platform's executable extension, so a
@@ -38,6 +40,21 @@ var (
 	binErr  error
 )
 
+// testScryptWorkFactor is what this package's tests unlock at, in place
+// of the real, deliberately expensive scryptWorkFactor: this package
+// drives close to two hundred real CLI invocations, most of which unlock
+// a vault, and paying gage's real ~1s-per-unlock cost on every one of
+// them is most of why this suite used to take minutes. Still a real
+// scrypt pass, just a cheap one — see SetScryptWorkFactorForTests' own
+// comment on why the shipped default can't simply be lowered instead.
+//
+// It applies only to commands run in-process via runApp/runCLI*. The few
+// tests that exec a separately-built `gage` binary (builtGageBinary) get
+// none of this — that binary is a fresh `go build`, a different process
+// with its own unoverridden default — but none of them unlock a vault,
+// so nothing there is slow enough to matter.
+const testScryptWorkFactor = 10
+
 // TestMain removes the once-per-run build directory that
 // builtGageBinary creates, so a `go test ./...` doesn't leave a
 // gage-integration-* directory behind in the system temp dir on every
@@ -53,7 +70,9 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv("GAGE_TEST_FAKE_EDITOR"); mode != "" {
 		os.Exit(runFakeEditor(mode, os.Args[len(os.Args)-1]))
 	}
+	restore := gage.SetScryptWorkFactorForTests(testScryptWorkFactor)
 	code := m.Run()
+	restore()
 	if binDir != "" {
 		_ = os.RemoveAll(binDir)
 	}

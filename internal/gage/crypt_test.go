@@ -3,6 +3,8 @@ package gage
 import (
 	"bytes"
 	"errors"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -314,16 +316,50 @@ func firstLines(s string, n int) string {
 // silently reverted to age's default: the constant is the only thing
 // standing between a stolen identity file and an offline brute force, so
 // a change to it should be a change someone had to make on purpose.
+//
+// It reads the value straight from source rather than the live
+// scryptWorkFactor variable. That's not a style choice: TestMain lowers
+// the live value for this whole package's test run (see
+// SetScryptWorkFactorForTests), so by the time this test runs, the
+// variable no longer holds what gage actually ships with — checking it
+// would make this test validate the test suite's own speed hack instead
+// of the real default. Same technique as
+// TestGenerateDrawsFromCryptoRandNotMathRand, for the same reason: some
+// properties are only observable in source once something legitimate has
+// overridden them at runtime.
 func TestScryptWorkFactorIsDeliberate(t *testing.T) {
 	const ageDefault = 18
-	if scryptWorkFactor <= ageDefault {
-		t.Errorf("scryptWorkFactor = %d, want more than age's default of %d", scryptWorkFactor, ageDefault)
+	got := shippedScryptWorkFactor(t)
+	if got <= ageDefault {
+		t.Errorf("scryptWorkFactor's shipped default = %d, want more than age's default of %d", got, ageDefault)
 	}
-	if scryptMaxWorkFactor < scryptWorkFactor {
-		t.Errorf("scryptMaxWorkFactor (%d) is below scryptWorkFactor (%d): gage could not open files it writes",
-			scryptMaxWorkFactor, scryptWorkFactor)
+	if scryptMaxWorkFactor < got {
+		t.Errorf("scryptMaxWorkFactor (%d) is below scryptWorkFactor's shipped default (%d): gage could not open files it writes",
+			scryptMaxWorkFactor, got)
 	}
 }
+
+// shippedScryptWorkFactor reads scryptWorkFactor's initializer straight
+// out of identityfile.go, so this test's assertion holds regardless of
+// what the live variable has been overridden to for this test run.
+func shippedScryptWorkFactor(t *testing.T) int {
+	t.Helper()
+	data, err := os.ReadFile("identityfile.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := scryptWorkFactorDefaultPattern.FindSubmatch(data)
+	if m == nil {
+		t.Fatal("could not find scryptWorkFactor's initializer in identityfile.go")
+	}
+	n, err := strconv.Atoi(string(m[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+var scryptWorkFactorDefaultPattern = regexp.MustCompile(`var scryptWorkFactor = (\d+)`)
 
 func TestParseRecipientRejectsNonEncryptableStrings(t *testing.T) {
 	for _, s := range []string{

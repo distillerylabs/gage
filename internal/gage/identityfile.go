@@ -32,7 +32,16 @@ import (
 // Raising this later is safe and needs no migration: the work factor is
 // recorded in each file's own scrypt stanza, so existing files keep
 // opening at the factor they were written with.
-const scryptWorkFactor = 19
+//
+// A var, not a const: this test suite unlocks a real vault (real scrypt,
+// real cost) hundreds of times across internal/gage and cmd/gage, which
+// is otherwise several minutes of wall clock spent proving nothing
+// beyond "scrypt still costs what scrypt costs." SetScryptWorkFactorForTests
+// is the sanctioned way to lower it for a test run; nothing else may
+// write to this variable. TestScryptWorkFactorIsDeliberate guards the
+// number actually shipped — 19 in source — regardless of what a test
+// binary has overridden the live value to.
+var scryptWorkFactor = 19
 
 // scryptMaxWorkFactor caps the work gage will perform on an identity
 // file's *claimed* factor. Set explicitly rather than inherited, so a
@@ -40,6 +49,29 @@ const scryptWorkFactor = 19
 // hanging the process. 22 matches age's own default ceiling and leaves
 // three doublings of headroom above what gage writes today.
 const scryptMaxWorkFactor = 22
+
+// SetScryptWorkFactorForTests overrides scryptWorkFactor for the
+// lifetime of the process and returns a function that restores the
+// previous value. It exists only because Go gives a different package's
+// tests no other way to reach unexported state: cmd/gage's CLI tests
+// drive close to two hundred real vault unlocks, and internal/gage's own
+// tests aren't far behind, so paying the real, deliberately expensive KDF
+// cost on every one of them turns the suite into minutes spent proving
+// nothing beyond "scrypt still costs what scrypt costs."
+//
+// It must never be called outside a _test.go file. That is enforced
+// two ways: internal/gage is unimportable from outside this module at
+// all (Go's own "internal/" rule), and .golangci.yml's forbidigo config
+// specifically forbids this identifier anywhere else in the module,
+// cmd/gage's normal package-wide forbidigo exemption included — see the
+// comment there. n has no floor or ceiling check: a caller weakening its
+// own tests into meaninglessness (n == 1) is a test-quality problem for
+// that caller, not one this function should silently second-guess.
+func SetScryptWorkFactorForTests(n int) (restore func()) {
+	old := scryptWorkFactor
+	scryptWorkFactor = n
+	return func() { scryptWorkFactor = old }
+}
 
 // ErrIdentityExists is CreateIdentity refusing to overwrite an identity
 // file that already exists. Overwriting one would destroy the only copy

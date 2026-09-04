@@ -10,6 +10,27 @@ import (
 	"github.com/denmark/gage/internal/gage/xdgpaths"
 )
 
+// testScryptWorkFactor is what this package's own tests unlock at,
+// instead of the real, deliberately expensive scryptWorkFactor. Still a
+// real scrypt pass — this isn't skipping the KDF, just running it small
+// — so every test that unlocks a vault still exercises the actual wrap/
+// unwrap code path, at a cost too small to notice rather than the ~1s
+// per unlock the shipped default costs (see scryptWorkFactor's own
+// comment on why that number is what it is).
+const testScryptWorkFactor = 10
+
+// TestMain lowers scryptWorkFactor for this package's entire test binary
+// before any test runs. Every test in this package that unlocks a vault
+// — which is most of them — goes through this without doing anything
+// itself; TestScryptWorkFactorIsDeliberate is what keeps the real,
+// shipped default honest despite it.
+func TestMain(m *testing.M) {
+	restore := SetScryptWorkFactorForTests(testScryptWorkFactor)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
+
 // fakePrompter satisfies Prompter for tests without ever touching a
 // terminal, proving the interface is usable from the library side. It
 // answers with passphrases from a scripted list — one per attempt — and

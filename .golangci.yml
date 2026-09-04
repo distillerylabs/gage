@@ -64,6 +64,19 @@ linters:
           msg: >-
             internal/gage must not write to a writer; return a value and
             let cmd/gage render it. See "Library architecture".
+        # A different kind of purity rule from the four above: this one
+        # isn't about the library staying terminal-agnostic, it's about a
+        # security-sensitive test hook never reaching a real build. Its
+        # message deliberately does *not* start with "internal/gage must
+        # not" — that phrase is what the cmd/ exclusion below matches on
+        # to exempt the other four rules there, and this one must stay
+        # enforced in cmd/gage's non-test files, unlike those.
+        - pattern: '^gage\.SetScryptWorkFactorForTests$'
+          msg: >-
+            SetScryptWorkFactorForTests must never be called outside a
+            _test.go file. It exists only so a test binary can avoid
+            gage's real, deliberately expensive KDF cost — see
+            identityfile.go.
 
     errcheck:
       # Blank-identifier assignments (`_ = f.Close()`) are a deliberate,
@@ -77,17 +90,30 @@ linters:
   exclusions:
     generated: lax
     rules:
-      # The forbidigo rules above encode the *library layer's* purity
-      # rule. cmd/gage is the CLI frontend — printing, reading stdin, and
-      # exiting the process are its entire job.
+      # The first five forbidigo rules above encode the *library layer's*
+      # purity rule. cmd/gage is the CLI frontend — printing, reading
+      # stdin, and exiting the process are its entire job. The `text`
+      # filter is what keeps this from also exempting the
+      # SetScryptWorkFactorForTests rule for cmd/'s non-test files: that
+      # rule's message doesn't start with "internal/gage must not" (see
+      # its own comment above), so it isn't matched here and stays
+      # enforced everywhere outside a _test.go file, cmd/gage included —
+      # a non-test cmd/gage file calling it would still ship a weakened
+      # KDF in a real build, which is exactly the failure mode the other
+      # five rules don't need to worry about.
       - path: ^cmd/
+        text: 'internal/gage must not'
         linters:
           - forbidigo
 
       # Test files are exempt from the purity rule by the same rule's own
       # terms ("outside _test.go files"): a library test legitimately
-      # drives a fake terminal, and vaultlock's subprocess harness has to
-      # read stdin and exit to be a lock holder at all.
+      # drives a fake terminal, vaultlock's subprocess harness has to read
+      # stdin and exit to be a lock holder at all, and internal/gage's own
+      # TestMain / cmd/gage's TestMain call SetScryptWorkFactorForTests to
+      # lower the KDF cost for the whole suite (no `text` filter here —
+      # every forbidigo rule, this one included, is legitimate from a
+      # _test.go file).
       - path: _test\.go$
         linters:
           - forbidigo
