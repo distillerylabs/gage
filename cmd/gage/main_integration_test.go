@@ -41,7 +41,7 @@ var (
 )
 
 // testScryptWorkFactor is what this package's tests unlock at, in place
-// of the real, deliberately expensive scryptWorkFactor: this package
+// of the real, deliberately expensive shipped work factor: this package
 // drives close to two hundred real CLI invocations, most of which unlock
 // a vault, and paying gage's real ~1s-per-unlock cost on every one of
 // them is most of why this suite used to take minutes. Still a real

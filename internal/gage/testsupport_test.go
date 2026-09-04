@@ -15,15 +15,21 @@ import (
 // real scrypt pass — this isn't skipping the KDF, just running it small
 // — so every test that unlocks a vault still exercises the actual wrap/
 // unwrap code path, at a cost too small to notice rather than the ~1s
-// per unlock the shipped default costs (see scryptWorkFactor's own
-// comment on why that number is what it is).
+// per unlock shippedScryptWorkFactor costs (see its own comment on why
+// that number is what it is).
 const testScryptWorkFactor = 10
 
 // TestMain lowers scryptWorkFactor for this package's entire test binary
 // before any test runs. Every test in this package that unlocks a vault
 // — which is most of them — goes through this without doing anything
-// itself; TestScryptWorkFactorIsDeliberate is what keeps the real,
-// shipped default honest despite it.
+// itself.
+//
+// Three tests keep the shipped factor honest despite it:
+// TestScryptWorkFactorIsDeliberate checks the constant this variable is
+// a copy of, TestOnlyTheTestHookWritesScryptWorkFactor checks that no
+// non-test code can move the copy, and
+// TestShippedWorkFactorReachesARealAgeFile restores the shipped factor
+// for one encryption and reads it back off the age header.
 func TestMain(m *testing.M) {
 	restore := SetScryptWorkFactorForTests(testScryptWorkFactor)
 	code := m.Run()

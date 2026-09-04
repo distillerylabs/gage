@@ -10,21 +10,30 @@ BIN := gage$(shell go env GOEXE)
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/gage
 
-# -timeout is raised from Go's 600s default because this suite is
-# deliberately KDF-bound, not accidentally slow: every unlock runs scrypt
-# at the real shipped work factor (2^19, see scryptWorkFactor), and
-# cmd/gage drives ~190 CLI invocations, most of which unlock. That is
-# ~190 seconds on a fast developer machine and comfortably over 600 on a
-# GitHub windows-latest runner, where it timed out mid-scrypt at exactly
-# 600s while the faster ubuntu runner passed.
+# This suite used to be KDF-bound rather than accidentally slow: every
+# unlock ran scrypt at the real shipped work factor (2^19) and cmd/gage
+# drives ~190 CLI invocations, most of which unlock, so it needed a
+# 30-minute ceiling to survive a GitHub windows-latest runner. It no
+# longer does: both TestMains now lower the *live* work factor for the
+# test binary only (see SetScryptWorkFactorForTests), which takes the
+# whole suite to seconds. Still a real scrypt pass on every unlock, just
+# a cheap one — no code path is skipped.
 #
-# Raising the ceiling rather than lowering the work factor is the
-# deliberate trade: the M2 tests assert that identity files are written
-# at the real factor, so a test-only cheaper KDF would mean CI no longer
-# exercising the thing that actually ships.
+# The thing that actually ships stays covered, which was the original
+# objection to a test-only cheaper KDF:
+# TestScryptWorkFactorIsDeliberate checks the shipped constant,
+# TestOnlyTheTestHookWritesScryptWorkFactor checks that nothing but the
+# test hook can move the live copy, and
+# TestShippedWorkFactorReachesARealAgeFile pays one real 2^19 scrypt to
+# prove that number reaches a real age header.
+#
+# -timeout is kept explicit but is now a deadlock ceiling rather than a
+# scrypt budget: the vaultlock and pty tests block on subprocesses, and
+# five minutes fails a hung one well inside CI's own job timeout while
+# leaving room for the slowest runner in the matrix.
 .PHONY: test
 test:
-	GOPROXY=off GOFLAGS=-mod=readonly go test -timeout 30m ./...
+	GOPROXY=off GOFLAGS=-mod=readonly go test -timeout 5m ./...
 
 # Pinned rather than tracking latest: golangci-lint's config schema
 # changed between v1 and v2, and a linter that silently gains new checks

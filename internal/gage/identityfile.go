@@ -14,9 +14,9 @@ import (
 	"github.com/denmark/gage/internal/gage/exitcode"
 )
 
-// scryptWorkFactor is the log2 cost gage wraps identity files at — a
-// deliberate number, not age's default by omission (the M2 plan calls
-// this out as a decision to make first).
+// shippedScryptWorkFactor is the log2 cost gage wraps identity files at
+// — a deliberate number, not age's default by omission (the M2 plan
+// calls this out as a decision to make first).
 //
 // age defaults to 18, about a second on a modern machine. gage uses 19,
 // doubling that: this parameter is the only thing between a stolen
@@ -33,15 +33,27 @@ import (
 // recorded in each file's own scrypt stanza, so existing files keep
 // opening at the factor they were written with.
 //
-// A var, not a const: this test suite unlocks a real vault (real scrypt,
+// It stays a const so the shipped number cannot be moved at runtime by
+// anything, test hook included: TestScryptWorkFactorIsDeliberate checks
+// this constant directly, and the compiler is what guarantees the value
+// it checks is the value that ships.
+const shippedScryptWorkFactor = 19
+
+// scryptWorkFactor is the live copy of shippedScryptWorkFactor that the
+// crypto path actually reads, and the only part of this that a test can
+// move. It exists because the suite unlocks a real vault (real scrypt,
 // real cost) hundreds of times across internal/gage and cmd/gage, which
 // is otherwise several minutes of wall clock spent proving nothing
-// beyond "scrypt still costs what scrypt costs." SetScryptWorkFactorForTests
-// is the sanctioned way to lower it for a test run; nothing else may
-// write to this variable. TestScryptWorkFactorIsDeliberate guards the
-// number actually shipped — 19 in source — regardless of what a test
-// binary has overridden the live value to.
-var scryptWorkFactor = 19
+// beyond "scrypt still costs what scrypt costs."
+//
+// SetScryptWorkFactorForTests is the only thing permitted to write it.
+// That is not merely a convention: a stray `scryptWorkFactor = 10` in a
+// non-test file of this package would ship a weakened KDF while every
+// other guard here stayed green, since forbidigo forbids the *function*
+// and TestScryptWorkFactorIsDeliberate reads the *constant*. The
+// assignment itself is what TestOnlyTheTestHookWritesScryptWorkFactor
+// checks, which is the piece a const alone cannot express.
+var scryptWorkFactor = shippedScryptWorkFactor
 
 // scryptMaxWorkFactor caps the work gage will perform on an identity
 // file's *claimed* factor. Set explicitly rather than inherited, so a
@@ -60,13 +72,16 @@ const scryptMaxWorkFactor = 22
 // nothing beyond "scrypt still costs what scrypt costs."
 //
 // It must never be called outside a _test.go file. That is enforced
-// two ways: internal/gage is unimportable from outside this module at
-// all (Go's own "internal/" rule), and .golangci.yml's forbidigo config
+// three ways: internal/gage is unimportable from outside this module at
+// all (Go's own "internal/" rule); .golangci.yml's forbidigo config
 // specifically forbids this identifier anywhere else in the module,
-// cmd/gage's normal package-wide forbidigo exemption included — see the
-// comment there. n has no floor or ceiling check: a caller weakening its
-// own tests into meaninglessness (n == 1) is a test-quality problem for
-// that caller, not one this function should silently second-guess.
+// cmd/gage's normal package-wide forbidigo exemption included (see the
+// comment there); and TestOnlyTheTestHookWritesScryptWorkFactor rejects
+// the spelling that sidesteps both, a direct assignment to
+// scryptWorkFactor from inside this package. n has no floor or ceiling
+// check: a caller weakening its own tests into meaninglessness (n == 1)
+// is a test-quality problem for that caller, not one this function
+// should silently second-guess.
 func SetScryptWorkFactorForTests(n int) (restore func()) {
 	old := scryptWorkFactor
 	scryptWorkFactor = n
