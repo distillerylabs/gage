@@ -77,9 +77,13 @@ sites.
 - [ ] An exact title match resolves uniquely even when it's also a
       substring of another entry's title
 - [ ] A unique (non-exact) substring title match resolves correctly
-- [ ] An exact UUID resolves to the correct entry
-- [ ] A unique UUID substring (not just a prefix) resolves to the correct
-      entry
+- [ ] An exact UUID resolves to the correct entry, including the
+      non-canonical spellings `uuid.Parse` accepts (`{braced}`,
+      `urn:uuid:…`) — the only queries the exact-UUID stage can match
+      that the substring stage after it cannot, and therefore the only
+      ones that prove that stage is carrying its own weight
+- [ ] A unique UUID substring (not just a prefix, and allowed to span a
+      hyphen) resolves to the correct entry
 - [ ] **An exact title match wins over a UUID match, even when the query
       is also a unique substring of a *different* entry's UUID** — the
       regression test for the bug this milestone's original

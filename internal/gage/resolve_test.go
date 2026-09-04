@@ -42,6 +42,43 @@ func TestResolveByExactUUID(t *testing.T) {
 	}
 }
 
+// TestResolveByNonCanonicalUUIDSpellings is what gives the exact-UUID
+// stage teeth. For a canonical id the stage is invisible: the substring
+// stage right after it would match the same entry anyway, since a
+// 32-hex-character query can only be "contained in" the identical
+// 32-hex-character id. The spellings below are the ones that actually
+// separate the two — uuid.Parse accepts braced and urn:uuid: forms,
+// while the substring stage compares raw hex and cannot match either
+// (the braces and the "urn:uuid:" literal aren't hex).
+//
+// Without this test, deleting the exact-UUID stage outright leaves every
+// other test green while silently dropping support for both spellings.
+func TestResolveByNonCanonicalUUIDSpellings(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	entryID := insertNamed(t, v, &id, "ProtonMail")
+	canonical := entryID.String()
+
+	for _, spelling := range []struct{ name, query string }{
+		{"braced", "{" + canonical + "}"},
+		{"urn", "urn:uuid:" + canonical},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			gotID, gotEntry, err := v.Resolve(spelling.query, &id)
+			if err != nil {
+				t.Fatalf("Resolve(%q): %v", spelling.query, err)
+			}
+			if gotID != entryID {
+				t.Errorf("resolved id = %s, want %s", gotID, entryID)
+			}
+			if gotEntry.Title != "ProtonMail" {
+				t.Errorf("resolved title = %q, want %q", gotEntry.Title, "ProtonMail")
+			}
+		})
+	}
+}
+
 func TestResolveByUUIDPrefix(t *testing.T) {
 	v, id := newEntryTestVault(t, "personal", "laptop-1")
 	defer func() { _ = id.Close() }()
