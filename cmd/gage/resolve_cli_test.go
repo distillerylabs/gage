@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/exitcode"
@@ -57,11 +62,18 @@ func TestShowCatRmResolveIdenticallyAcrossQueryForms(t *testing.T) {
 		// form isn't known until the entry exists.
 		query func(fullUUID string) string
 	}{
-		{"uuid-prefix", func(full string) string { return full[:8] }},
-		{"short-uuid-prefix", func(full string) string { return full[:4] }},
 		{"exact-title", func(string) string { return "AWS root account" }},
 		{"unique-substring", func(string) string { return "root" }},
 		{"case-insensitive-substring", func(string) string { return "ROOT" }},
+		{"exact-uuid", func(full string) string { return full }},
+		{"uuid-prefix", func(full string) string { return full[:8] }},
+		{"short-uuid-prefix", func(full string) string { return full[:4] }},
+		{"uuid-mid-string-substring", func(full string) string {
+			// Characters 9-16 of the canonical form (past the first
+			// hyphen), never a prefix — proves the stage is a genuine
+			// substring search, not prefix-only.
+			return full[9:17]
+		}},
 	} {
 		t.Run(qf.name, func(t *testing.T) {
 			isolateXDG(t)
@@ -99,6 +111,59 @@ func TestShowCatRmResolveIdenticallyAcrossQueryForms(t *testing.T) {
 	}
 }
 
+// TestCatResolvesByExactTitleEvenWhenQueryIsAlsoAUUIDSubstring is the
+// CLI-level regression test for the bug this milestone's original
+// implementation shipped: a query naming one entry's exact title, that
+// also happens to be a substring of a *different* entry's UUID, must
+// resolve to the entry it names — not silently to the other one.
+//
+// The collision can't be scripted by choosing a title in advance (UUIDs
+// are randomly generated), so this inserts a first entry, reads back its
+// real, on-disk UUID, and titles a second entry with an actual substring
+// of it — guaranteeing the exact cross-stage collision that reached CI,
+// through the real `gage insert`/`gage cat` commands rather than the
+// library directly.
+func TestCatResolvesByExactTitleEvenWhenQueryIsAlsoAUUIDSubstring(t *testing.T) {
+	isolateXDG(t)
+	path := initEntryTestVault(t, "personal")
+
+	if res, _ := runCLIWithValue(t, []string{"insert", "Website Password"}, "correcthorsebattery"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+	full := soleEntryID(t, path).String()
+	collidingSubstring := strings.ReplaceAll(full, "-", "")[:4] // e.g. "22ed"
+
+	if res, _ := runCLIWithValue(t, []string{"insert", collidingSubstring}, "some-other-secret"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+
+	cat := runCLI(t, []string{"cat", collidingSubstring}, "")
+	if cat.Code != 0 {
+		t.Fatalf("cat %q failed: %s", collidingSubstring, cat.Stderr)
+	}
+
+	// Parsed rather than substring-matched against the raw YAML: the
+	// colliding substring is drawn from a random UUID, so roughly one run
+	// in eight it comes out all-digits ("4489"), which the entry
+	// marshaller quotes — `title: "4489"` — precisely so it doesn't read
+	// back as an integer. A `strings.Contains(out, "title: "+q)` check
+	// mistakes that quoting for the wrong entry and fails ~1 run in 8 with
+	// a misleading message, which is exactly the flakiness this file's
+	// other tests exist to avoid.
+	got, err := gage.UnmarshalEntry([]byte(cat.Stdout))
+	if err != nil {
+		t.Fatalf("parsing cat output: %v\n%s", err, cat.Stdout)
+	}
+	if got.Title != collidingSubstring {
+		t.Errorf("cat %q resolved to the entry titled %q, want the exact-title match %q",
+			collidingSubstring, got.Title, collidingSubstring)
+	}
+	if got.Value != "some-other-secret" {
+		t.Errorf("cat %q returned value %q — it resolved to the UUID-substring match (\"Website Password\") "+
+			"instead of the entry whose exact title it named", collidingSubstring, got.Value)
+	}
+}
+
 // TestAmbiguousQueryListsCandidatesAndFailsWithoutPromptingForEveryCommand
 // covers the ambiguity half of the same claim, for every query-taking
 // command: candidates listed on stderr, nonzero Ambiguous exit, nothing
@@ -133,6 +198,68 @@ func TestAmbiguousQueryListsCandidatesAndFailsWithoutPromptingForEveryCommand(t 
 				t.Errorf("%s printed to stdout on an ambiguous query: %q", args[0], res.Stdout)
 			}
 		})
+	}
+}
+
+// TestAmbiguousUUIDSubstringFailsAtTheCLIWithCandidates covers the
+// "(title or UUID)" half of the ambiguity bullet at the CLI level: an
+// ambiguous match produced by the *UUID substring* stage must reach the
+// shell exactly like an ambiguous title does — candidates on stderr,
+// nonzero Ambiguous exit, nothing on stdout.
+//
+// The two colliding ids are written directly rather than inserted,
+// because `gage insert` generates random UUIDs and there is no way to
+// ask it for two that share a chosen substring. Deriving the query from
+// whatever ids happened to be generated would make the collision
+// probabilistic, and a resolver test that only sometimes exercises the
+// case it names is how this milestone shipped a bug in the first place.
+// Setup uses the library; the behavior under test is still the real CLI.
+func TestAmbiguousUUIDSubstringFailsAtTheCLIWithCandidates(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	app := &App{
+		Out:      &bytes.Buffer{},
+		Err:      &bytes.Buffer{},
+		In:       strings.NewReader(""),
+		Prompter: &fakePrompter{passphrases: []string{testPassphrase}},
+	}
+	// Titles share no substring with the query, so the title stages are
+	// guaranteed to match nothing and the UUID substring stage is what
+	// produces the ambiguity.
+	err := withUnlockedVault(app, "personal", func(v *gage.Vault, ident *gage.Identity) error {
+		for i, spec := range []struct{ id, title string }{
+			{"abcdef00-1111-4111-8111-111111111111", "Zebra One"},
+			{"abcdef00-2222-4222-8222-222222222222", "Zebra Two"},
+		} {
+			e := gage.Entry{
+				Title:     spec.title,
+				Created:   gage.NewTimestamp(time.Now()),
+				Updated:   gage.NewTimestamp(time.Now()),
+				UpdatedBy: ident.Device(),
+				Value:     fmt.Sprintf("value-%d", i),
+			}
+			if werr := v.WriteEntry(uuid.MustParse(spec.id), e); werr != nil {
+				return werr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seeding entries with controlled ids: %v", err)
+	}
+
+	res := runCLI(t, []string{"cat", "abcdef00"}, "")
+	if res.Code != int(exitcode.Ambiguous) {
+		t.Errorf("exit code = %d, want %d (Ambiguous)", res.Code, exitcode.Ambiguous)
+	}
+	for _, want := range []string{"Zebra One", "Zebra Two"} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr missing candidate %q:\n%s", want, res.Stderr)
+		}
+	}
+	if res.Stdout != "" {
+		t.Errorf("cat printed to stdout on an ambiguous UUID-substring query: %q", res.Stdout)
 	}
 }
 

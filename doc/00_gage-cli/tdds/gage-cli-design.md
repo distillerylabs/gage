@@ -831,10 +831,29 @@ Multiple entries match "aws":
 Which one? [1-2]:
 ```
 
-Resolution order: exact UUID (or its short prefix) → exact title match →
-unique substring match on title → ambiguous, so list candidates and ask
-(one-shot mode fails with the same list instead of prompting, since there's
-no one to ask).
+Resolution order: exact title match → substring match on title → exact
+UUID → substring match on a UUID's canonical string form → ambiguous, so
+list candidates and ask (one-shot mode fails with the same list instead
+of prompting, since there's no one to ask). A stage that matches nothing
+falls through to the next; a stage that matches more than one stops
+there and lists *that stage's own* candidates, never spilling into a
+later stage — an exact title match always wins over a substring match of
+a different entry, even when the substring stage would itself have been
+unique.
+
+Title comes before UUID, not the other way around, for a concrete
+reason rather than a preference: entries are addressed by title far more
+often than by the UUID nobody has memorized, and a hex-spellable title —
+`dead`, `beef`, `cafe`, even a single letter — is exactly the kind of
+string an entry's own randomly-generated UUID can coincidentally
+contain. An earlier version of this resolver tried UUID matches first,
+which meant a query that was the *exact, literal title* of one entry
+could silently resolve to a completely different entry instead, with no
+error and no ambiguity warning, whenever the query happened to also be a
+unique UUID substring elsewhere in the vault. Checking title first
+closes that hole structurally: by the time UUID matching ever runs, no
+entry's title matched the query at all, so a UUID match can never
+pre-empt an exact or substring title hit.
 
 At the library level this is one method that returns either a resolved
 entry or a candidate list — never printed text. One-shot CLI treats a

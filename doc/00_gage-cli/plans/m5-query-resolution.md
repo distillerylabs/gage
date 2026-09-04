@@ -7,11 +7,12 @@
 ## Goal
 
 Upgrade addressing from "exact UUID/title" to the full resolution order
-(prefix → exact → unique substring → ambiguous prompt/fail), and move
-every query-taking command onto it — `cat` and `rm` (both stuck on M4's
-exact-match-only behavior) alongside the commands new to this milestone:
-`show`, `edit`, `rename`. **No command should be left on the old
-exact-only matching once this milestone is done.**
+(exact title → substring title → exact UUID → substring UUID → ambiguous
+prompt/fail), and move every query-taking command onto it — `cat` and
+`rm` (both stuck on M4's exact-match-only behavior) alongside the
+commands new to this milestone: `show`, `edit`, `rename`. **No command
+should be left on the old exact-only matching once this milestone is
+done.**
 
 `gage generate` also lands here, and `-e|--edit` is added to `gage insert`
 (deferred from M4), since it shares `gage edit`'s
@@ -39,18 +40,29 @@ sites.
   listed only `show`/`cat`/`edit`/`rename`/`rm`/`mv`/`cp` as query-taking;
   the stray mention of `generate` there was the leftover A2 flags, not a
   second, correct statement.
-- **Substring matching is case-insensitive and title-only.** Description
-  and body stay `search`'s job (alias `grep`), not addressing's.
-- **UUID prefix matching accepts any length (down to one hex
-  character) and lets ambiguity handle collisions**, rather than
-  enforcing a floor. A query that looks like a UUID prefix (hex digits
-  and hyphens only) is tried as one first; if it matches many entries,
-  that's reported as an ordinary ambiguous result — the same outcome an
-  overly short title substring produces — not a separate "too short"
-  error. Worth knowing: a single hex character that happens to prefix
-  exactly one entry's UUID resolves to *that* entry even if the query
-  was meant as a text substring search for something else entirely; this
-  is the accepted tradeoff of no floor.
+- **Substring matching is case-insensitive.** Title substring matching
+  runs before any UUID matching (see below); `description` and body stay
+  `search`'s job (alias `grep`), not addressing's, at either stage.
+- **Title is checked before UUID, and UUID matching is substring, not
+  just prefix — reversed from this milestone's original
+  implementation, which tried UUID (prefix, no minimum length) before
+  title.** That order shipped a real bug, caught after the fact rather
+  than in review: a query that was the *exact, literal title* of one
+  entry could silently resolve to a *different* entry instead, whenever
+  the query happened to also be a unique substring of that other
+  entry's UUID — no error, no ambiguity warning, just the wrong secret.
+  `"22"` as a title, next to some unrelated entry whose random UUID
+  happens to start `22ed1bfd...`, is enough to trigger it; short
+  hex-spellable words (`dead`, `beef`, `cafe`) are exactly as exposed as
+  bare hex digits. The final order is **exact title → substring title →
+  exact UUID → substring UUID → ambiguous**: by the time UUID matching
+  ever runs, no entry's title has matched at all, so a UUID hit can never
+  pre-empt a title hit. Accepting UUID queries as *substring* rather than
+  prefix-only (the original scope) is intentional now that they run
+  last — matching `ls`'s short-id convention no longer needs prefix
+  specifically once title can never be shadowed by it.
+  See ["Addressing entries & the metadata index"](../tdds/gage-cli-design.md)
+  for the full reasoning, now recorded there rather than only here.
 - **`rename` enforces the same duplicate-title check as `insert`,
   with the same `-f` override.** Even though M5's resolver now handles an
   ambiguous title gracefully instead of failing unrecoverably, silently
@@ -62,19 +74,30 @@ sites.
 
 **Resolution**
 
-- [ ] A UUID prefix resolves to the correct entry
 - [ ] An exact title match resolves uniquely even when it's also a
       substring of another entry's title
-- [ ] A unique (non-exact) substring match resolves correctly
-- [ ] An ambiguous substring match lists all candidates and, in one-shot
-      mode, fails with nonzero exit instead of prompting
+- [ ] A unique (non-exact) substring title match resolves correctly
+- [ ] An exact UUID resolves to the correct entry, including the
+      non-canonical spellings `uuid.Parse` accepts (`{braced}`,
+      `urn:uuid:…`) — the only queries the exact-UUID stage can match
+      that the substring stage after it cannot, and therefore the only
+      ones that prove that stage is carrying its own weight
+- [ ] A unique UUID substring (not just a prefix, and allowed to span a
+      hyphen) resolves to the correct entry
+- [ ] **An exact title match wins over a UUID match, even when the query
+      is also a unique substring of a *different* entry's UUID** — the
+      regression test for the bug this milestone's original
+      implementation shipped: title stages run, and stop, before UUID
+      matching is ever attempted
+- [ ] An ambiguous substring match (title or UUID) lists all candidates
+      and, in one-shot mode, fails with nonzero exit instead of prompting
 - [ ] The resolver returns a candidate list as a *value*; no library code
       path prints it
 - [ ] A query matching nothing is distinguishable from a query matching
       several — different typed results, different exit codes
-- [ ] `gage cat` and `gage rm` resolve prefix/exact/substring matches
-      exactly like `show` — no longer limited to M4's UUID-or-exact-title-
-      only matching
+- [ ] `gage cat` and `gage rm` resolve every stage (exact/substring
+      title, exact/substring UUID) exactly like `show` — no longer
+      limited to M4's UUID-or-exact-title-only matching
 - [ ] An ambiguous query given to `cat` or `rm` lists candidates and fails
       in one-shot mode, exactly like `show` — neither command silently
       acts on the first match nor falls back to M4's stricter matching
@@ -123,7 +146,8 @@ sites.
 
 ## Implementation
 
-- [ ] Query resolver (prefix/exact/substring/ambiguous), returning a
+- [ ] Query resolver (exact title/substring title/exact UUID/substring
+      UUID/ambiguous, in that order — see "Decisions made"), returning a
       resolved entry or a candidate list as a value — never printed text;
       the CLI layer decides whether to prompt (session) or fail (one-shot)
 - [ ] `gage cat`/`gage rm` re-wired onto the shared resolver, replacing

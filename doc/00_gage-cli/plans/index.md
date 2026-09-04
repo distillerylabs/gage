@@ -30,7 +30,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | M2 | [Identity & memory protection](m2-identity-and-crypto.md) | `[ ]` | **Opus** ⚑ | age primitives, identity generation, `Unlock`/`Close`, page-locking |
 | M3 | [Entry format](m3-entry-format.md) | `[ ]` | Sonnet | Entry YAML + per-entry encrypt/decrypt round-trip |
 | M4 | [CRUD (one-shot)](m4-crud.md) | `[ ]` | Sonnet | `insert`/`cat`/`rm`/`ls`, commit-per-write |
-| M5 | [Query resolution](m5-query-resolution.md) | `[ ]` | Sonnet | prefix/exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
+| M5 | [Query resolution](m5-query-resolution.md) | `[ ]` | Sonnet | title-then-UUID, exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
 | M6 | [Session mode](m6-session-mode.md) | `[ ]` | Sonnet* | `Session` type, REPL, multi-vault, idle timeout |
 | M7 | [Metadata index](m7-metadata-index.md) | `[ ]` | Sonnet | Decrypt-once cache, `search`/`grep`, `reindex` |
 | M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[ ]` | **Opus** | Auth, auto fetch/pull/push, `clone`, divergence detection |

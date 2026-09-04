@@ -24,6 +24,61 @@ func insertNamed(t *testing.T, v *Vault, id *Identity, title string) uuid.UUID {
 	return entryID
 }
 
+func TestResolveByExactUUID(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	entryID := insertNamed(t, v, &id, "ProtonMail")
+
+	gotID, gotEntry, err := v.Resolve(entryID.String(), &id)
+	if err != nil {
+		t.Fatalf("Resolve by exact UUID: %v", err)
+	}
+	if gotID != entryID {
+		t.Errorf("resolved id = %s, want %s", gotID, entryID)
+	}
+	if gotEntry.Title != "ProtonMail" {
+		t.Errorf("resolved title = %q, want %q", gotEntry.Title, "ProtonMail")
+	}
+}
+
+// TestResolveByNonCanonicalUUIDSpellings is what gives the exact-UUID
+// stage teeth. For a canonical id the stage is invisible: the substring
+// stage right after it would match the same entry anyway, since a
+// 32-hex-character query can only be "contained in" the identical
+// 32-hex-character id. The spellings below are the ones that actually
+// separate the two — uuid.Parse accepts braced and urn:uuid: forms,
+// while the substring stage compares raw hex and cannot match either
+// (the braces and the "urn:uuid:" literal aren't hex).
+//
+// Without this test, deleting the exact-UUID stage outright leaves every
+// other test green while silently dropping support for both spellings.
+func TestResolveByNonCanonicalUUIDSpellings(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	entryID := insertNamed(t, v, &id, "ProtonMail")
+	canonical := entryID.String()
+
+	for _, spelling := range []struct{ name, query string }{
+		{"braced", "{" + canonical + "}"},
+		{"urn", "urn:uuid:" + canonical},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			gotID, gotEntry, err := v.Resolve(spelling.query, &id)
+			if err != nil {
+				t.Fatalf("Resolve(%q): %v", spelling.query, err)
+			}
+			if gotID != entryID {
+				t.Errorf("resolved id = %s, want %s", gotID, entryID)
+			}
+			if gotEntry.Title != "ProtonMail" {
+				t.Errorf("resolved title = %q, want %q", gotEntry.Title, "ProtonMail")
+			}
+		})
+	}
+}
+
 func TestResolveByUUIDPrefix(t *testing.T) {
 	v, id := newEntryTestVault(t, "personal", "laptop-1")
 	defer func() { _ = id.Close() }()
@@ -42,6 +97,61 @@ func TestResolveByUUIDPrefix(t *testing.T) {
 	}
 	if gotEntry.Title != "ProtonMail" {
 		t.Errorf("resolved title = %q, want %q", gotEntry.Title, "ProtonMail")
+	}
+}
+
+// TestResolveByUUIDMidStringSubstring covers the fourth stage's actual
+// scope: a substring, not merely a prefix, of a UUID's canonical string
+// form. Uses an explicit id rather than a randomly-generated one so the
+// substring under test is guaranteed to exist at a known, non-prefix
+// offset.
+func TestResolveByUUIDMidStringSubstring(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	entryID := uuid.MustParse("11111111-2222-4333-8444-deadbeef0000")
+	e := sampleEntry(time.Now())
+	e.Title = "ProtonMail"
+	if err := v.WriteEntry(entryID, e); err != nil {
+		t.Fatal(err)
+	}
+
+	// "deadbeef" sits in the middle of the id, not at the start — a
+	// prefix-only matcher would never find this.
+	gotID, gotEntry, err := v.Resolve("deadbeef", &id)
+	if err != nil {
+		t.Fatalf("Resolve by mid-string UUID substring: %v", err)
+	}
+	if gotID != entryID {
+		t.Errorf("resolved id = %s, want %s", gotID, entryID)
+	}
+	if gotEntry.Title != "ProtonMail" {
+		t.Errorf("resolved title = %q, want %q", gotEntry.Title, "ProtonMail")
+	}
+}
+
+// TestResolveByUUIDSubstringSpanningAHyphen: the substring stage strips
+// hyphens from both the query and the id before comparing, so a query
+// that spans one of the id's group boundaries still matches.
+func TestResolveByUUIDSubstringSpanningAHyphen(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	// Canonical form: 11112222-3333-4444-8555-666677778888. The
+	// characters "22223333" span the first hyphen.
+	entryID := uuid.MustParse("11112222-3333-4444-8555-666677778888")
+	e := sampleEntry(time.Now())
+	e.Title = "ProtonMail"
+	if err := v.WriteEntry(entryID, e); err != nil {
+		t.Fatal(err)
+	}
+
+	gotID, _, err := v.Resolve("22223333", &id)
+	if err != nil {
+		t.Fatalf("Resolve by hyphen-spanning UUID substring: %v", err)
+	}
+	if gotID != entryID {
+		t.Errorf("resolved id = %s, want %s", gotID, entryID)
 	}
 }
 
@@ -135,52 +245,87 @@ func TestResolveAmbiguousSubstringListsCandidatesAsAValue(t *testing.T) {
 	}
 }
 
-// TestResolveShortHexQueryPrefersUUIDPrefixOverExactTitle pins the
-// sharp edge of the M5 plan's "UUID prefixes have no minimum length"
-// decision, deterministically rather than by luck: a query that is
-// spellable as hex is tried as a UUID prefix *before* exact-title
-// matching, so a one-character query can resolve to an entry whose UUID
-// happens to start with that character even though a different entry
-// carries it as an exact title.
-//
-// This is not hypothetical. It reached CI: a test that generated two
-// entries titled "A" and "B" and read them back by title intermittently
-// got the same entry twice, and reported it as two generated secrets
-// colliding — an alarming-looking result with an unrelated cause.
-//
-// The behavior is deliberate and matches the resolution order in
-// "Addressing entries & the metadata index"; this test exists so that
-// deciding to change it (adding a prefix floor, or trying titles first)
-// is a visible, one-line-diff decision rather than a silent behavior
-// change nothing catches. Entry ids are chosen explicitly here because
-// the collision is otherwise a ~1-in-16 accident.
-func TestResolveShortHexQueryPrefersUUIDPrefixOverExactTitle(t *testing.T) {
+// TestResolveAmbiguousUUIDSubstringListsCandidates is the fourth stage's
+// own ambiguity case: two entries whose ids both contain the query as a
+// substring, and neither entry's title matches at all — so title-stage
+// results are guaranteed empty and the UUID substring stage is what
+// actually produces (and must report) the ambiguity.
+func TestResolveAmbiguousUUIDSubstringListsCandidates(t *testing.T) {
 	v, id := newEntryTestVault(t, "personal", "laptop-1")
 	defer func() { _ = id.Close() }()
 
-	// Titled "B", but its id begins with "a".
-	idB := uuid.MustParse("a0000000-0000-4000-8000-000000000001")
-	eB := sampleEntry(time.Now())
-	eB.Title, eB.Value = "B", "value-of-B"
-	if err := v.WriteEntry(idB, eB); err != nil {
+	id1 := uuid.MustParse("aaaaaaaa-1111-4111-8111-111111111111")
+	id2 := uuid.MustParse("aaaaaaaa-2222-4222-8222-222222222222")
+	for _, wid := range []uuid.UUID{id1, id2} {
+		e := sampleEntry(time.Now())
+		e.Title = "Something Else Entirely"
+		if err := v.WriteEntry(wid, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, _, err := v.Resolve("aaaaaaaa", &id)
+	if !errors.Is(err, ErrAmbiguousQuery) {
+		t.Fatalf("error = %v, want it to wrap ErrAmbiguousQuery", err)
+	}
+	var amb *AmbiguousQueryError
+	if !errors.As(err, &amb) {
+		t.Fatalf("error = %v, want it to carry an *AmbiguousQueryError", err)
+	}
+	seen := map[string]bool{}
+	for _, c := range amb.List.Candidates {
+		seen[c.ID] = true
+	}
+	if !seen[id1.String()] || !seen[id2.String()] {
+		t.Errorf("candidates = %+v, want both %s and %s", amb.List.Candidates, id1, id2)
+	}
+}
+
+// TestResolveExactTitleWinsOverUUIDMatch is the regression test for the
+// bug this milestone's original implementation shipped, caught only
+// after it reached CI: with UUID matching tried *before* title matching,
+// a query that was the exact, literal title of one entry could silently
+// resolve to a *different* entry instead, whenever the query happened to
+// also be a unique UUID substring elsewhere in the vault — no error, no
+// ambiguity, just the wrong secret.
+//
+// "22" as a title next to some unrelated entry whose id happens to
+// contain "22" was enough to trigger it in practice; this test pins that
+// exact shape with explicit (non-random) ids so the property is checked
+// on every run rather than roughly one run in several.
+func TestResolveExactTitleWinsOverUUIDMatch(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	// Titled "Website Password"; its id contains "22" — the string that
+	// is also, coincidentally, another entry's exact title.
+	idWebsite := uuid.MustParse("22ed1bfd-4b77-4bba-90be-ff40de0eab87")
+	eWebsite := sampleEntry(time.Now())
+	eWebsite.Title, eWebsite.Value = "Website Password", "correcthorsebattery"
+	if err := v.WriteEntry(idWebsite, eWebsite); err != nil {
 		t.Fatal(err)
 	}
 
-	// Titled "A", with an id that begins with neither "a" nor "b".
-	idA := uuid.MustParse("c0000000-0000-4000-8000-000000000002")
-	eA := sampleEntry(time.Now())
-	eA.Title, eA.Value = "A", "value-of-A"
-	if err := v.WriteEntry(idA, eA); err != nil {
+	// Titled exactly "22", with an id that shares no substring with the
+	// query beyond what its own title already guarantees.
+	idTwentyTwo := uuid.MustParse("5ebca883-6a5f-4e96-acab-766f2fceb2d4")
+	eTwentyTwo := sampleEntry(time.Now())
+	eTwentyTwo.Title, eTwentyTwo.Value = "22", "some-other-secret"
+	if err := v.WriteEntry(idTwentyTwo, eTwentyTwo); err != nil {
 		t.Fatal(err)
 	}
 
-	gotID, got, err := v.Resolve("A", &id)
+	gotID, got, err := v.Resolve("22", &id)
 	if err != nil {
-		t.Fatalf(`Resolve("A"): %v`, err)
+		t.Fatalf(`Resolve("22"): %v`, err)
 	}
-	if gotID != idB {
-		t.Errorf(`Resolve("A") = %s (%q), want the UUID-prefix match %s (%q) — `+
-			`the prefix stage runs before exact-title matching`, gotID, got.Title, idB, eB.Title)
+	if gotID != idTwentyTwo {
+		t.Errorf(`Resolve("22") = %s (title %q, value %q), want the exact-title match %s (title %q) — `+
+			`title stages must run, and stop, before UUID matching is ever attempted`,
+			gotID, got.Title, got.Value, idTwentyTwo, eTwentyTwo.Title)
+	}
+	if got.Title != "22" {
+		t.Errorf(`Resolve("22") resolved to title %q, want %q`, got.Title, "22")
 	}
 }
 
