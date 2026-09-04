@@ -10,9 +10,21 @@ BIN := gage$(shell go env GOEXE)
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/gage
 
+# -timeout is raised from Go's 600s default because this suite is
+# deliberately KDF-bound, not accidentally slow: every unlock runs scrypt
+# at the real shipped work factor (2^19, see scryptWorkFactor), and
+# cmd/gage drives ~190 CLI invocations, most of which unlock. That is
+# ~190 seconds on a fast developer machine and comfortably over 600 on a
+# GitHub windows-latest runner, where it timed out mid-scrypt at exactly
+# 600s while the faster ubuntu runner passed.
+#
+# Raising the ceiling rather than lowering the work factor is the
+# deliberate trade: the M2 tests assert that identity files are written
+# at the real factor, so a test-only cheaper KDF would mean CI no longer
+# exercising the thing that actually ships.
 .PHONY: test
 test:
-	GOPROXY=off GOFLAGS=-mod=readonly go test ./...
+	GOPROXY=off GOFLAGS=-mod=readonly go test -timeout 30m ./...
 
 # Pinned rather than tracking latest: golangci-lint's config schema
 # changed between v1 and v2, and a linter that silently gains new checks
