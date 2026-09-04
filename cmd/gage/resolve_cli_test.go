@@ -57,11 +57,18 @@ func TestShowCatRmResolveIdenticallyAcrossQueryForms(t *testing.T) {
 		// form isn't known until the entry exists.
 		query func(fullUUID string) string
 	}{
-		{"uuid-prefix", func(full string) string { return full[:8] }},
-		{"short-uuid-prefix", func(full string) string { return full[:4] }},
 		{"exact-title", func(string) string { return "AWS root account" }},
 		{"unique-substring", func(string) string { return "root" }},
 		{"case-insensitive-substring", func(string) string { return "ROOT" }},
+		{"exact-uuid", func(full string) string { return full }},
+		{"uuid-prefix", func(full string) string { return full[:8] }},
+		{"short-uuid-prefix", func(full string) string { return full[:4] }},
+		{"uuid-mid-string-substring", func(full string) string {
+			// Characters 9-16 of the canonical form (past the first
+			// hyphen), never a prefix — proves the stage is a genuine
+			// substring search, not prefix-only.
+			return full[9:17]
+		}},
 	} {
 		t.Run(qf.name, func(t *testing.T) {
 			isolateXDG(t)
@@ -96,6 +103,46 @@ func TestShowCatRmResolveIdenticallyAcrossQueryForms(t *testing.T) {
 				t.Errorf("rm %q did not remove the entry: %q", query, ls.Stdout)
 			}
 		})
+	}
+}
+
+// TestCatResolvesByExactTitleEvenWhenQueryIsAlsoAUUIDSubstring is the
+// CLI-level regression test for the bug this milestone's original
+// implementation shipped: a query naming one entry's exact title, that
+// also happens to be a substring of a *different* entry's UUID, must
+// resolve to the entry it names — not silently to the other one.
+//
+// The collision can't be scripted by choosing a title in advance (UUIDs
+// are randomly generated), so this inserts a first entry, reads back its
+// real, on-disk UUID, and titles a second entry with an actual substring
+// of it — guaranteeing the exact cross-stage collision that reached CI,
+// through the real `gage insert`/`gage cat` commands rather than the
+// library directly.
+func TestCatResolvesByExactTitleEvenWhenQueryIsAlsoAUUIDSubstring(t *testing.T) {
+	isolateXDG(t)
+	path := initEntryTestVault(t, "personal")
+
+	if res, _ := runCLIWithValue(t, []string{"insert", "Website Password"}, "correcthorsebattery"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+	full := soleEntryID(t, path).String()
+	collidingSubstring := strings.ReplaceAll(full, "-", "")[:4] // e.g. "22ed"
+
+	if res, _ := runCLIWithValue(t, []string{"insert", collidingSubstring}, "some-other-secret"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+
+	cat := runCLI(t, []string{"cat", collidingSubstring}, "")
+	if cat.Code != 0 {
+		t.Fatalf("cat %q failed: %s", collidingSubstring, cat.Stderr)
+	}
+	if !strings.Contains(cat.Stdout, "title: "+collidingSubstring) {
+		t.Errorf("cat %q resolved to the wrong entry (want the exact-title match, titled %q):\n%s",
+			collidingSubstring, collidingSubstring, cat.Stdout)
+	}
+	if strings.Contains(cat.Stdout, "correcthorsebattery") {
+		t.Errorf("cat %q leaked the *other* entry's value — it silently resolved to \"Website Password\" instead of %q",
+			collidingSubstring, collidingSubstring)
 	}
 }
 

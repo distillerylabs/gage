@@ -566,11 +566,11 @@ func (v *Vault) Remove(query string, ident *Identity) (uuid.UUID, error) {
 }
 
 // Resolve addresses one entry by query, in the order "Addressing entries
-// & the metadata index" fixes: exact UUID or a prefix of one, then an
-// exact title match, then a unique case-insensitive substring match on
-// title, then ambiguous. Every `show`/`cat`/`edit`/`rename`/`rm` command
-// goes through this one method — see the M5 plan's "no command should be
-// left on M4's exact-match path."
+// & the metadata index" fixes: exact title match → substring match on
+// title → exact UUID → substring match on a UUID's canonical string
+// form → ambiguous. Every `show`/`cat`/`edit`/`rename`/`rm` command goes
+// through this one method — see the M5 plan's "no command should be left
+// on M4's exact-match path."
 //
 // A stage that produces zero matches falls through to the next; a stage
 // that produces more than one stops there and reports *that* stage's
@@ -578,23 +578,20 @@ func (v *Vault) Remove(query string, ident *Identity) (uuid.UUID, error) {
 // title match always wins over a substring match of a different entry,
 // even when the substring stage would itself have been unique.
 //
-// A UUID-prefix query has no minimum length beyond one hex character —
-// see the M5 plan's "Decisions made": an overly short prefix simply
-// tends to be ambiguous, the same outcome an overly short title
-// substring produces, rather than a distinct "too short" error.
+// Title is checked before UUID on purpose, not merely by convention: see
+// the M5 plan's "Decisions made" for the bug this ordering fixes — an
+// earlier version of this resolver tried UUID matches first, which let a
+// query naming one entry's *exact, literal title* silently resolve to a
+// *different* entry instead, whenever the query also happened to be a
+// unique UUID substring elsewhere in the vault. Checking every title
+// stage first closes that hole structurally: by the time UUID matching
+// ever runs, no entry's title matched the query at all, so a UUID hit can
+// never pre-empt a title hit.
 //
 // It never takes the write lock: resolving is a read. There's no
 // metadata index yet — like every other read in this package, it
 // decrypts every entry on every call; M7 adds the cache.
 func (v *Vault) Resolve(query string, ident *Identity) (uuid.UUID, Entry, error) {
-	if id, err := uuid.Parse(query); err == nil {
-		e, err := v.ReadEntry(id, ident)
-		if err != nil {
-			return uuid.Nil, Entry{}, err
-		}
-		return id, e, nil
-	}
-
 	ids, err := v.EntryIDs()
 	if err != nil {
 		return uuid.Nil, Entry{}, err
@@ -608,45 +605,85 @@ func (v *Vault) Resolve(query string, ident *Identity) (uuid.UUID, Entry, error)
 		entries[id] = e
 	}
 
-	if looksLikeUUIDPrefix(query) {
-		stripped := strings.ToLower(strings.ReplaceAll(query, "-", ""))
-		var matches []uuid.UUID
-		for id := range entries {
-			if strings.HasPrefix(strings.ReplaceAll(id.String(), "-", ""), stripped) {
-				matches = append(matches, id)
-			}
-		}
-		if id, e, err, done := resolveStage(query, matches, entries); done {
-			return id, e, err
-		}
-	}
-
-	var exactTitle []uuid.UUID
-	for id, e := range entries {
-		if e.Title == query {
-			exactTitle = append(exactTitle, id)
-		}
-	}
-	if id, e, err, done := resolveStage(query, exactTitle, entries); done {
+	if id, e, err, done := resolveStage(query, matchExactTitle(query, entries), entries); done {
 		return id, e, err
 	}
-
-	// Substring matching is case-insensitive and title-only — description
-	// and body are `search`'s job, not addressing's; see the M5 plan's
-	// "Decisions made."
-	lowerQuery := strings.ToLower(query)
-	var substr []uuid.UUID
-	for id, e := range entries {
-		if strings.Contains(strings.ToLower(e.Title), lowerQuery) {
-			substr = append(substr, id)
-		}
+	if id, e, err, done := resolveStage(query, matchSubstringTitle(query, entries), entries); done {
+		return id, e, err
 	}
-	if id, e, err, done := resolveStage(query, substr, entries); done {
+	if id, e, err, done := resolveStage(query, matchExactUUID(query, entries), entries); done {
+		return id, e, err
+	}
+	if id, e, err, done := resolveStage(query, matchSubstringUUID(query, entries), entries); done {
 		return id, e, err
 	}
 
 	return uuid.Nil, Entry{}, exitcode.Wrap(exitcode.NotFound,
 		fmt.Errorf("%w: %q", ErrEntryNotFound, query))
+}
+
+// matchExactTitle is Resolve's first stage: every entry whose title is
+// byte-for-byte equal to query.
+func matchExactTitle(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+	var matches []uuid.UUID
+	for id, e := range entries {
+		if e.Title == query {
+			matches = append(matches, id)
+		}
+	}
+	return matches
+}
+
+// matchSubstringTitle is Resolve's second stage: every entry whose title
+// contains query, case-insensitively. Title-only — description and body
+// are `search`'s job, not addressing's; see the M5 plan's "Decisions
+// made."
+func matchSubstringTitle(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+	lowerQuery := strings.ToLower(query)
+	var matches []uuid.UUID
+	for id, e := range entries {
+		if strings.Contains(strings.ToLower(e.Title), lowerQuery) {
+			matches = append(matches, id)
+		}
+	}
+	return matches
+}
+
+// matchExactUUID is Resolve's third stage: query parsed as a UUID
+// (accepting any of uuid.Parse's accepted spellings — hyphenated,
+// hyphen-less, braced, urn:uuid: prefixed) against every entry's id,
+// exactly. A query that doesn't even parse as a UUID matches nothing
+// here rather than erroring — Resolve's job is to keep trying stages,
+// not to reject a query early because one particular stage can't use it.
+func matchExactUUID(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+	qid, err := uuid.Parse(query)
+	if err != nil {
+		return nil
+	}
+	if _, ok := entries[qid]; !ok {
+		return nil
+	}
+	return []uuid.UUID{qid}
+}
+
+// matchSubstringUUID is Resolve's fourth and last stage: every entry
+// whose canonical UUID string contains query as a substring, hyphens and
+// case ignored on both sides — a superset of "prefix," so `ls`'s short-id
+// convention keeps working. A query with no hex-and-hyphen characters at
+// all simply can't be a substring of any UUID's canonical form (which is
+// exactly those characters), so this stage naturally matches nothing for
+// an ordinary word without needing a separate "does this look like a
+// UUID" guard the way an earlier version of this stage did.
+func matchSubstringUUID(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+	strippedQuery := strings.ToLower(strings.ReplaceAll(query, "-", ""))
+	var matches []uuid.UUID
+	for id := range entries {
+		strippedID := strings.ToLower(strings.ReplaceAll(id.String(), "-", ""))
+		if strings.Contains(strippedID, strippedQuery) {
+			matches = append(matches, id)
+		}
+	}
+	return matches
 }
 
 // resolveStage turns one resolution stage's match set into either "not
@@ -681,30 +718,6 @@ func ambiguousError(query string, ids []uuid.UUID, entries map[uuid.UUID]Entry) 
 	}
 	return exitcode.Wrap(exitcode.Ambiguous,
 		&AmbiguousQueryError{List: CandidateList{Query: query, Candidates: candidates}})
-}
-
-// looksLikeUUIDPrefix reports whether query is plausibly a (possibly
-// hyphenated) prefix of a UUID's canonical string form: hex digits and
-// hyphens only, at least one hex character once hyphens are stripped, and
-// no longer than a full UUID's 32 hex characters. A query that fails
-// this check skips UUID-prefix matching entirely and goes straight to
-// title matching — cheaper, and it keeps an ordinary word with no hex
-// characters at all from ever being treated as a hex prefix.
-func looksLikeUUIDPrefix(query string) bool {
-	stripped := strings.ReplaceAll(query, "-", "")
-	if len(stripped) < 1 || len(stripped) > 32 {
-		return false
-	}
-	for _, r := range stripped {
-		switch {
-		case r >= '0' && r <= '9':
-		case r >= 'a' && r <= 'f':
-		case r >= 'A' && r <= 'F':
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // titleExists reports whether any entry currently has exactly title,

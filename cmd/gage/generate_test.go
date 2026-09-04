@@ -32,16 +32,19 @@ func TestGenerateInsertsEntryWithRandomValueOfSaneDefaultLength(t *testing.T) {
 // GenerateValue tests for that) that two generated entries don't share a
 // value.
 //
-// The titles must not be spellable as hex, and that is a correctness
-// requirement of the test rather than a style choice. This test
-// originally used "A" and "B", which are single hex characters and are
-// therefore tried as UUID prefixes first (see Resolve's ordering and the
-// M5 plan's no-prefix-floor decision). Roughly one run in eight, one of
-// the two entries drew a UUID beginning with "a" or "b", `cat A` and
-// `cat B` both resolved to that same entry, and the test reported two
-// generated values as identical — a false alarm about crypto/rand that
-// cost a CI run to chase down. "Zeta"/"Yolk" contain non-hex letters, so
-// they can only ever match on title.
+// This test originally used "A" and "B", which are single hex
+// characters. Resolve's *original* stage order tried UUID matches before
+// title matches, so roughly one run in eight, one of the two entries
+// drew a UUID that happened to contain "a" or "b", `cat A` and `cat B`
+// both resolved to that same entry, and the test reported two generated
+// values as identical — a false alarm about crypto/rand that cost a CI
+// run to chase down. Resolve now checks every title stage before any
+// UUID stage (see the design doc's "Addressing entries" and the M5
+// plan's "Decisions made"), which fixes this at the source: an exact
+// title match can no longer be pre-empted by an unrelated entry's UUID.
+// "Zeta"/"Yolk" (non-hex) are kept anyway, so this test's pass/fail
+// stays about crypto/rand specifically rather than also depending on the
+// resolver's stage order.
 func TestGenerateProducesDifferentValuesAcrossEntries(t *testing.T) {
 	isolateXDG(t)
 	initEntryTestVault(t, "personal")
