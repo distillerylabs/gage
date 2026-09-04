@@ -113,6 +113,117 @@ func TestEditYAMLScratchFileRemovedOnEveryExitPath(t *testing.T) {
 	}
 }
 
+// TestEditYAMLScratchFileLandsInScratchDir: the file editYAML actually
+// opens must live in the directory scratchDir() chose — on Linux a
+// statfs-verified tmpfs one, elsewhere the OS's standard temp directory.
+// Without this, scratchDir() could be correct and unused.
+func TestEditYAMLScratchFileLandsInScratchDir(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record.txt")
+	setFakeEditor(t, "noop", map[string]string{fakeEditorRecordEnvVar: record})
+
+	if _, _, err := editYAML(sampleSeedEntry()); err != nil {
+		t.Fatalf("editYAML: %v", err)
+	}
+
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := strings.SplitN(string(data), "\n", 2)[0]
+
+	gotDir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("resolving the scratch file's directory: %v", err)
+	}
+	// EvalSymlinks on both sides: macOS's temp dir is /var/... behind a
+	// symlink to /private/var/..., so a raw string compare would fail on
+	// a correct implementation.
+	wantDir, err := filepath.EvalSymlinks(scratchDir())
+	if err != nil {
+		t.Fatalf("resolving scratchDir(): %v", err)
+	}
+	if gotDir != wantDir {
+		t.Errorf("scratch file landed in %q, want scratchDir() = %q", gotDir, wantDir)
+	}
+}
+
+// TestOverwriteFileZeroesContentsInPlace is the "contents overwritten
+// first" half of the cleanup bullet. It has to be asserted here rather
+// than through editYAML: by the time editYAML returns, the file is
+// unlinked and there is nothing left to read back.
+func TestOverwriteFileZeroesContentsInPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scratch.yaml")
+	const secret = "value: correcthorsebatterystaple\n"
+	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := overwriteFile(path); err != nil {
+		t.Fatalf("overwriteFile: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(secret) {
+		t.Errorf("file length = %d, want the original %d (overwrite in place, not truncate)", len(got), len(secret))
+	}
+	if strings.Contains(string(got), "correcthorsebatterystaple") {
+		t.Errorf("the plaintext survived the overwrite: %q", got)
+	}
+	for i, b := range got {
+		if b != 0 {
+			t.Errorf("byte %d = %#x after overwrite, want 0x00", i, b)
+			break
+		}
+	}
+}
+
+// TestOverwriteThenRemoveOverwritesBeforeUnlinking pins the ordering the
+// bullet actually specifies — overwrite *then* remove — rather than just
+// the end state.
+//
+// Asserting the order needs something that outlives the unlink, so the
+// test hard-links a second name onto the same inode first. Unlinking
+// `path` then leaves the data reachable through `witness`: zeroed if the
+// overwrite really ran before the unlink, still-readable plaintext if it
+// didn't. Checking only "the file is gone afterward" would pass against
+// an overwriteThenRemove that had been reduced to a bare os.Remove —
+// which is exactly the regression this guards.
+func TestOverwriteThenRemoveOverwritesBeforeUnlinking(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scratch.yaml")
+	witness := filepath.Join(dir, "witness.yaml")
+
+	const secret = "value: correcthorsebatterystaple\n"
+	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, witness); err != nil {
+		// Hard links aren't available everywhere (some Windows
+		// filesystems, some CI sandboxes). The property is
+		// platform-independent, but this way of observing it isn't.
+		t.Skipf("hard links unavailable here, so the overwrite can't be observed after the unlink: %v", err)
+	}
+
+	if err := overwriteThenRemove(path); err != nil {
+		t.Fatalf("overwriteThenRemove: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("file still exists after overwriteThenRemove: stat err = %v", err)
+	}
+
+	got, err := os.ReadFile(witness)
+	if err != nil {
+		t.Fatalf("reading the surviving hard link: %v", err)
+	}
+	if strings.Contains(string(got), "correcthorsebatterystaple") {
+		t.Errorf("the plaintext survived in the unlinked inode: %q — the contents must be overwritten before the file is removed", got)
+	}
+}
+
 // TestEditYAMLScratchFileCreated0600 checks the scratch file's
 // permissions at the moment the fake editor sees it — after editYAML
 // returns, the file is already gone.

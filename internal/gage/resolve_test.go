@@ -135,6 +135,55 @@ func TestResolveAmbiguousSubstringListsCandidatesAsAValue(t *testing.T) {
 	}
 }
 
+// TestResolveShortHexQueryPrefersUUIDPrefixOverExactTitle pins the
+// sharp edge of the M5 plan's "UUID prefixes have no minimum length"
+// decision, deterministically rather than by luck: a query that is
+// spellable as hex is tried as a UUID prefix *before* exact-title
+// matching, so a one-character query can resolve to an entry whose UUID
+// happens to start with that character even though a different entry
+// carries it as an exact title.
+//
+// This is not hypothetical. It reached CI: a test that generated two
+// entries titled "A" and "B" and read them back by title intermittently
+// got the same entry twice, and reported it as two generated secrets
+// colliding — an alarming-looking result with an unrelated cause.
+//
+// The behavior is deliberate and matches the resolution order in
+// "Addressing entries & the metadata index"; this test exists so that
+// deciding to change it (adding a prefix floor, or trying titles first)
+// is a visible, one-line-diff decision rather than a silent behavior
+// change nothing catches. Entry ids are chosen explicitly here because
+// the collision is otherwise a ~1-in-16 accident.
+func TestResolveShortHexQueryPrefersUUIDPrefixOverExactTitle(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	// Titled "B", but its id begins with "a".
+	idB := uuid.MustParse("a0000000-0000-4000-8000-000000000001")
+	eB := sampleEntry(time.Now())
+	eB.Title, eB.Value = "B", "value-of-B"
+	if err := v.WriteEntry(idB, eB); err != nil {
+		t.Fatal(err)
+	}
+
+	// Titled "A", with an id that begins with neither "a" nor "b".
+	idA := uuid.MustParse("c0000000-0000-4000-8000-000000000002")
+	eA := sampleEntry(time.Now())
+	eA.Title, eA.Value = "A", "value-of-A"
+	if err := v.WriteEntry(idA, eA); err != nil {
+		t.Fatal(err)
+	}
+
+	gotID, got, err := v.Resolve("A", &id)
+	if err != nil {
+		t.Fatalf(`Resolve("A"): %v`, err)
+	}
+	if gotID != idB {
+		t.Errorf(`Resolve("A") = %s (%q), want the UUID-prefix match %s (%q) — `+
+			`the prefix stage runs before exact-title matching`, gotID, got.Title, idB, eB.Title)
+	}
+}
+
 func TestResolveNotFoundAndAmbiguousAreDistinguishable(t *testing.T) {
 	v, id := newEntryTestVault(t, "personal", "laptop-1")
 	defer func() { _ = id.Close() }()

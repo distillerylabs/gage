@@ -128,15 +128,30 @@ func writeScratchFile(data []byte) (string, error) {
 	return path, nil
 }
 
-// overwriteThenRemove best-effort zeroes a scratch file's contents before
-// unlinking it. Both steps are best-effort on purpose: by the time this
-// runs, editYAML is already on its way out (success or failure), and
-// there is nothing more useful to do with a failure here than leave the
-// file for the OS's normal temp-directory cleanup to eventually reclaim.
-func overwriteThenRemove(path string) error {
-	if info, statErr := os.Stat(path); statErr == nil {
-		zeros := make([]byte, info.Size())
-		_ = os.WriteFile(path, zeros, 0o600)
+// overwriteFile zeroes path's contents in place, keeping its length, so
+// the plaintext that was there is no longer readable through the
+// filesystem before the file is unlinked. Kept separate from the unlink
+// so the overwrite is directly testable — once overwriteThenRemove has
+// run, the file is gone and there is nothing left to inspect.
+//
+// This is a best-effort measure, not a secure-erase guarantee: on a
+// copy-on-write or log-structured filesystem the old blocks may survive
+// regardless, which is exactly why editYAML prefers a tmpfs-backed
+// scratch directory where one can be verified.
+func overwriteFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
 	}
+	return os.WriteFile(path, make([]byte, info.Size()), 0o600)
+}
+
+// overwriteThenRemove zeroes a scratch file's contents and then unlinks
+// it. Both steps are best-effort on purpose: by the time this runs,
+// editYAML is already on its way out (success or failure), and there is
+// nothing more useful to do with a failure here than leave the file for
+// the OS's normal temp-directory cleanup to eventually reclaim.
+func overwriteThenRemove(path string) error {
+	_ = overwriteFile(path)
 	return os.Remove(path)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/denmark/gage/internal/gage"
 )
@@ -29,7 +30,14 @@ func setFakeEditor(t *testing.T, mode string, extra map[string]string) {
 // writes the scratch file's path (and the permission bits it observed on
 // it) to, so the parent test process can recover them after the whole
 // gage command has finished and the scratch file is gone.
-const fakeEditorRecordEnvVar = "GAGE_TEST_FAKE_EDITOR_RECORD"
+//
+// fakeEditorTemplateEnvVar is the same idea for the file's *contents* as
+// the editor first saw them: it's the only way to assert what template
+// gage actually opened, since editYAML deletes the file before returning.
+const (
+	fakeEditorRecordEnvVar   = "GAGE_TEST_FAKE_EDITOR_RECORD"
+	fakeEditorTemplateEnvVar = "GAGE_TEST_FAKE_EDITOR_TEMPLATE_RECORD"
+)
 
 // runFakeEditor is what TestMain hands control to when this binary is
 // invoked as $EDITOR: it never touches the real testing package, just
@@ -43,6 +51,11 @@ func runFakeEditor(mode, path string) int {
 			perm = info.Mode().Perm().String()
 		}
 		_ = os.WriteFile(record, []byte(path+"\n"+perm+"\n"), 0o600)
+	}
+	if record := os.Getenv(fakeEditorTemplateEnvVar); record != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			_ = os.WriteFile(record, data, 0o600)
+		}
 	}
 
 	switch mode {
@@ -72,6 +85,18 @@ func runFakeEditor(mode, path string) int {
 			e.Fields = map[string]string{
 				os.Getenv("GAGE_TEST_FAKE_EDITOR_FIELD_KEY"): os.Getenv("GAGE_TEST_FAKE_EDITOR_FIELD_VALUE"),
 			}
+		})
+	case "tamper-stamps":
+		// Rewrites the fields gage itself owns — updated_by, created,
+		// updated — to values gage must overrule (updated_by/updated) or
+		// preserve from the original entry (created). Without this, a
+		// re-stamp test can't tell "gage re-stamped it" from "the value
+		// was already right", since the editing device is normally the
+		// same one that inserted the entry.
+		return fakeEditField(path, func(e *gage.Entry) {
+			e.UpdatedBy = "some-other-device"
+			e.Created = gage.NewTimestamp(time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC))
+			e.Updated = gage.NewTimestamp(time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC))
 		})
 	case "set-description-only":
 		return fakeEditField(path, func(e *gage.Entry) { e.Description = os.Getenv("GAGE_TEST_FAKE_EDITOR_DESCRIPTION") })

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,43 @@ func TestGenerateValueDiffersAcrossCalls(t *testing.T) {
 	}
 	if a == b {
 		t.Error("two consecutive GenerateValue calls produced the same value")
+	}
+}
+
+// TestGenerateDrawsFromCryptoRandNotMathRand is the structural half of
+// the "cryptographically secure source" bullet, and it reads the source
+// file to get it.
+//
+// That is deliberate. Every behavioral property the other tests here
+// assert — exact length, characters drawn from the alphabet, two calls
+// differing, an injected reader being consulted — holds just as well for
+// a math/rand implementation, so none of them can tell a secure source
+// from an insecure one. What actually distinguishes them is which
+// package the production path draws from, and this asserts exactly that.
+// The same technique guards the Makefile's -X paths in cmd/gage (see
+// TestMakefileLdflagsTargetTheRealSymbols) for the same reason: some
+// properties are only observable in the source.
+//
+// math/big is expected and allowed — it's rand.Int's counterpart, not a
+// randomness source.
+func TestGenerateDrawsFromCryptoRandNotMathRand(t *testing.T) {
+	data, err := os.ReadFile("generate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+
+	if !strings.Contains(src, `"crypto/rand"`) {
+		t.Error("generate.go does not import crypto/rand; gage generate must draw from a cryptographically secure source")
+	}
+	if strings.Contains(src, `"math/rand"`) || strings.Contains(src, `"math/rand/v2"`) {
+		t.Error("generate.go imports math/rand; a generated secret must never come from a non-cryptographic PRNG")
+	}
+	// rand.Int (crypto/rand's rejection-sampling helper) rather than a
+	// modulo of raw bytes, which would bias the draw toward the front of
+	// the alphabet.
+	if !strings.Contains(src, "rand.Int(") {
+		t.Error("generate.go does not use rand.Int; a modulo-based draw over a 74-character alphabet is biased")
 	}
 }
 
