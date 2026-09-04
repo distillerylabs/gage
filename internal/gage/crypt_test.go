@@ -3,6 +3,10 @@ package gage
 import (
 	"bytes"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -311,17 +315,205 @@ func firstLines(s string, n int) string {
 }
 
 // TestScryptWorkFactorIsDeliberate guards the M2 decision from being
-// silently reverted to age's default: the constant is the only thing
+// silently reverted to age's default: this number is the only thing
 // standing between a stolen identity file and an offline brute force, so
 // a change to it should be a change someone had to make on purpose.
+//
+// It checks shippedScryptWorkFactor, the constant, rather than the live
+// scryptWorkFactor variable. That's the whole reason the shipped number
+// is a separate const: TestMain lowers the live variable for this
+// package's entire test run (see SetScryptWorkFactorForTests), so
+// checking the variable would make this test validate the suite's own
+// speed hack instead of the real default. A const is checkable here
+// *and* unmovable at runtime, which no amount of reading the value back
+// out of source could guarantee.
 func TestScryptWorkFactorIsDeliberate(t *testing.T) {
 	const ageDefault = 18
-	if scryptWorkFactor <= ageDefault {
-		t.Errorf("scryptWorkFactor = %d, want more than age's default of %d", scryptWorkFactor, ageDefault)
+	if shippedScryptWorkFactor <= ageDefault {
+		t.Errorf("shippedScryptWorkFactor = %d, want more than age's default of %d",
+			shippedScryptWorkFactor, ageDefault)
 	}
-	if scryptMaxWorkFactor < scryptWorkFactor {
-		t.Errorf("scryptMaxWorkFactor (%d) is below scryptWorkFactor (%d): gage could not open files it writes",
-			scryptMaxWorkFactor, scryptWorkFactor)
+	if scryptMaxWorkFactor < shippedScryptWorkFactor {
+		t.Errorf("scryptMaxWorkFactor (%d) is below shippedScryptWorkFactor (%d): gage could not open files it writes",
+			scryptMaxWorkFactor, shippedScryptWorkFactor)
+	}
+}
+
+// TestOnlyTheTestHookWritesScryptWorkFactor closes the one gap a const
+// cannot: shippedScryptWorkFactor is unmovable, but scryptWorkFactor —
+// the copy the crypto path actually reads — is a plain package variable,
+// and a single line in a non-test file of this package
+//
+//	func init() { scryptWorkFactor = 10 }
+//
+// would ship a weakened KDF invisibly. forbidigo does not catch it (it
+// forbids SetScryptWorkFactorForTests, a function, not an assignment),
+// and TestScryptWorkFactorIsDeliberate does not catch it (the constant
+// is untouched). Nothing else in the build would notice.
+//
+// So this walks the package's non-test files and rejects any assignment
+// to scryptWorkFactor outside SetScryptWorkFactorForTests itself. It
+// parses rather than greps because the spellings to catch (`=`, `+=`, an
+// assignment nested in any block) are exactly what a text pattern gets
+// wrong.
+//
+// It also pins the variable's own declaration to `= shippedScryptWorkFactor`.
+// That is a second, distinct hole: rewriting the declaration to a bare
+// `var scryptWorkFactor = 10` is not an assignment at all, so the walk
+// below would not see it, and the constant it is supposed to track would
+// sit right above it, untouched and still passing
+// TestScryptWorkFactorIsDeliberate.
+func TestOnlyTheTestHookWritesScryptWorkFactor(t *testing.T) {
+	const allowedIn = "SetScryptWorkFactorForTests"
+	declarations := 0
+
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("globbed no .go files; this test is not looking where it thinks it is")
+	}
+
+	fset := token.NewFileSet()
+	checked := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		checked++
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		// The declaration pin, which is position-independent: find every
+		// spec declaring scryptWorkFactor and require it to initialize
+		// from the constant.
+		ast.Inspect(f, func(n ast.Node) bool {
+			spec, ok := n.(*ast.ValueSpec)
+			if !ok {
+				return true
+			}
+			for i, name := range spec.Names {
+				if name.Name != "scryptWorkFactor" {
+					continue
+				}
+				declarations++
+				var init ast.Expr
+				if i < len(spec.Values) {
+					init = spec.Values[i]
+				}
+				id, ok := init.(*ast.Ident)
+				if !ok || id.Name != "shippedScryptWorkFactor" {
+					t.Errorf("%s: scryptWorkFactor must be declared as `= shippedScryptWorkFactor` so it tracks the "+
+						"shipped constant; a literal here is a weakened KDF that TestScryptWorkFactorIsDeliberate cannot see",
+						fset.Position(name.Pos()))
+				}
+			}
+			return true
+		})
+
+		// The assignment check, walked one top-level declaration at a
+		// time so the sanctioned writer is exempted by *containment*
+		// rather than by a running "last function seen" marker. That
+		// distinction matters: a marker would still be pointing at
+		// SetScryptWorkFactorForTests when the walk reached a later
+		// package-level `var _ = func() int { scryptWorkFactor = 10; ... }()`,
+		// and would wave it through.
+		for _, decl := range f.Decls {
+			owner := ""
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				if fn.Name.Name == allowedIn {
+					continue
+				}
+				owner = fn.Name.Name
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				assign, ok := n.(*ast.AssignStmt)
+				if !ok {
+					return true
+				}
+				for _, lhs := range assign.Lhs {
+					id, ok := lhs.(*ast.Ident)
+					if !ok || id.Name != "scryptWorkFactor" {
+						continue
+					}
+					t.Errorf("%s: %s assigns to scryptWorkFactor; only %s may write it — "+
+						"a non-test writer here ships a weakened KDF that every other guard misses",
+						fset.Position(id.Pos()), describeFunc(owner), allowedIn)
+				}
+				return true
+			})
+		}
+	}
+	if checked == 0 {
+		t.Fatal("found no non-test .go files to check")
+	}
+	// Exactly one, or the pin above was checked against a declaration
+	// that is no longer the one the crypto path reads.
+	if declarations != 1 {
+		t.Errorf("found %d non-test declarations of scryptWorkFactor, want exactly 1", declarations)
+	}
+}
+
+// describeFunc names the function an offending assignment was found in,
+// for a failure message that points at a place rather than a file.
+func describeFunc(name string) string {
+	if name == "" {
+		return "a package-level declaration"
+	}
+	return name
+}
+
+// TestShippedWorkFactorReachesARealAgeFile is the end-to-end half of the
+// pair above, and the only test in the suite that observes the real
+// shipped cost reaching a real age header. Every other stanza assertion
+// (TestScryptWorkFactorIsActuallyApplied, and the identity-file check in
+// unlock_test.go) compares against the live scryptWorkFactor, which
+// TestMain has lowered — those still catch a dropped or hardcoded
+// SetWorkFactor, but none of them any longer proves that *19* is what a
+// user's file gets wrapped at.
+//
+// It pays one real scrypt pass at the shipped factor, which is the point:
+// roughly a second, once, in exchange for the suite actually exercising
+// the number gage ships. It also proves scryptMaxWorkFactor admits it,
+// on a real file rather than by comparing two constants.
+func TestShippedWorkFactorReachesARealAgeFile(t *testing.T) {
+	restore := SetScryptWorkFactorForTests(shippedScryptWorkFactor)
+	defer restore()
+
+	r, err := PassphraseRecipient("hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("wrapped at the factor gage actually ships")
+	ct, err := Encrypt(payload, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := scryptStanzaWorkFactor(string(ct))
+	if !ok {
+		t.Fatalf("no scrypt stanza found in the header:\n%q", firstLines(string(ct), 3))
+	}
+	if got != shippedScryptWorkFactor {
+		t.Errorf("age wrapped at work factor %d, want the shipped %d", got, shippedScryptWorkFactor)
+	}
+
+	// And gage can read back what it writes at that factor: the max is a
+	// ceiling on a file's *claimed* cost, so a max below the shipped
+	// factor would make gage unable to open its own identity files.
+	id, err := age.NewScryptIdentity("hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id.SetMaxWorkFactor(scryptMaxWorkFactor)
+	back, err := decryptBytes(ct, id)
+	if err != nil {
+		t.Fatalf("decrypting a file wrapped at the shipped factor %d: %v", shippedScryptWorkFactor, err)
+	}
+	if !bytes.Equal(back, payload) {
+		t.Errorf("round-tripped payload = %q, want %q", back, payload)
 	}
 }
 

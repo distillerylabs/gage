@@ -88,7 +88,8 @@ func ParseRecipient(s string) (Recipient, error) {
 
 // PassphraseRecipient builds age's scrypt recipient for passphrase. The
 // work factor is deliberate, not the library default — see
-// scryptWorkFactor.
+// shippedScryptWorkFactor, of which scryptWorkFactor is the live copy a
+// test binary is allowed to lower.
 func PassphraseRecipient(passphrase string) (Recipient, error) {
 	r, err := age.NewScryptRecipient(passphrase)
 	if err != nil {

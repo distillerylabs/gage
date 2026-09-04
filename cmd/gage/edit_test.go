@@ -1,12 +1,49 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
 )
+
+// backdateEntry rewrites title's created/updated timestamps to when,
+// directly through the library. A subsequent gage edit's fresh
+// NewTimestamp(time.Now()) is then guaranteed to land after when,
+// regardless of how fast the two commands actually run.
+//
+// Without this, "updated moved past the original" is a race against the
+// wall clock: NewTimestamp truncates to whole seconds, so an insert and
+// an edit landing in the same second produce identical timestamps. This
+// suite used to win that race by accident — a real scrypt unlock took
+// over a second on its own, more than enough separation — but lowering
+// the test work factor (see SetScryptWorkFactorForTests) made the two
+// commands fast enough to collide for real.
+func backdateEntry(t *testing.T, title string, when time.Time) {
+	t.Helper()
+	app := &App{
+		Out:      &bytes.Buffer{},
+		Err:      &bytes.Buffer{},
+		In:       strings.NewReader(""),
+		Prompter: &fakePrompter{passphrases: []string{testPassphrase}},
+	}
+	err := withUnlockedVault(app, "personal", func(v *gage.Vault, ident *gage.Identity) error {
+		id, e, err := v.Resolve(title, ident)
+		if err != nil {
+			return err
+		}
+		e.Created = gage.NewTimestamp(when)
+		e.Updated = gage.NewTimestamp(when)
+		return v.Update(id, e)
+	})
+	if err != nil {
+		t.Fatalf("backdating %q: %v", title, err)
+	}
+}
 
 // TestEditRestampsUpdatedAndUpdatedByAndCommits: gage edit must re-stamp
 // updated/updated_by on save (even when the fake editor changes nothing
@@ -19,6 +56,7 @@ func TestEditRestampsUpdatedAndUpdatedByAndCommits(t *testing.T) {
 	if res, _ := runCLIWithValue(t, []string{"insert", "ProtonMail", "--description", "personal email"}, "v1"); res.Code != 0 {
 		t.Fatalf("insert failed: %s", res.Stderr)
 	}
+	backdateEntry(t, "ProtonMail", time.Now().Add(-24*time.Hour))
 	before := catEntry(t, "ProtonMail")
 	beforeCommits, err := gitrepo.CommitCount(path)
 	if err != nil {
@@ -82,6 +120,7 @@ func TestEditRestampIsAuthoritativeOverTheEditedFile(t *testing.T) {
 	if res, _ := runCLIWithValue(t, []string{"insert", "ProtonMail"}, "v1"); res.Code != 0 {
 		t.Fatalf("insert failed: %s", res.Stderr)
 	}
+	backdateEntry(t, "ProtonMail", time.Now().Add(-24*time.Hour))
 	before := catEntry(t, "ProtonMail")
 
 	setFakeEditor(t, "tamper-stamps", nil)
