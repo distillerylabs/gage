@@ -24,7 +24,7 @@ func TestUpdateRewritesEntryAndCommits(t *testing.T) {
 	}
 
 	e.Value = "rotated-secret"
-	if err := v.Update(entryID, e); err != nil {
+	if err := v.Update(entryID, e, &id); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 

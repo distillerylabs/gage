@@ -16,7 +16,12 @@ import (
 // what "re-stamp updated/updated_by, leave created alone" means and hands
 // Update the already-final Entry, so Update stays usable for anything
 // that needs to rewrite an entry as-is (M9's --reencrypt, eventually).
-func (v *Vault) Update(id uuid.UUID, e Entry) error {
+//
+// ident is not used to write — the entry is encrypted to the vault's
+// recipients, not to the writer — but every mutating method takes one, so
+// that the automatic push after a write has a frontend to report an
+// unreachable remote or a divergence through.
+func (v *Vault) Update(id uuid.UUID, e Entry, ident *Identity) error {
 	return v.withWriteLock(func() error {
 		if err := v.WriteEntry(id, e); err != nil {
 			return err
@@ -24,6 +29,7 @@ func (v *Vault) Update(id uuid.UUID, e Entry) error {
 		if _, err := gitrepo.CommitAll(v.Path, id.String()); err != nil {
 			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: committing update of %s: %w", id, err))
 		}
+		v.pushAfterWrite(ident.warnTo())
 		return nil
 	})
 }
@@ -65,6 +71,7 @@ func (v *Vault) Rename(query, newTitle string, force bool, ident *Identity) (uui
 		if _, err := gitrepo.CommitAll(v.Path, id.String()); err != nil {
 			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: committing rename of %s: %w", id, err))
 		}
+		v.pushAfterWrite(ident.warnTo())
 		return nil
 	})
 	if err != nil {

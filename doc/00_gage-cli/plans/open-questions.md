@@ -654,6 +654,36 @@ Note the disclosure is bounded to the *name*: per Q-METHOD-SCOPE, a
 device's unlock method stays local, so the committed config never
 reveals which recipient is the softest target.
 
+### go-git's `Push` doesn't wrap `ErrNonFastForwardUpdate`, so M8a classifies divergence by elimination instead
+
+Confirmed against `go-git/go-git/v5@v5.19.2`: `Worktree.Pull`'s ff-only
+check returns the exported sentinel `git.ErrNonFastForwardUpdate`, but
+`Remote.Push`'s own client-side fast-forward check
+(`checkFastForwardUpdate` in `remote.go`) returns a bare
+`fmt.Errorf("non-fast-forward update: %s", ...)` that does **not** wrap
+that sentinel. Code written as `errors.Is(err, git.ErrNonFastForwardUpdate)`
+on a `Push` result compiles cleanly and passes review, but silently never
+matches a real push-time divergence — it would misreport every genuine
+conflict as an unclassified/internal error instead of `exitcode.Conflict`.
+
+Accepted (as a workaround, not a fix): M8a's `RemoteSyncer` classifies
+`Push` failures by elimination — rule out unreachable (network-level) and
+auth (`transport.Err*`, properly `%w`-wrapped) explicitly, then treat
+anything left over as divergence. Sound for gage specifically because its
+remotes are dedicated, hook-free repos with no other server-side push
+rejection reason. See ["Push failure vs.
+divergence"](m8a-sync-transport.md#decisions-to-make-first) for the full
+three-way classification this produces.
+
+**Revisit:** this is a go-git bug/gap, not a gage design constraint —
+`Remote.Push`'s non-fast-forward path should wrap
+`ErrNonFastForwardUpdate` the same way `Worktree.Pull`'s does. Worth
+filing an upstream issue/PR against go-git once M8a ships; if it lands,
+gage's elimination-based classifier can be simplified to a direct
+`errors.Is` check. The classifier function gage ships in M8a must carry
+a code comment citing this entry so the workaround isn't mistaken for
+the intended long-term design.
+
 ### Entries carry no format version of their own
 
 `format_version` lives on the vault config, not on each entry's YAML.

@@ -534,6 +534,7 @@ func (v *Vault) Insert(e Entry, force bool, ident *Identity) (uuid.UUID, error) 
 		if _, err := gitrepo.CommitAll(v.Path, id.String()); err != nil {
 			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: committing entry %s: %w", id, err))
 		}
+		v.pushAfterWrite(ident.warnTo())
 		return nil
 	})
 	if err != nil {
@@ -560,6 +561,7 @@ func (v *Vault) Remove(query string, ident *Identity) (uuid.UUID, error) {
 		if _, err := gitrepo.CommitAll(v.Path, id.String()); err != nil {
 			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: committing removal of %s: %w", id, err))
 		}
+		v.pushAfterWrite(ident.warnTo())
 		return nil
 	})
 	if err != nil {

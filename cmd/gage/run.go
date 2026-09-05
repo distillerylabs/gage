@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
@@ -34,7 +33,7 @@ func runApp(app *App, args []string) int {
 
 	// If reporting the error itself fails there is nowhere left to
 	// report that to, and the exit code below still carries the outcome.
-	_, _ = fmt.Fprintln(app.Err, "gage:", err)
+	writeError(app.Err, err)
 
 	if exitcode.IsCoded(err) {
 		return int(exitcode.CodeOf(err))

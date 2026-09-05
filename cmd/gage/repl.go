@@ -54,7 +54,7 @@ func runSession(app *App) error {
 	if err != nil {
 		// Losing line recall is not a reason to refuse a session: say so
 		// once and carry on without it.
-		_, _ = fmt.Fprintln(app.Err, "gage: continuing without command history:", err)
+		writeOut(app.Err, []string{"gage: continuing without command history: " + errorClause(err)})
 		hist = &history{}
 	}
 	defer func() { _ = hist.close() }()
@@ -135,7 +135,7 @@ func (r *repl) run() error {
 		// must never contain plaintext". A failure to record it is
 		// reported but doesn't end the session.
 		if err := hist.add(line); err != nil {
-			_, _ = fmt.Fprintln(app.Err, err)
+			writeError(app.Err, err)
 		}
 		// One typed line is one command, and the idle timeout is
 		// evaluated once at the start of it — a command that makes
@@ -157,7 +157,7 @@ func (r *repl) run() error {
 func execSessionLine(app *App, line string) bool {
 	args, err := splitLine(line)
 	if err != nil {
-		_, _ = fmt.Fprintln(app.Err, "gage:", err)
+		writeError(app.Err, err)
 		return false
 	}
 	if len(args) == 0 {
@@ -168,7 +168,7 @@ func execSessionLine(app *App, line string) bool {
 	}
 	if err := runSessionCommand(app, args); err != nil {
 		reportAmbiguous(app, err)
-		_, _ = fmt.Fprintln(app.Err, "gage:", err)
+		writeError(app.Err, err)
 	}
 	return false
 }

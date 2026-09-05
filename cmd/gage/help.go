@@ -97,6 +97,44 @@ func writeOut(w io.Writer, lines []string) {
 	_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
 }
 
+// errorPrefix is how gage names itself in front of anything it reports.
+const errorPrefix = "gage: "
+
+// writeError reports one error to a human, with gage's name in front of
+// it exactly once.
+//
+// Library errors carry the prefix in their own text, and that is not
+// incidental: Prompter.Warn messages are printed verbatim, so a warning
+// can only name gage by saying so itself, and errors follow the same
+// convention. A printer that also prepends unconditionally is what turns
+// that into "gage: gage: ...". Anything that does arrive unprefixed —
+// Cobra's own usage rejections, an error straight from the standard
+// library — still gets one, so every line gage prints looks the same.
+//
+// This is the single place errors are rendered, so the rule holds for
+// one-shot mode and the REPL alike rather than at each print site's
+// discretion.
+func writeError(w io.Writer, err error) {
+	_, _ = io.WriteString(w, prefixOnce(err.Error())+"\n")
+}
+
+// prefixOnce adds errorPrefix to a message that doesn't already open with
+// it.
+func prefixOnce(msg string) string {
+	if strings.HasPrefix(msg, errorPrefix) {
+		return msg
+	}
+	return errorPrefix + msg
+}
+
+// errorClause renders an error for use *inside* a larger sentence,
+// dropping the "gage: " it carries for standalone reporting. Without it a
+// composed message reads "gage: continuing without X: gage: opening Y
+// failed" — the same doubling writeError avoids, one clause further in.
+func errorClause(err error) string {
+	return strings.TrimPrefix(err.Error(), errorPrefix)
+}
+
 // renderSessionHelp is in-session `help`: the same grouped listing, from
 // the same registry, filtered to what a session can actually run — the
 // session-only meta-verbs plus every vault-domain command available in a

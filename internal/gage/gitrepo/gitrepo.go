@@ -145,6 +145,21 @@ func HeadCommit(dir string) (message, authorName, authorEmail string, err error)
 	return commit.Message, commit.Author.Name, commit.Author.Email, nil
 }
 
+// HeadHash returns dir's current HEAD commit as a string — how a caller
+// (or a test) asks "did this operation move the branch at all" without
+// reimplementing the reference lookup.
+func HeadHash(dir string) (string, error) {
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return "", fmt.Errorf("gitrepo: opening %s: %w", dir, err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return "", fmt.Errorf("gitrepo: reading HEAD: %w", err)
+	}
+	return head.Hash().String(), nil
+}
+
 // IsClean reports whether dir's working tree has no staged or unstaged
 // changes.
 func IsClean(dir string) (bool, error) {

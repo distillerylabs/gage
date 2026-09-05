@@ -37,6 +37,14 @@ const maxUnlockAttempts = 100
 // other failure returns immediately, since re-asking for a passphrase
 // can't fix a corrupt file or a missing one.
 func (v *Vault) Unlock(p Prompter) (Identity, error) {
+	// The automatic catch-up, before anything is read: this is the hook
+	// point both invocation modes share, so wiring the pull here is what
+	// makes "every vault unlock fetches" true of a one-shot command's
+	// implicit unlock and a session's `use` alike, rather than of
+	// whichever callers remembered. It never fails the unlock — see
+	// syncOnUnlock.
+	v.syncOnUnlock(p)
+
 	device, method, err := v.localIdentityRecord()
 	if err != nil {
 		return Identity{}, err
@@ -186,6 +194,7 @@ func (v *Vault) newIdentity(device string, ident *age.X25519Identity, secret []b
 			secret:     secret,
 			ident:      ident,
 			recipient:  ident.Recipient().String(),
+			prompter:   p,
 			locker:     locker,
 			pageLocked: pageLocked,
 		},

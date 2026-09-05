@@ -441,7 +441,7 @@ func newEditCommand(app *App) *cobra.Command {
 				edited.Updated = gage.NewTimestamp(time.Now())
 				edited.UpdatedBy = ident.Device()
 
-				if err := v.Update(id, edited); err != nil {
+				if err := v.Update(id, edited, ident); err != nil {
 					return err
 				}
 				noteIndexEntry(app, v, id, edited)
