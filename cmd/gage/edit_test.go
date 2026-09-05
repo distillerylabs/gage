@@ -38,7 +38,7 @@ func backdateEntry(t *testing.T, title string, when time.Time) {
 		}
 		e.Created = gage.NewTimestamp(when)
 		e.Updated = gage.NewTimestamp(when)
-		return v.Update(id, e)
+		return v.Update(id, e, ident)
 	})
 	if err != nil {
 		t.Fatalf("backdating %q: %v", title, err)

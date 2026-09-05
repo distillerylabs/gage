@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/devicename"
 	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/denmark/gage/internal/gage/syncerr"
 )
 
 // newInitCommand builds `gage init`, a thin wiring layer over
@@ -177,6 +179,48 @@ func runInit(app *App, opt initOptions) error {
 		fmt.Sprintf("gage: initialized vault %q at %s", opt.name, path),
 		fmt.Sprintf("gage: this device is %q, public key %s", device, pubkey),
 	})
+
+	if opt.remote == "" {
+		return nil
+	}
+	return publishNewVault(app, opt.name, path, opt.remote)
+}
+
+// publishNewVault pushes a freshly created vault's first commit to the
+// remote it was given.
+//
+// Without this a vault created with --remote would sit unpublished until
+// its first write, which is not what naming a remote at creation time
+// means. It is also where "gage never creates a repository for you" gets
+// said out loud: an empty repository has to exist on the host already,
+// and the failure when it doesn't is reported in those terms rather than
+// as a transport error.
+//
+// The vault itself is already created and registered by this point, and
+// stays that way regardless: it is durable locally, which is the whole
+// local-durability half of the sync model. Being unable to publish is a
+// thing to report, never a reason to throw away a vault that exists.
+func publishNewVault(app *App, name, path, remote string) error {
+	ctx, cancel := syncContext()
+	defer cancel()
+
+	v := &gage.Vault{Name: name, Path: path}
+	if _, err := v.Push(ctx); err != nil {
+		if errors.Is(err, syncerr.ErrUnreachable) {
+			// Offline at creation time is not a failure: the next
+			// successful sync publishes it.
+			writeOut(app.Err, []string{fmt.Sprintf(
+				"gage: could not reach %s; %q exists locally and will publish on the next successful sync",
+				remote, name)})
+			return nil
+		}
+		return exitcode.Wrap(exitcode.CodeOf(err), fmt.Errorf(
+			"gage: %q was created locally, but publishing it to %s failed: %w\n"+
+				"gage: gage never creates a repository for you — create an empty one there, then run `gage push`",
+			name, remote, err))
+	}
+
+	writeOut(app.Out, []string{fmt.Sprintf("gage: published %q to %s", name, remote)})
 	return nil
 }
 

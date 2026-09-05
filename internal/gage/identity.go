@@ -49,6 +49,14 @@ type identityState struct {
 	// .age-recipients.
 	recipient string
 
+	// prompter is the frontend that unlocked this identity, kept so the
+	// write path can surface a sync warning without every mutating
+	// method growing a Prompter parameter of its own. It is only ever
+	// used for advisories — nothing here decides anything — and an
+	// Identity always has one, since Vault.Unlock is the only thing that
+	// produces one and it is always given a Prompter.
+	prompter Prompter
+
 	locker Locker
 	// pageLocked records whether secret is actually locked, so Close
 	// unlocks exactly what was locked — unlocking a page that was never
@@ -88,6 +96,15 @@ func (i *Identity) PageLocked() bool {
 		return false
 	}
 	return i.st.pageLocked
+}
+
+// warnTo returns the Prompter sync advisories for this identity's
+// operations should go to, or nil if there is none to warn through.
+func (i *Identity) warnTo() Prompter {
+	if i == nil || i.st == nil {
+		return nil
+	}
+	return i.st.prompter
 }
 
 // ageIdentity hands out the key for a decrypt, refusing once Close has

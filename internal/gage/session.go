@@ -193,9 +193,22 @@ func (s *Session) Use(name string) error {
 	if name == "" {
 		return exitcode.Wrap(exitcode.Usage, fmt.Errorf("%w: use <vault>", ErrNoCurrentVault))
 	}
+
+	held, known := s.vaults[name]
+	wasUnlocked := known && held.ident != nil
+
 	if _, _, err := s.Vault(name); err != nil {
 		return err
 	}
+	// `use` means "catch me up" whether or not this session already holds
+	// the key. When it doesn't, Vault.Unlock just ran and its automatic
+	// pull came with it; when it does, no unlock happened, so the pull
+	// has to be asked for here rather than being silently skipped for the
+	// vaults a session returns to most often.
+	if wasUnlocked {
+		held.vault.syncOnUnlock(s.prompter)
+	}
+
 	s.current = name
 	return nil
 }
@@ -219,14 +232,9 @@ func (s *Session) Vault(name string) (*Vault, *Identity, error) {
 			fmt.Errorf("%w: run `use <vault>` first, or pass -u/--use", ErrNoCurrentVault))
 	}
 
-	held, ok := s.vaults[name]
-	if !ok {
-		v, err := s.open(name)
-		if err != nil {
-			return nil, nil, err
-		}
-		held = &heldVault{vault: v}
-		s.vaults[name] = held
+	held, err := s.hold(name)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if held.ident == nil {
@@ -238,6 +246,55 @@ func (s *Session) Vault(name string) (*Vault, *Identity, error) {
 	}
 	held.lastUsed = s.now()
 	return held.vault, held.ident, nil
+}
+
+// VaultWithoutUnlocking returns a session vault ("" for the current one)
+// without unlocking it, registering it with this session the same way
+// Vault does so a sync that pulls still invalidates its cached metadata.
+//
+// It exists for the sync verbs, which per "Sync model" unlock lazily: a
+// fast-forward, and a merge of two sides that touched different entries,
+// decrypt nothing and so have no business prompting for a passphrase.
+// Only a conflict whose resolution has to show plaintext forces an
+// unlock, and that is M8b's to ask for.
+func (s *Session) VaultWithoutUnlocking(name string) (*Vault, error) {
+	defer s.enter()()
+
+	if name == "" {
+		name = s.current
+	}
+	if name == "" {
+		return nil, exitcode.Wrap(exitcode.Usage,
+			fmt.Errorf("%w: run `use <vault>` first, or pass -u/--use", ErrNoCurrentVault))
+	}
+
+	held, err := s.hold(name)
+	if err != nil {
+		return nil, err
+	}
+	return held.vault, nil
+}
+
+// hold returns this session's record for a vault, opening and registering
+// it on first sight. It never unlocks: Vault is what does that, on top of
+// this.
+func (s *Session) hold(name string) (*heldVault, error) {
+	if held, ok := s.vaults[name]; ok {
+		return held, nil
+	}
+
+	v, err := s.open(name)
+	if err != nil {
+		return nil, err
+	}
+	held := &heldVault{vault: v}
+	// Wired here, once, rather than around each call that might cause a
+	// pull: a sync that moves entries/ underneath this session has to
+	// invalidate the metadata index built from them, and the vault is
+	// what knows when that happened.
+	v.onPull = func() { s.discardIndex(held) }
+	s.vaults[name] = held
+	return held, nil
 }
 
 // Lock drops the key material for the named vaults, or — with no name at
@@ -276,17 +333,26 @@ func (s *Session) Lock(names ...string) error {
 // outlive the identity that produced it, so the two are torn down
 // together here rather than by two callers that happen to agree.
 func (s *Session) lockHeld(held *heldVault) error {
-	if held.index != nil {
-		held.index.discard()
-		held.index = nil
-		held.indexWarned = false
-	}
+	s.discardIndex(held)
 	if held.ident == nil {
 		return nil
 	}
 	ident := held.ident
 	held.ident = nil
 	return ident.Close()
+}
+
+// discardIndex drops a held vault's cached metadata, if it has any. It's
+// the single place that happens, so the three things that invalidate a
+// cache — locking the vault, an explicit reindex, and a sync that moved
+// entries/ underneath it — can't drift apart.
+func (s *Session) discardIndex(held *heldVault) {
+	if held.index == nil {
+		return
+	}
+	held.index.discard()
+	held.index = nil
+	held.indexWarned = false
 }
 
 // expireIdle re-locks every vault whose last use is further in the past
@@ -484,11 +550,7 @@ func (s *Session) Reindex(name string) error {
 		return err
 	}
 	held := s.vaults[v.Name]
-	if held.index != nil {
-		held.index.discard()
-		held.index = nil
-		held.indexWarned = false
-	}
+	s.discardIndex(held)
 	return s.ensureIndex(held, ident)
 }
 

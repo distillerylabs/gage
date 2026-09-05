@@ -107,103 +107,108 @@ offline-handling logic runs.
 
 **Pull on unlock**
 
-- [ ] `use` performs a fetch + fast-forward-only pull when the remote has
+- [x] `use` performs a fetch + fast-forward-only pull when the remote has
       commits the local vault lacks
-- [ ] A one-shot command (e.g. `gage show`) against a vault with unpulled
+- [x] A one-shot command (e.g. `gage show`) against a vault with unpulled
       remote commits performs the same fetch + fast-forward-only pull on
       its implicit unlock, with no session `use` step involved — the
       design ties this to every vault unlock, not to the `use` verb
       specifically
-- [ ] `use` with no network reachable warns once and proceeds with the
+- [x] `use` with no network reachable warns once and proceeds with the
       local copy instead of blocking or failing
-- [ ] The fake `RemoteSyncer` injected in the offline test returns
+- [x] The fake `RemoteSyncer` injected in the offline test returns
       exactly the error `Vault`'s sync logic treats as "unreachable" —
       proving the warn-and-proceed path is reachable without depending on
       a real network failure
-- [ ] **A successful fast-forward pull invalidates or rebuilds M7's
+- [x] **A successful fast-forward pull invalidates or rebuilds M7's
       metadata index**: entries arriving via the pull appear in the very
       next `ls` in the same session, with no manual `reindex`
-- [ ] A pull that brings in nothing leaves the index intact (no
+- [x] A pull that brings in nothing leaves the index intact (no
       gratuitous full rebuild on every unlock)
 
 **Push on write**
 
-- [ ] A write command triggers a push; when nothing has diverged, it
+- [x] A write command triggers a push; when nothing has diverged, it
       completes without user-visible friction
-- [ ] A simulated offline push leaves the local commit intact (nothing
+- [x] A simulated offline push leaves the local commit intact (nothing
       lost); the next successful `use`/push retries and succeeds
-- [ ] A push that fails because the remote diverged is reported
+- [x] A push that fails because the remote diverged is reported
       differently from one that fails because the network is down
 
 **Divergence**
 
-- [ ] Real divergence (local and remote both have commits the other
+- [x] Real divergence (local and remote both have commits the other
       lacks) is detected and reported, never auto-merged or silently
       resolved
-- [ ] `gittest`'s second-clone helper pushes an independent commit to a
+- [x] `gittest`'s second-clone helper pushes an independent commit to a
       shared bare remote, producing real divergence when the vault under
       test also has an unpushed local commit
-- [ ] A divergence with no *entry-level* conflict (both sides touched
+- [x] A divergence with no *entry-level* conflict (both sides touched
       different entries) merges cleanly and pushes, with no prompt and no
       unlock — git handles separate files on its own
-- [ ] A divergence that *does* conflict on an entry is detected, reported,
+- [x] A divergence that *does* conflict on an entry is detected, reported,
       and left unresolved with a pointer to `gage sync` — M8a never
       resolves, it only detects
-- [ ] **`.age-recipients` diverging on both sides produces a conflict
+- [x] **`.age-recipients` diverging on both sides produces a conflict
       rather than a silent union.** Two devices each adding a different
       recipient add two different lines, which git would merge cleanly
       without `.gitattributes` — and the merged list is one neither
       device wrote, with no unreviewed change for M10's trust cache to
       catch. This is the security-relevant test of the milestone
-- [ ] The same holds for `.gage/config.toml`
-- [ ] `gage init` writes the `.gitattributes` marking both files `-merge`
+- [x] The same holds for `.gage/config.toml`
+- [x] `gage init` writes the `.gitattributes` marking both files `-merge`
       (M1 wrote the file; this asserts it actually prevents the merge)
 
 **Authentication**
 
-- [ ] `gage auth login` stores a user-supplied token at
+- [x] `gage auth login` stores a user-supplied token at
       `$GAGE_STATE/tokens/<host>`, created `0600`, and `auth status`
       reports the host as configured
-- [ ] An expired or revoked token fails with a message naming the host
+- [x] An expired or revoked token fails with a message naming the host
       and `gage auth login` — not a bare 403 or transport error
       (Q-OAUTH-APP: this is the one real cost of user-supplied tokens,
       so it's the one that gets a test)
-- [ ] `gage auth logout` removes it, and a subsequent push fails with a
+- [x] `gage auth logout` removes it, and a subsequent push fails with a
       not-authenticated error naming `gage auth login` rather than an
       opaque transport error
-- [ ] A fetch/push against an HTTPS remote uses the stored token for that
+- [x] A fetch/push against an HTTPS remote uses the stored token for that
       host; two vaults on the same host share one token
-- [ ] `--host` defaults to the host of the current vault's `origin`
-- [ ] A token file with permissions looser than `0600` is refused rather
+- [x] `--host` defaults to the host of the current vault's `origin`
+- [x] A token file with permissions looser than `0600` is refused rather
       than used
-- [ ] An SSH-spelled remote that depends on a `~/.ssh/config` host alias
+- [x] An SSH-spelled remote that depends on a `~/.ssh/config` host alias
       fails with a message saying `~/.ssh/config` is not consulted and
       pointing at the HTTPS spelling — not a generic connection error
-- [ ] An SSH-spelled remote that ssh-agent can satisfy directly works,
+- [x] An SSH-spelled remote that ssh-agent can satisfy directly works,
       confirming best-effort SSH is genuinely best-effort and not absent
-- [ ] No token value appears in any error message, log line, or the
+      — asserted as far as the no-network constraint allows: a
+      fully-qualified SSH host is *not* refused as an alias and goes on
+      to ask ssh-agent, rather than being silently unsupported. Whether
+      an agent answers depends on the machine, so the test pins which
+      path was taken, not the outcome
+- [x] No token value appears in any error message, log line, or the
       session history file
 
 **`clone`**
 
-- [ ] `gage clone` against a `gittest.NewBareRemote` produces a working
+- [x] `gage clone` against a `gittest.NewBareRemote` produces a working
       vault — `.gage/config.toml`, `.age-recipients`, and `entries/`
       matching the remote's committed state — registered in global config
       the same way `init` registers a new one
-- [ ] `gage clone` infers the vault name from the remote URL, and
+- [x] `gage clone` infers the vault name from the remote URL, and
       `--name` overrides it
-- [ ] `gage clone` without `--dir` lands at `$GAGE_DATA/vaults/<name>`,
+- [x] `gage clone` without `--dir` lands at `$GAGE_DATA/vaults/<name>`,
       the same default as `init`
-- [ ] `gage clone` against a vault where the local device isn't yet a
+- [x] `gage clone` against a vault where the local device isn't yet a
       recipient reports that plainly and points at `gage identity add`,
       rather than leaving a vault directory that silently can't decrypt
       anything
-- [ ] `gage clone` of a vault whose `format_version` is unrecognized
+- [x] `gage clone` of a vault whose `format_version` is unrecognized
       refuses cleanly rather than registering an unusable vault
 
 ## Implementation
 
-- [ ] `RemoteSyncer` interface (`Fetch(ctx) error`/`Push(ctx) error`)
+- [x] `RemoteSyncer` interface (`Fetch(ctx) error`/`Push(ctx) error`)
       between `Vault`'s sync logic and go-git — real go-git-backed
       implementation in production and in the realistic bare-repo tests,
       a fake in the one offline-handling test where a deterministic
@@ -212,7 +217,7 @@ offline-handling logic runs.
       from "Push failure vs. divergence" above (unreachable / auth /
       diverged) — `Vault` and `cmd/gage` never inspect a raw go-git or
       transport error directly
-- [ ] The real implementation's divergence-by-elimination branch (the
+- [x] The real implementation's divergence-by-elimination branch (the
       code that decides "not unreachable, not auth, therefore diverged")
       carries a comment citing go-git's `Remote.Push` not wrapping
       `ErrNonFastForwardUpdate` the way `Worktree.Pull` does — see
@@ -221,42 +226,42 @@ offline-handling logic runs.
       intended design and "simplify" it back into a direct (and silently
       broken) `errors.Is(err, git.ErrNonFastForwardUpdate)` check. Worth
       an upstream go-git issue/PR once M8a ships
-- [ ] Remote authentication (Q-GIT-AUTH): HTTPS + token via go-git's
+- [x] Remote authentication (Q-GIT-AUTH): HTTPS + token via go-git's
       `BasicAuth`, tokens stored per-host at `$GAGE_STATE/tokens/<host>`
       (`0600`) through M0's atomic-write helper; best-effort ssh-agent
       for SSH remotes, with a specific error when a remote depends on
       `~/.ssh/config`
-- [ ] `gage auth login/status/logout [--host HOST]`, registered in M0's
+- [x] `gage auth login/status/logout [--host HOST]`, registered in M0's
       command registry under the git group, available in both modes.
       `login` prompts for a token the user issued themselves and points
       at fine-grained, single-repository scoping; it never brokers one
       (Q-OAUTH-APP)
-- [ ] No host-specific code paths and no host-specific dependencies —
+- [x] No host-specific code paths and no host-specific dependencies —
       no `go-github`, no device flow, no shipped client ID. `gage init
       --remote URL` against a repository that doesn't exist fails with a
       message saying to create it, rather than creating it for you
-- [ ] `gittest` package extended with a second-clone helper: clone a
+- [x] `gittest` package extended with a second-clone helper: clone a
       `NewBareRemote` repo into a second temp dir, commit there, push
       back — a throwaway stand-in for "another device," used to produce
       real divergence in tests
-- [ ] Auto fetch + fast-forward pull on every vault unlock — session
+- [x] Auto fetch + fast-forward pull on every vault unlock — session
       `use` and a one-shot command's implicit unlock alike (go-git
       `Fetch`/`Pull`, ff-only), so the logic lives where both paths call
       through it rather than being wired into the `use` REPL command only
-- [ ] Index invalidation on successful pull, hooked where the pull
+- [x] Index invalidation on successful pull, hooked where the pull
       happens rather than in each caller
-- [ ] Auto push after writes (go-git `Push`), under the same vault lock
+- [x] Auto push after writes (go-git `Push`), under the same vault lock
       the write holds
-- [ ] Divergence detection, with distinct reporting from offline failure
+- [x] Divergence detection, with distinct reporting from offline failure
       (the three-way `RemoteSyncer` classification above). Once a push
       is classified as diverged, fetch and classify what diverged —
       disjoint entries (merge and continue), conflicting entry (report,
       point at `gage sync`), recipient files (report as the more severe
       case) — since M8b's resolution consumes that classification
-- [ ] Manual `pull`/`push` via go-git (both already implemented purely in
+- [x] Manual `pull`/`push` via go-git (both already implemented purely in
       go-git — no passthrough, no `git` binary dependency, anywhere in
       `gage`)
-- [ ] `gage clone` (go-git `PlainClone`, reusing this milestone's
+- [x] `gage clone` (go-git `PlainClone`, reusing this milestone's
       bare-remote test harness); reads the cloned `.gage/config.toml` to
       learn the vault's default method — what a subsequent `identity add`
       will suggest for this device, not a constraint on it

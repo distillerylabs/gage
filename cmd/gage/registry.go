@@ -167,6 +167,16 @@ var registry = []CommandInfo{
 		Availability: AvailOneShotOnly,
 	},
 	{
+		// One-shot only, like init, and for the same reason: it creates a
+		// vault rather than operating on one, which leaves "does the new
+		// vault become the session's current vault?" unanswered. See
+		// Q-CMD-AVAILABILITY.
+		Name:         "clone",
+		Short:        "Clone an existing vault from a remote",
+		Group:        GroupVault,
+		Availability: AvailOneShotOnly,
+	},
+	{
 		Name:         "vault list",
 		Short:        "List registered vaults",
 		Group:        GroupVault,
@@ -191,8 +201,44 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "sync",
+		Short:        "Pull, merge what can be merged, then push",
+		Group:        GroupSync,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "pull",
+		Short:        "Fast-forward this vault from its remote",
+		Group:        GroupSync,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "push",
+		Short:        "Publish this vault's commits to its remote",
+		Group:        GroupSync,
+		Availability: AvailBoth,
+	},
+	{
 		Name:         "git set-remote",
 		Short:        "Set or change a vault's git remote (origin)",
+		Group:        GroupGit,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "auth login",
+		Short:        "Store a token for a git host",
+		Group:        GroupGit,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "auth status",
+		Short:        "Show which git hosts have a token",
+		Group:        GroupGit,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "auth logout",
+		Short:        "Forget a git host's token",
 		Group:        GroupGit,
 		Availability: AvailBoth,
 	},

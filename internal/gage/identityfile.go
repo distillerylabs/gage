@@ -211,6 +211,30 @@ func RemoveIdentity(vault, device string) error {
 	return nil
 }
 
+// HasIdentity reports whether this device holds a wrapped identity for a
+// vault — the question `gage clone` answers to tell someone whether they
+// can actually read what they just cloned.
+//
+// It deliberately checks only for the file's presence, not that its key
+// is one of the vault's current recipients: opening it would need the
+// passphrase, and prompting for an unlock during a clone in order to
+// report that the unlock was pointless is exactly backwards. A device
+// with no identity file certainly cannot decrypt anything, which is the
+// case worth telling someone about.
+func HasIdentity(vault, device string) (bool, error) {
+	path, err := IdentityFilePath(vault, device)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, exitcode.Wrap(exitcode.Internal, err)
+	}
+	return true, nil
+}
+
 // writeIdentityFile creates the 0700 identities directory and writes the
 // wrapped key 0600 through the shared atomic-write helper.
 func writeIdentityFile(path string, wrapped []byte) error {

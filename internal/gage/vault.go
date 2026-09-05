@@ -68,6 +68,23 @@ type Vault struct {
 	// tests ("the first ls/show/search triggers exactly one full-decrypt
 	// pass, later ones don't"); nil everywhere else.
 	onDecrypt func()
+
+	// onPull, if set, is called whenever a sync moves entries/ underneath
+	// a caller — a fast-forward that advanced HEAD, or a merge that
+	// brought another device's writes in. Session sets it to discard that
+	// vault's metadata index, which is the whole of M7's
+	// "a successful pull invalidates the index" requirement; one-shot
+	// mode caches nothing and leaves it nil.
+	//
+	// It hangs off Vault rather than being returned to each caller so
+	// that the invalidation is wired once, where the pull happens, rather
+	// than at every call site that might cause one.
+	onPull func()
+
+	// remoteSyncer overrides how this vault reaches its remote. nil means
+	// the real go-git-backed syncer. Only this package's own tests set
+	// it — see RemoteSyncer for why that seam exists at all.
+	remoteSyncer RemoteSyncer
 }
 
 // Unlock lives in unlock.go.
