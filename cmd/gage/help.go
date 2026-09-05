@@ -97,15 +97,40 @@ func writeOut(w io.Writer, lines []string) {
 	_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
 }
 
+// renderSessionHelp is in-session `help`: the same grouped listing, from
+// the same registry, filtered to what a session can actually run — the
+// session-only meta-verbs plus every vault-domain command available in a
+// session (Q-CMD-AVAILABILITY). Vault selection appears here as the bare
+// `use <vault>` command rather than the -u|--use flag, which belongs in
+// per-command help (Q-HELP-SURFACES); that's why the listing renders
+// UsageName rather than the bare name.
+func renderSessionHelp(w io.Writer) {
+	lines := []string{
+		"gage session commands",
+		"",
+	}
+
+	for _, group := range groupedSessionCommands() {
+		lines = append(lines, group.Group+":")
+		for _, ci := range group.Commands {
+			lines = append(lines, "  "+commandListLine(ci))
+		}
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, `Type "help <command>" for more information about a command.`)
+	writeOut(w, lines)
+}
+
 // commandListLine renders one registry entry's line in the grouped
-// listing: canonical name, aliases alongside it, then the description —
-// per the M0 test list's "A command's aliases ... resolve to the same
-// command and are shown alongside the canonical name rather than as
-// separate entries."
+// listing: canonical name (with its argument syntax, if it declares
+// any), aliases alongside it, then the description — per the M0 test
+// list's "A command's aliases ... resolve to the same command and are
+// shown alongside the canonical name rather than as separate entries."
 func commandListLine(ci CommandInfo) string {
-	name := ci.Name
+	name := ci.UsageName()
 	if len(ci.Aliases) > 0 {
-		names := append([]string{ci.Name}, ci.Aliases...)
+		names := append([]string{name}, ci.Aliases...)
 		name = strings.Join(names, ", ")
 	}
 	// Two literal spaces, not one, between the padded name field and the
@@ -135,6 +160,16 @@ func renderCommandHelp(w io.Writer, cmd *cobra.Command) {
 		names := append([]string{cmd.Name()}, cmd.Aliases...)
 		sort.Strings(names)
 		lines = append(lines, "", "Aliases:", "  "+strings.Join(names, ", "))
+	}
+
+	// Flags belong in per-command help specifically, and this is where
+	// -u|--use surfaces: the design doc keeps it out of the top-level
+	// session listing (which leads with bare `use <vault>`) while
+	// documenting that it still works ad hoc on any command — see
+	// Q-HELP-SURFACES. FlagUsages already ends in a newline per flag, so
+	// it's trimmed rather than appended to as a line.
+	if usages := strings.TrimRight(cmd.LocalFlags().FlagUsages(), "\n"); usages != "" {
+		lines = append(lines, "", "Flags:", usages)
 	}
 	writeOut(w, lines)
 }

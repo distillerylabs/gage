@@ -12,9 +12,14 @@ import (
 // path, not help. A real pty is used only where the terminal itself is
 // the thing under test (see prompter_pty_test.go); the dispatch decision
 // isn't, so it's asserted at the dispatch level — the pure decision
-// function, and the command tree wired up with a forced-true IsTerminal. The session implementation itself is
-// M6's; the stub's own message is incidental, not part of the contract.
+// function, and the command tree wired up with a forced-true IsTerminal.
+//
+// Now that M6 has a session to reach, "reached it" is asserted by the
+// REPL's own prompt rather than by a stub's message: stdin is empty, so
+// the loop starts, prompts once, reads EOF, and exits cleanly.
 func TestBareGageOnTTYEntersSessionMode(t *testing.T) {
+	isolateXDG(t)
+
 	if got := chooseRootMode(true); got != "session" {
 		t.Errorf("chooseRootMode(true) = %q, want %q", got, "session")
 	}
@@ -26,8 +31,8 @@ func TestBareGageOnTTYEntersSessionMode(t *testing.T) {
 	if strings.Contains(res.Stdout, "Usage:") {
 		t.Errorf("bare gage on a TTY printed help instead of entering the session: %q", res.Stdout)
 	}
-	if !strings.Contains(res.Stdout, "session") {
-		t.Errorf("bare gage on a TTY didn't reach the session entry point: %q", res.Stdout)
+	if !strings.Contains(res.Stdout, "gage> ") {
+		t.Errorf("bare gage on a TTY didn't reach the REPL prompt: %q", res.Stdout)
 	}
 }
 

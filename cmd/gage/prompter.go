@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/term"
@@ -54,10 +55,52 @@ type terminalPrompter struct {
 	// per call would read ahead and drop whatever followed the line it
 	// returned, which in a --stdin script is the next command.
 	br *bufio.Reader
+
+	// secretFn/lineFn, when set, replace this prompter's own reads for
+	// the duration of a session. A session owns the input stream — its
+	// line editor holds the terminal in raw mode and reads stdin from a
+	// background goroutine — so a passphrase prompt that reached for
+	// os.Stdin itself would be racing it for the same bytes. See
+	// lineReader and useSessionReader.
+	secretFn func(prompt string) (string, error)
+	lineFn   func(prompt string) (string, error)
 }
 
 func newTerminalPrompter(in io.Reader, out io.Writer) *terminalPrompter {
 	return &terminalPrompter{in: in, out: out}
+}
+
+// useSessionReader points this prompter's reads at a running session's
+// lineReader, and returns a function restoring the previous behavior.
+// The REPL calls it once at startup: from then until the session ends,
+// every passphrase, value, confirmation, and candidate choice is read
+// through the same object reading command lines.
+//
+// Writes move with the reads, to out. Prompts live on stderr in one-shot
+// mode so `gage show foo > secret.txt` puts only the secret in the file;
+// inside a session there is no such redirection, the line editor already
+// draws its own prompt on out, and splitting a question from the list it
+// refers to across two streams would be the only thing that could go
+// wrong here.
+func (p *terminalPrompter) useSessionReader(lr lineReader, out io.Writer) func() {
+	prevSecret, prevLine, prevOut := p.secretFn, p.lineFn, p.out
+	p.secretFn, p.lineFn, p.out = lr.readSecret, lr.readPlain, out
+	return func() { p.secretFn, p.lineFn, p.out = prevSecret, prevLine, prevOut }
+}
+
+// ask renders a prompt and reads one echoed line — the shared path
+// behind Confirm and Choose, so both go through a session's reader when
+// one is installed and print-then-read otherwise.
+func (p *terminalPrompter) ask(prompt string) (string, error) {
+	if p.lineFn != nil {
+		return p.lineFn(prompt)
+	}
+	_, _ = fmt.Fprint(p.out, prompt)
+	line, err := p.readLine()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // Unlock renders an UnlockRequest as a terminal prompt and returns what
@@ -126,8 +169,7 @@ func (p *terminalPrompter) Value(prompt string) (string, error) {
 // Confirm is about to do something a user might not want, so the safe
 // answer is the default.
 func (p *terminalPrompter) Confirm(prompt string) (bool, error) {
-	_, _ = fmt.Fprintf(p.out, "%s [y/N] ", prompt)
-	line, err := p.readLine()
+	line, err := p.ask(fmt.Sprintf("%s [y/N] ", prompt))
 	if err != nil {
 		return false, err
 	}
@@ -139,11 +181,44 @@ func (p *terminalPrompter) Confirm(prompt string) (bool, error) {
 	}
 }
 
-// Choose is the ambiguous-query picker, which arrives with the query
-// resolver in M5. Failing loudly here beats returning an empty ID that a
-// caller would read as "the user picked nothing."
+// maxChooseAttempts bounds the re-ask loop for a mistyped candidate
+// number. Same shape as the passphrase retry policy, and here for the
+// same reason: the library hands over a candidate list and has no
+// opinion about how many times a human gets to answer it.
+const maxChooseAttempts = 3
+
+// Choose renders an ambiguous query's candidate list as the numbered
+// picker from "Addressing entries & the metadata index" and returns the
+// id of whichever one was picked.
+//
+// This is the session half of ambiguity: one-shot mode prints the same
+// list and fails (see printCandidates), because there's nobody to ask.
+// The list itself is the library's — a CandidateList value, not printed
+// text — and this is the CLI deciding to render it as a prompt.
 func (p *terminalPrompter) Choose(list gage.CandidateList) (string, error) {
-	return "", exitcode.New(exitcode.Internal, "gage: interactive candidate selection is not implemented yet (arrives in M5)")
+	if len(list.Candidates) == 0 {
+		return "", exitcode.New(exitcode.Internal, "gage: asked to choose from an empty candidate list")
+	}
+
+	lines := []string{fmt.Sprintf("Multiple entries match %q:", list.Query)}
+	for i, c := range list.Candidates {
+		lines = append(lines, fmt.Sprintf("  %d. %s (%s)", i+1, c.Title, shortEntryID(c.ID)))
+	}
+	writeOut(p.out, lines)
+
+	for attempt := 1; attempt <= maxChooseAttempts; attempt++ {
+		answer, err := p.ask(fmt.Sprintf("Which one? [1-%d]: ", len(list.Candidates)))
+		if err != nil {
+			return "", err
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(answer))
+		if err == nil && n >= 1 && n <= len(list.Candidates) {
+			return list.Candidates[n-1].ID, nil
+		}
+		_, _ = fmt.Fprintf(p.out, "gage: enter a number between 1 and %d.\n", len(list.Candidates))
+	}
+	return "", exitcode.Newf(exitcode.Ambiguous,
+		"gage: no entry chosen after %d attempts", maxChooseAttempts)
 }
 
 // Warn prints a non-fatal advisory. It returns nothing, matching the
@@ -162,6 +237,13 @@ func (p *terminalPrompter) Warn(msg string) {
 // piped or redirected — a --stdin script, a test — there is no echo to
 // suppress and the line is read normally.
 func (p *terminalPrompter) readSecret(prompt string) (string, error) {
+	// Inside a session the line editor owns the terminal, so the read
+	// goes through it rather than through this prompter's own stdin
+	// handling. See useSessionReader.
+	if p.secretFn != nil {
+		return p.secretFn(prompt)
+	}
+
 	_, _ = fmt.Fprint(p.out, prompt)
 
 	if f, ok := p.in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {

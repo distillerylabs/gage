@@ -17,7 +17,12 @@ import (
 // "Session-only commands").
 func newStubCommand(app *App, ci CommandInfo) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     ci.Name,
+		// The registry carries each meta-verb's argument syntax, so the
+		// use line here and in-session help's listing can't drift apart
+		// (Q-HELP-SURFACES) — `help use` and the `use <vault>` entry in
+		// the top-level listing render the same string from the same
+		// field.
+		Use:     ci.UsageName(),
 		Aliases: ci.Aliases,
 		Short:   ci.Short,
 		// Session-only commands never belong in gage --help's listing —
@@ -56,19 +61,8 @@ func chooseRootMode(stdinIsTTY bool) string {
 
 func dispatchRoot(app *App, root *cobra.Command) error {
 	if chooseRootMode(app.IsTerminal()) == "session" {
-		return runSessionStub(app)
+		return runSession(app)
 	}
 	renderHelp(app.Out, root)
-	return nil
-}
-
-// runSessionStub is bare `gage`'s session-mode landing point until M6
-// builds the real REPL. cmd/gage is the CLI's I/O layer, so printing
-// here is fine — this is not internal/gage.
-func runSessionStub(app *App) error {
-	writeOut(app.Out, []string{
-		"gage: interactive session mode isn't implemented yet (arrives in M6).",
-		`Run "gage --help" for the commands available today.`,
-	})
 	return nil
 }
