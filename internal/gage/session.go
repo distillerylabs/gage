@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -137,6 +138,21 @@ type heldVault struct {
 	vault    *Vault
 	ident    *Identity
 	lastUsed time.Time
+
+	// index is this vault's M7 metadata cache: nil until the first
+	// ls/show/search/resolve needs one, discarded (and set back to nil)
+	// by the same code path that closes ident — see lockHeld. A vault
+	// that's only ever been mutated, never listed or resolved, stays nil
+	// for the whole session, which is what keeps insert/edit/rm from
+	// forcing a build that nothing has asked for yet.
+	index *Index
+
+	// indexWarned gates the one-time page-lock-failure warning for this
+	// vault's index (see Index.lockOK and Session.warnIndexLockOnce) so
+	// a long session that keeps growing the arena doesn't repeat it.
+	// Reset whenever the index is discarded, since a fresh unlock may
+	// page-lock differently than the last one did.
+	indexWarned bool
 }
 
 // VaultState is one row of Session.Status.
@@ -255,8 +271,16 @@ func (s *Session) Lock(names ...string) error {
 
 // lockHeld is the single place a held vault's key is dropped, so an idle
 // timeout and an explicit Lock are the same code path rather than two
-// that happen to agree today.
+// that happen to agree today. It's also the single place the vault's
+// index is discarded: the index is decrypted metadata and must not
+// outlive the identity that produced it, so the two are torn down
+// together here rather than by two callers that happen to agree.
 func (s *Session) lockHeld(held *heldVault) error {
+	if held.index != nil {
+		held.index.discard()
+		held.index = nil
+		held.indexWarned = false
+	}
 	if held.ident == nil {
 		return nil
 	}
@@ -320,14 +344,28 @@ func (s *Session) Status() []VaultState {
 // ambiguous query: the resolver returns the same candidate list either
 // way, one-shot mode prints it and fails, and a session has someone to
 // ask. See "Addressing entries & the metadata index".
+//
+// Unlike Vault.Resolve, this is index-backed (M7): matching runs against
+// the session's cached titles, built (or reused) by ensureIndex, and
+// only the entry that actually wins gets decrypted — a full-vault
+// decrypt pass happens at most once per vault per session, on whichever
+// of ls/show/search/resolve asks first.
 func (s *Session) Resolve(name, query string) (uuid.UUID, Entry, error) {
 	v, ident, err := s.Vault(name)
 	if err != nil {
 		return uuid.Nil, Entry{}, err
 	}
+	held := s.vaults[v.Name]
+	if err := s.ensureIndex(held, ident); err != nil {
+		return uuid.Nil, Entry{}, err
+	}
 
-	id, e, err := v.Resolve(query, ident)
+	id, err := resolveTitleAndUUID(query, held.index.titles())
 	if err == nil {
+		e, err := v.ReadEntry(id, ident)
+		if err != nil {
+			return uuid.Nil, Entry{}, err
+		}
 		return id, e, nil
 	}
 	var amb *AmbiguousQueryError
@@ -354,11 +392,185 @@ func (s *Session) Resolve(name, query string) (uuid.UUID, Entry, error) {
 			fmt.Errorf("gage: candidate id %q is not a uuid: %w", chosen, err))
 	}
 
-	e, err = v.ReadEntry(chosenID, ident)
+	e, err := v.ReadEntry(chosenID, ident)
 	if err != nil {
 		return uuid.Nil, Entry{}, err
 	}
 	return chosenID, e, nil
+}
+
+// List returns vault's ("" for the current one) entries as ListEntry
+// rows, sorted by title then id — ls's rendering, backed by the same
+// index Resolve and Search build and reuse.
+func (s *Session) List(name string) ([]ListEntry, error) {
+	v, ident, err := s.Vault(name)
+	if err != nil {
+		return nil, err
+	}
+	held := s.vaults[v.Name]
+	if err := s.ensureIndex(held, ident); err != nil {
+		return nil, err
+	}
+	return held.index.list(), nil
+}
+
+// Search matches pattern against vault's ("" for the current one)
+// entries: title and description come from the index (built or reused
+// exactly like List/Resolve), while the body-text half always decrypts
+// fresh — see the M7 plan's "Decisions made" on why a secret value never
+// enters the cache. The very first search for a vault in a session
+// builds the index from the same decrypt pass it needs for its own
+// body-text check, rather than decrypting the vault twice.
+func (s *Session) Search(name, pattern string) ([]SearchResult, error) {
+	v, ident, err := s.Vault(name)
+	if err != nil {
+		return nil, err
+	}
+	held := s.vaults[v.Name]
+
+	// buildingNow is only non-nil when ensureIndex just ran a fresh
+	// decrypt pass to build the index for the first time — reusing it
+	// below is what keeps that first search to one pass, not two.
+	buildingNow, err := s.buildIndexIfMissing(held, ident)
+	if err != nil {
+		return nil, err
+	}
+
+	lowerPattern := strings.ToLower(pattern)
+	matched := held.index.matchText(lowerPattern)
+
+	bodyEntries := buildingNow
+	if bodyEntries == nil {
+		bodyEntries, err = held.vault.decryptAll(ident)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for id, e := range bodyEntries {
+		if !matchesBody(e, lowerPattern) {
+			continue
+		}
+		r := matched[id]
+		r.ID, r.Title, r.Description, r.MatchedBody = id, e.Title, e.Description, true
+		matched[id] = r
+	}
+
+	out := make([]SearchResult, 0, len(matched))
+	for _, r := range matched {
+		out = append(out, r)
+	}
+	sortSearchResults(out)
+	return out, nil
+}
+
+// Reindex forces a full rebuild of vault's ("" for the current one)
+// index, decrypting every entry again regardless of whether one was
+// already cached — `gage reindex`, for when entries/ changed from
+// outside gage (a manual `git pull`) or the cache is merely suspected
+// stale.
+func (s *Session) Reindex(name string) error {
+	v, ident, err := s.Vault(name)
+	if err != nil {
+		return err
+	}
+	held := s.vaults[v.Name]
+	if held.index != nil {
+		held.index.discard()
+		held.index = nil
+		held.indexWarned = false
+	}
+	return s.ensureIndex(held, ident)
+}
+
+// NoteEntry updates vault's in-memory index, if it already has one, with
+// e's current title/description/dates — the incremental half of M7's
+// cache after insert/edit/rename. It does not itself write, encrypt, or
+// commit anything: cmd/gage calls this right after the corresponding
+// Vault.Insert/Update/Rename call has already done that, so Session's
+// role stays cache bookkeeping rather than a second implementation of
+// any CRUD verb (see TestSessionAddsNoDuplicateVaultMethods).
+//
+// A vault this session hasn't listed/resolved/searched yet has no index
+// to update — a no-op, since the index that eventually gets built will
+// read the already-current, post-write state and needs no reconciling.
+func (s *Session) NoteEntry(vault string, id uuid.UUID, e Entry) {
+	defer s.enter()()
+	held := s.heldVaultFor(vault)
+	if held == nil || held.index == nil {
+		return
+	}
+	held.index.put(id, e)
+	s.warnIndexLockOnce(held)
+}
+
+// ForgetEntry drops id from vault's index, if it has one — the
+// incremental half of M7's cache after `rm`. Like NoteEntry, a no-op
+// when there's no index yet to update.
+func (s *Session) ForgetEntry(vault string, id uuid.UUID) {
+	defer s.enter()()
+	held := s.heldVaultFor(vault)
+	if held == nil || held.index == nil {
+		return
+	}
+	held.index.remove(id)
+}
+
+// heldVaultFor resolves name ("" meaning the current vault) to this
+// session's held record for it, or nil if that vault has never been
+// used this session. Unlike Vault, it never opens or unlocks anything —
+// callers only reach it once a vault is already known to be held.
+func (s *Session) heldVaultFor(name string) *heldVault {
+	if name == "" {
+		name = s.current
+	}
+	return s.vaults[name]
+}
+
+// ensureIndex makes sure held has an index, building one from a full
+// decrypt pass if this is the first ls/show/search/resolve for this
+// vault in the session. A no-op, with no decryption, once an index
+// already exists.
+func (s *Session) ensureIndex(held *heldVault, ident *Identity) error {
+	_, err := s.buildIndexIfMissing(held, ident)
+	return err
+}
+
+// buildIndexIfMissing is ensureIndex's implementation, returning the
+// freshly decrypted entries when it actually built an index — nil when
+// one already existed and nothing was decrypted — so Search can reuse
+// that same pass for its body-text check instead of decrypting the vault
+// a second time on a session's very first search.
+func (s *Session) buildIndexIfMissing(held *heldVault, ident *Identity) (map[uuid.UUID]Entry, error) {
+	if held.index != nil {
+		return nil, nil
+	}
+	entries, err := held.vault.decryptAll(ident)
+	if err != nil {
+		return nil, err
+	}
+	idx := newIndex(held.vault.locker, ident.PageLocked())
+	for id, e := range entries {
+		idx.put(id, e)
+	}
+	held.index = idx
+	s.warnIndexLockOnce(held)
+	return entries, nil
+}
+
+// warnIndexLockOnce surfaces held's index page-lock failure through the
+// Prompter exactly once per unlock — never at all if the vault's own
+// Identity already failed and warned about the same underlying
+// constraint (Index.lockOK folds that check in: see its doc comment).
+func (s *Session) warnIndexLockOnce(held *heldVault) {
+	if held.index == nil || held.indexWarned || held.index.lockOK() {
+		return
+	}
+	held.indexWarned = true
+	if s.prompter != nil {
+		s.prompter.Warn(fmt.Sprintf(
+			"gage: could not lock %s's metadata index into memory; continuing without it, "+
+				"so cached titles/descriptions may be written to swap.", held.vault.Name))
+	}
 }
 
 // isCandidate reports whether id was one of the choices actually offered.

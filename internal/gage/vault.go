@@ -61,6 +61,13 @@ type Vault struct {
 	// nothing outside this package's own tests ever sets it — see
 	// Locker.
 	locker Locker
+
+	// onDecrypt, if set, is called once per successful ReadEntry — a
+	// test-only seam for counting how many times this vault's
+	// ciphertext was actually decrypted. It exists for M7's index
+	// tests ("the first ls/show/search triggers exactly one full-decrypt
+	// pass, later ones don't"); nil everywhere else.
+	onDecrypt func()
 }
 
 // Unlock lives in unlock.go.
