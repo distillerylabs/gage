@@ -2,7 +2,7 @@
 
 [← M8a](m8a-sync-transport.md) · [plan index](index.md) · next: [M9 — Identity & recipient management](m9-recipients.md)
 
-> **Recommended model: Opus.** Constructing a genuine two-parent merge commit through go-git, plus resolution logic where getting it wrong loses a secret. Four sub-decisions are still open in this doc and want judgment.
+> **Recommended model: Opus.** Constructing a genuine two-parent merge commit through go-git, plus resolution logic where getting it wrong loses a secret, is real problem-solving under a correctness constraint, not transcription.
 
 ## Goal
 
@@ -46,27 +46,53 @@ secrets.
 
 ## Decisions to make first
 
-- **Where `keep both` puts the losing version's title.** Verbatim (two
-  entries identically titled, resolver disambiguates by UUID and date),
-  or suffixed (`ProtonMail (conflicted 2026-08-30)`)? Verbatim is
-  honest and leans on machinery that already exists; suffixed is easier
-  to spot in `ls` but invents a naming convention. Lean verbatim.
+- **Where `keep both` puts the losing version's title.** Resolved:
+  verbatim — two entries identically titled, disambiguated by UUID and
+  date, the same as any other same-titled pair. The design doc's own
+  wording already assumes this ("two entries with the same title," not a
+  renamed one), and it costs nothing new: the ambiguous-query resolver
+  M5 built already lists candidates and asks, so there's no gap for a
+  suffix to fill. A suffix would also raise questions this doc would
+  then have to answer for no benefit — does it live in `title` itself
+  (so it survives `rename` and shows up in `ls` forever), or somewhere
+  else — and invents a magic string (`(conflicted YYYY-MM-DD)`) as a
+  parallel, redundant way to say what `created`/`updated_by` already say
+  inside the ciphertext.
 - **Does `keep both` preserve the losing side's `updated_by`/`updated`?**
-  It should — the whole point is not losing information — but that means
-  writing an entry whose `updated_by` is another device, which no other
-  code path does.
-- **Non-interactive behavior.** `--script`/`--stdin` (M12) and CI have no
-  one to prompt. Recommend: `gage sync` fails on first conflict with a
-  clear message rather than picking a side, and grows a
-  `--strategy=local|remote|both` flag if a real need appears. Deciding
-  now avoids `--yes` accidentally acquiring "resolve conflicts silently"
-  as a meaning — it means something much narrower elsewhere.
-- **Resolution and the vault lock.** Resolution is a long interactive
-  operation holding a write lock. Hold throughout (blocking other
-  processes for as long as the user takes to answer), or acquire per
-  applied choice? Leaning hold-throughout for consistency with
-  `--reencrypt`, but the human-in-the-loop duration makes this less
-  obvious than it was there.
+  Resolved: yes. The whole point of `keep both` is that no information
+  is lost — silently restamping the losing entry as authored "now" by
+  the resolving device would quietly discard exactly the provenance the
+  conflict prompt just displayed to justify the choice. This does mean
+  the entry-write primitive needs a path that accepts explicit
+  `created`/`updated`/`updated_by` instead of stamping them from the
+  current device and clock, which today only ever happens implicitly on
+  `insert`/`edit` (M4) — call this out explicitly in Implementation
+  below rather than leaving it to be discovered mid-coding.
+- **Non-interactive behavior.** Resolved: `gage sync` fails on the first
+  real conflict with a clear message when no interactive `Prompter` is
+  available (`--script`/`--stdin`, M12, or CI), rather than picking a
+  side, and does **not** grow a `--strategy=local|remote|both` flag in
+  this milestone — only if a real need for one shows up later. `--yes`
+  keeps only its existing trust-cache meaning (M10) and does not
+  acquire "resolve conflicts silently" as a second, unrelated meaning.
+  This matches the precedent already set for `--yes` elsewhere in the
+  design (it bypasses exactly one confirmation, not a category of
+  prompts), and a silent auto-resolution is the last-write-wins outcome
+  the whole sync model exists to refuse.
+- **Resolution and the vault lock.** Resolved: hold the write lock
+  throughout, for the whole interactive resolution, same as
+  `--reencrypt`. The concurrency model the lock is built for is
+  explicitly same-user-multiple-terminals (a `tmux` pane running `sync`
+  while another pane tries a write) rather than strangers contending for
+  a shared vault, so "the other pane waits until I finish resolving"
+  is the right behavior, not a surprising one — and it avoids a sharper
+  correctness problem: acquiring the lock only per applied choice would
+  let local HEAD move underneath an in-progress resolution if some other
+  write landed between conflicts, silently invalidating the merge's
+  local parent. The existing lock-wait timeout (a contended lock waits
+  with a message, then times out rather than hanging forever) already
+  covers "someone left a resolution prompt hanging" without any new
+  mechanism.
 
 ## Tests (write first)
 
@@ -81,6 +107,9 @@ secrets.
 - [ ] `keep both` keeps the local version at its existing UUID *and*
       writes the remote version as a new entry under a fresh UUID — both
       are decryptable afterward, and neither value was lost
+- [ ] `keep both`'s new entry carries the losing side's original
+      `updated`/`updated_by` verbatim, not the resolving device's
+      identity or the resolution time
 - [ ] After `keep both`, the two same-titled entries resolve through M5's
       ambiguous-query path (candidate list, one-shot fails, session
       prompts) rather than one shadowing the other
@@ -131,14 +160,27 @@ secrets.
 - [ ] `--yes` does *not* resolve conflicts — it retains only its
       trust-cache meaning
 
+**Locking**
+
+- [ ] The vault's write lock is held for the entire interactive
+      resolution (acquired before the first conflict prompt, released
+      only on completion, `skip`-triggered end, or `abort`) — a second
+      process attempting a write against the same vault blocks on the
+      existing contended-lock wait/timeout rather than being allowed to
+      interleave
+
 ## Implementation
 
 - [ ] Conflict presentation as a typed value: both decrypted entries plus
       their metadata and the conflict kind, returned by the library;
       `cmd/gage` renders the `[l/r/b/s/q]` prompt from the design doc
+- [ ] An entry-write primitive that accepts explicit `created`/
+      `updated`/`updated_by` instead of stamping them from the current
+      device and clock — needed only by `keep both`'s losing-side write;
+      every other write path keeps using the stamping behavior from M4
 - [ ] `keep local` / `keep remote` / `keep both` application, with `keep
       both` allocating a fresh UUID for the losing side and preserving its
-      `updated`/`updated_by`
+      `updated`/`updated_by` via the primitive above
 - [ ] `skip` and `abort` paths, with `abort` restoring the pre-sync state
       exactly
 - [ ] Delete/modify conflict handling
