@@ -65,6 +65,9 @@ round trip exists for it to share.
 - **`ls` output format:** one entry per line, title first, sorted, with a
   partial (short, unambiguous-prefix) UUID printed alongside each title
   so entries are addressable from `ls` output without a full `cat`.
+  (Extended in [M7](m7-metadata-index.md), which appends the entry's
+  `created`/`updated` dates and `updated_by` — the metadata its index
+  caches anyway. Title-then-partial-UUID still leads the line.)
 
 ## Tests (write first)
 

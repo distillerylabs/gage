@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -482,6 +482,16 @@ func newRenameCommand(app *App) *cobra.Command {
 				// those three fields is enough to hand NoteEntry the
 				// post-rename metadata without decrypting the vault
 				// again to fetch it.
+				//
+				// The updated stamp here is this clock reading, not the
+				// one Vault.Rename wrote a moment earlier, so the cached
+				// value can sit up to a second ahead of the file's when
+				// the two readings straddle a second boundary. Nothing
+				// renders the index's dates today; the alternative — a
+				// fresh decrypt purely to copy a timestamp gage already
+				// knows — costs more than the discrepancy does. A
+				// command that starts displaying them should re-read
+				// rather than trust this field.
 				resolved.Title = args[1]
 				resolved.Updated = gage.NewTimestamp(time.Now())
 				resolved.UpdatedBy = ident.Device()
@@ -570,21 +580,30 @@ func newRmCommand(app *App) *cobra.Command {
 	return cmd
 }
 
-// newLsCommand builds `gage ls`: title first, then a partial (8-hex-char)
-// id, sorted by title — see the M4 plan's "Decisions made" on ls output.
+// newLsCommand builds `gage ls`: one entry per line, title first, then a
+// partial (8-hex-char) id, then the entry's dates and the device that
+// last wrote it — M4's "title, then a partial UUID" decision, extended
+// in M7 with the rest of the metadata the index caches anyway (see the
+// M7 plan's "Decisions made").
 //
-// In a session this is index-backed (M7): Session.List builds the
-// metadata cache on the first ls/show/search per vault and reuses it on
-// every one after. One-shot mode has no cache to reuse, so it keeps
-// M4's decrypt-every-entry-every-time loop — there is nothing else it
-// could do, since one-shot mode is gone before a second call could ever
-// benefit from one.
+// Both modes render through one path over one type: Vault.List decrypts
+// the vault fresh, Session.List serves the same rows from the M7 index
+// without re-decrypting, and writeLsRows prints either. That is what
+// keeps `ls` byte-identical in a session and out of one, rather than two
+// formatting loops that happen to agree today.
 func newLsCommand(app *App) *cobra.Command {
 	var useFlag string
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: commandShort("ls"),
-		Args:  cobra.NoArgs,
+		// The columns are positional and unlabelled, so that `ls` stays
+		// one greppable line per entry (M4's decision). The legend for
+		// them belongs here, where `gage help ls` will show it, rather
+		// than in a header line every script would have to skip.
+		Long: commandShort("ls") + ".\n\n" +
+			"Columns: title, short id, created, updated, updated_by.\n" +
+			"Dates are UTC, to the day; `gage cat <query>` shows the full entry.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if app.Session != nil {
 				rows, err := app.Session.List(useFlag)
@@ -595,30 +614,11 @@ func newLsCommand(app *App) *cobra.Command {
 				return nil
 			}
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				ids, err := v.EntryIDs()
+				rows, err := v.List(ident)
 				if err != nil {
 					return err
 				}
-
-				type row struct{ title, id string }
-				rows := make([]row, 0, len(ids))
-				for _, id := range ids {
-					e, err := v.ReadEntry(id, ident)
-					if err != nil {
-						return err
-					}
-					rows = append(rows, row{title: e.Title, id: shortEntryID(id.String())})
-				}
-				sort.Slice(rows, func(i, j int) bool { return rows[i].title < rows[j].title })
-
-				if len(rows) == 0 {
-					return nil
-				}
-				lines := make([]string, 0, len(rows))
-				for _, r := range rows {
-					lines = append(lines, fmt.Sprintf("%s  %s", r.title, r.id))
-				}
-				writeOut(app.Out, lines)
+				writeLsRows(app, rows)
 				return nil
 			})
 		},
@@ -627,18 +627,74 @@ func newLsCommand(app *App) *cobra.Command {
 	return cmd
 }
 
-// writeLsRows renders Session.List's rows in the same "title, short id"
-// shape the one-shot path prints, so the two are visually identical.
+// writeLsRows prints one line per entry: title, short id, created,
+// updated, updated_by. Title and updated_by are the only variable-width
+// columns, so padding the title to the widest one is enough to line the
+// rest up; updated_by comes last precisely so it never needs padding.
+//
+// An empty vault prints nothing at all — not a header, not a blank line
+// — which is what keeps `gage ls | wc -l` honest and matches M4's
+// "succeeds with no output and exit 0".
 func writeLsRows(app *App, rows []gage.ListEntry) {
 	if len(rows) == 0 {
 		return
 	}
+	// Runes, not bytes: fmt's %-*s pads to a width counted in runes, so
+	// measuring the same way is what keeps a title like "Café" or a
+	// CJK one from pushing its row's later columns out of line. (A
+	// double-width glyph still occupies two terminal cells against one
+	// rune of padding; matching fmt is as far as this goes without a
+	// display-width dependency.)
+	titleWidth := 0
+	for _, r := range rows {
+		if n := utf8.RuneCountInString(r.Title); n > titleWidth {
+			titleWidth = n
+		}
+	}
+
 	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
-		lines = append(lines, fmt.Sprintf("%s  %s", r.Title, shortEntryID(r.ID.String())))
+		lines = append(lines, strings.TrimRight(fmt.Sprintf("%-*s  %s  %s  %s  %s",
+			titleWidth, r.Title,
+			shortEntryID(r.ID.String()),
+			lsDate(r.Created),
+			lsDate(r.Updated),
+			lsField(r.UpdatedBy),
+		), " "))
 	}
 	writeOut(app.Out, lines)
 }
+
+// lsDate renders one timestamp as a plain UTC date. A zero time — an
+// entry hand-written without the field, since gage itself always stamps
+// both — prints as a placeholder rather than as "0001-01-01", which
+// reads like a real date nobody chose.
+func lsDate(t gage.Timestamp) string {
+	if t.IsZero() {
+		return lsMissing
+	}
+	return t.UTC().Format(lsDateLayout)
+}
+
+// lsField renders a string column, standing in for the empty case the
+// same way lsDate does so a short row still has the right column count.
+func lsField(s string) string {
+	if s == "" {
+		return lsMissing
+	}
+	return s
+}
+
+const (
+	// lsDateLayout is ls's date rendering: the day, no clock time. The
+	// full RFC 3339 stamp is in the entry itself (`gage cat`); a listing
+	// is for scanning, and two full timestamps per line would bury the
+	// titles.
+	lsDateLayout = "2006-01-02"
+	// lsMissing stands in for a column an entry doesn't have a value
+	// for, so every line has the same number of fields.
+	lsMissing = "-"
+)
 
 // newSearchCommand builds `gage search` (alias `gage grep`): matches
 // pattern against every entry's title, description, and decrypted body,

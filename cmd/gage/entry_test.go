@@ -432,7 +432,8 @@ func TestInsertSetsTimestampsAndUpdatedBy(t *testing.T) {
 }
 
 // TestLsListsInsertedTitleAlongsidePartialUUID covers the ls-output
-// decision: title first, then a partial UUID.
+// decision: title first, then a partial UUID — and, since M7, the
+// entry's dates and the device that last wrote it.
 //
 // The id is checked against the entry's real UUID on disk — a prefix of
 // it, and shorter than the whole thing. Checking only "some short token
@@ -442,6 +443,7 @@ func TestInsertSetsTimestampsAndUpdatedBy(t *testing.T) {
 func TestLsListsInsertedTitleAlongsidePartialUUID(t *testing.T) {
 	isolateXDG(t)
 	path := initEntryTestVault(t, "personal")
+	device := readGlobalConfigForTest(t).Vaults["personal"].Device
 
 	ins, _ := runCLIWithValue(t, []string{"insert", "ProtonMail"}, "v")
 	if ins.Code != 0 {
@@ -454,16 +456,20 @@ func TestLsListsInsertedTitleAlongsidePartialUUID(t *testing.T) {
 		t.Fatalf("ls failed: %s", res.Stderr)
 	}
 
+	// Columns, left to right: title, short id, created, updated,
+	// updated_by. The title can itself contain spaces, so the fixed
+	// columns are read off the right-hand end rather than by index.
 	line := strings.TrimSpace(res.Stdout)
 	fields := strings.Fields(line)
-	if len(fields) < 2 {
-		t.Fatalf("ls line %q doesn't look like \"title  id\"", line)
+	if len(fields) < 5 {
+		t.Fatalf("ls line %q doesn't look like \"title  id  created  updated  updated_by\"", line)
 	}
 	// Title first, per the decision.
 	if fields[0] != "ProtonMail" {
 		t.Errorf("ls line %q doesn't lead with the title", line)
 	}
-	id := fields[len(fields)-1]
+	id, created, updated, updatedBy := fields[len(fields)-4], fields[len(fields)-3], fields[len(fields)-2], fields[len(fields)-1]
+
 	if !strings.HasPrefix(full, id) {
 		t.Errorf("ls printed id %q, which is not a prefix of the entry's UUID %q", id, full)
 	}
@@ -472,6 +478,76 @@ func TestLsListsInsertedTitleAlongsidePartialUUID(t *testing.T) {
 	}
 	if id == "" {
 		t.Error("ls printed an empty id")
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	if created != today {
+		t.Errorf("ls printed created %q, want today's UTC date %q", created, today)
+	}
+	if updated != today {
+		t.Errorf("ls printed updated %q, want today's UTC date %q", updated, today)
+	}
+	if updatedBy != device {
+		t.Errorf("ls printed updated_by %q, want this device's name %q", updatedBy, device)
+	}
+	// The listing tier is titles and metadata — never the value.
+	if strings.Contains(res.Stdout, "v") && strings.Contains(res.Stdout, "value") {
+		t.Errorf("ls output looks like it carries the entry's value: %q", res.Stdout)
+	}
+}
+
+// TestLsRendersIdenticallyInBothModes: `ls` has two implementations
+// behind it — Vault.List decrypting the vault fresh, Session.List
+// serving the M7 index — and one renderer. Nothing but a comparison
+// keeps them printing the same thing, including the column alignment and
+// the id tie-break between entries that share a title (which -f allows).
+func TestLsRendersIdenticallyInBothModes(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	for _, title := range []string{"AWS root account", "a", "Café"} {
+		if res, _ := runCLIWithValue(t, []string{"insert", title}, "v-"+title); res.Code != 0 {
+			t.Fatalf("insert %q: %s", title, res.Stderr)
+		}
+	}
+	// Two entries sharing a title, which only the id tie-break orders.
+	if res, _ := runCLIWithValue(t, []string{"insert", "-f", "a"}, "v-a-2"); res.Code != 0 {
+		t.Fatalf("insert duplicate: %s", res.Stderr)
+	}
+
+	oneShot := runCLI(t, []string{"ls"}, "")
+	if oneShot.Code != 0 {
+		t.Fatalf("one-shot ls: %s", oneShot.Stderr)
+	}
+
+	session := runSessionScript(t, script("use personal", testPassphrase, "ls", "exit"))
+	if session.Code != 0 {
+		t.Fatalf("session ls: %s", session.Stderr)
+	}
+
+	// The REPL interleaves its prompt — and the one passphrase request —
+	// with command output on the same stream, so the session's rows are
+	// recovered by stripping the prompt prefixes and dropping what isn't
+	// a listing row.
+	var got []string
+	for _, line := range strings.Split(session.Stdout, "\n") {
+		if i := strings.LastIndex(line, "gage> "); i >= 0 {
+			line = line[i+len("gage> "):]
+		}
+		if strings.TrimSpace(line) == "" || strings.Contains(line, "Enter passphrase") {
+			continue
+		}
+		got = append(got, line)
+	}
+	want := strings.Split(strings.TrimRight(oneShot.Stdout, "\n"), "\n")
+
+	if len(got) != len(want) {
+		t.Fatalf("session ls printed %d rows, one-shot printed %d:\nsession:  %q\none-shot: %q", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d differs between modes:\none-shot: %q\nsession:  %q", i, want[i], got[i])
+		}
 	}
 }
 
