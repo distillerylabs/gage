@@ -5,10 +5,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/xdgpaths"
@@ -698,5 +700,54 @@ func TestSessionLockUnknownVaultReports(t *testing.T) {
 
 	if err := s.Lock("nope"); err == nil {
 		t.Error("locking a vault this session never touched should report it")
+	}
+}
+
+// TestConcurrentlyHeldIdentitiesDoNotSharePages is the platform-neutral
+// guard on what a session made reachable for the first time: two vaults
+// unlocked at once, and so two keys page-locked at once.
+//
+// Page locks are not reference counted and act on whole pages, so two
+// keys sharing one page share a single lock and the first Close releases
+// the survivor's protection too. On Linux and macOS munlock reports that
+// as success, which is why this is asserted on the addresses rather than
+// on Close's error: without it the invariant would hold only where
+// Windows happens to complain (M6 found it exactly that way, as an
+// ERROR_NOT_LOCKED from the second Identity.Close), and a regression
+// would again be invisible on two platforms out of three.
+func TestConcurrentlyHeldIdentitiesDoNotSharePages(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal", "work")
+	s, _ := newTestSession(t, open, SessionConfig{})
+
+	_, personal, err := s.Vault("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, work, err := s.Vault("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personal.st == nil || work.st == nil || len(personal.st.secret) == 0 || len(work.st.secret) == 0 {
+		t.Fatal("an unlocked identity is holding no key material; this test would pass vacuously")
+	}
+
+	pg := uintptr(os.Getpagesize())
+	// #nosec G103 -- addresses are read only to bucket them by page.
+	pPage := uintptr(unsafe.Pointer(&personal.st.secret[0])) &^ (pg - 1)
+	// #nosec G103 -- see above.
+	wPage := uintptr(unsafe.Pointer(&work.st.secret[0])) &^ (pg - 1)
+	if pPage == wPage {
+		t.Errorf("two simultaneously held identities' keys share page %#x; "+
+			"closing either would release the other's page lock", pPage)
+	}
+
+	// And the consequence that surfaced on Windows: closing both in turn
+	// succeeds, rather than the second reporting an already-unlocked
+	// page.
+	if err := personal.Close(); err != nil {
+		t.Fatalf("closing the first identity: %v", err)
+	}
+	if err := work.Close(); err != nil {
+		t.Errorf("closing the second identity after the first: %v", err)
 	}
 }

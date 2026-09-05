@@ -2,7 +2,9 @@ package memlock
 
 import (
 	"bytes"
+	"os"
 	"testing"
+	"unsafe"
 )
 
 // keySized is the shape of the buffer this package actually protects: an
@@ -75,5 +77,79 @@ func TestEmptySliceIsANoOp(t *testing.T) {
 	}
 	if err := Unlock([]byte{}); err != nil {
 		t.Errorf("Unlock(empty) = %v, want nil", err)
+	}
+}
+
+// pageOf reports which OS page b's first byte lives on.
+func pageOf(b []byte) uintptr {
+	pg := uintptr(os.Getpagesize())
+	// #nosec G103 -- read only to bucket the address by page; no pointer
+	// is reconstructed from it.
+	return uintptr(unsafe.Pointer(&b[0])) &^ (pg - 1)
+}
+
+// TestAllocGivesEachBufferItsOwnPage is the guarantee Alloc exists for,
+// and the reason it's asserted here rather than left to Lock/Unlock: two
+// keys sharing a page share a single, non-reference-counted page lock,
+// so the first Unlock silently releases the second key's protection.
+// Windows is the only platform that reports it (ERROR_NOT_LOCKED on the
+// second unlock) and it reports it as an error on the innocent caller,
+// so without this test the invariant would only ever be checked on one
+// of three platforms — and then only by accident.
+//
+// The comparison is against plain make, which is what this replaced:
+// that lands two key-sized buffers on the same page essentially always,
+// so the assertion below is not a coincidence being pinned.
+func TestAllocGivesEachBufferItsOwnPage(t *testing.T) {
+	const n = 8
+	bufs := make([][]byte, n)
+	seen := map[uintptr]int{}
+	for i := range bufs {
+		bufs[i] = Alloc(keySized)
+		if len(bufs[i]) != keySized {
+			t.Fatalf("Alloc(%d) returned %d bytes", keySized, len(bufs[i]))
+		}
+		if prev, ok := seen[pageOf(bufs[i])]; ok {
+			t.Errorf("Alloc buffers %d and %d share a page; each locked key must own its pages", prev, i)
+		}
+		seen[pageOf(bufs[i])] = i
+	}
+
+	// A key-sized buffer spans one page, so the whole allocation must
+	// also not reach into a following page another Alloc could own.
+	if pg := os.Getpagesize(); keySized > pg {
+		t.Fatalf("this test assumes a key fits in one page (%d > %d)", keySized, pg)
+	}
+
+	// Capacity is capped so an append can't grow the key into the
+	// surrounding pages, which are allocated but never locked.
+	if got := cap(bufs[0]); got != keySized {
+		t.Errorf("cap(Alloc(%d)) = %d, want %d — an append would spill past the locked region", keySized, got, keySized)
+	}
+}
+
+// TestUnlockingOneBufferLeavesAnotherLocked is the failure the session
+// milestone actually hit: two identities held at once, and closing the
+// first made closing the second fail. It reproduces at this level with
+// two buffers locked and unlocked in sequence, which on Windows returned
+// ERROR_NOT_LOCKED for the second before Alloc gave each its own page.
+func TestUnlockingOneBufferLeavesAnotherLocked(t *testing.T) {
+	first, second := Alloc(keySized), Alloc(keySized)
+
+	if err := Lock(first); err != nil {
+		if resourceLimited(err) {
+			t.Skipf("this platform refuses to lock pages for a resource reason (%v)", err)
+		}
+		t.Fatalf("Lock(first): %v", err)
+	}
+	if err := Lock(second); err != nil {
+		t.Fatalf("Lock(second) with another key already locked: %v", err)
+	}
+
+	if err := Unlock(first); err != nil {
+		t.Fatalf("Unlock(first): %v", err)
+	}
+	if err := Unlock(second); err != nil {
+		t.Errorf("Unlock(second) after unlocking an unrelated key: %v — the two keys shared a page lock", err)
 	}
 }

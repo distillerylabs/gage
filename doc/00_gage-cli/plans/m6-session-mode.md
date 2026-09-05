@@ -140,12 +140,33 @@ decrypt-on-demand per command.
       session, and points at `help`
 - [ ] The full M6 test suite passes unmodified on Windows, not just
       Linux/macOS — `Session`'s locking/idle-timeout behavior doesn't
-      depend on any POSIX-only mechanism. *Written for it and verified as
-      far as a non-Windows host can (`GOOS=windows go build`/`go vet`,
-      which type-checks the test files too); the mode assertion follows
-      this suite's existing `runtime.GOOS == "windows"` convention and
-      the one pty test is tagged `linux || darwin`. Still needs an actual
-      run of the CI matrix to check off.*
+      depend on any POSIX-only mechanism. *The CI matrix has now run and
+      found two real failures, both fixed:*
+
+      1. *A **page-lock aliasing bug**, not a Windows quirk. Two
+         `Identity` values held at once put their keys on the same page
+         (Go's allocator does this essentially always for key-sized
+         buffers), and page locks are not reference-counted — so closing
+         the first identity released the second's page lock too.
+         `munlock` calls that success; `VirtualUnlock` returns
+         ERROR_NOT_LOCKED, which is the only reason we found out. M6 is
+         the first milestone to hold two identities at once, exactly as
+         this bullet anticipated. Fixed by `memlock.Alloc`, which gives
+         each key its own pages, plus a platform-neutral guard
+         (`TestConcurrentlyHeldIdentitiesDoNotSharePages`) so a
+         regression fails everywhere rather than only on Windows.*
+      2. *A **test** that assumed real time advances between two
+         commands. `TestConfiguredIdleTimeoutReachesTheSession`
+         configured `1ns`; Windows' `time.Now` moves in steps of up to
+         ~15ms, so both commands read the same instant and nothing aged
+         out. The clock is now injected at the CLI layer too (`App.Now`,
+         alongside the existing `App.IsTerminal` seam), which also lets
+         the test configure a realistic `10m` and so actually check that
+         the configured value is the one used.*
+
+      *The mode assertion follows this suite's existing `runtime.GOOS ==
+      "windows"` convention and the one pty test is tagged `linux ||
+      darwin`. Needs a green re-run of the matrix to check off.*
 
 ## Implementation
 
