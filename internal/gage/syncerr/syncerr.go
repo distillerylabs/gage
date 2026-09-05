@@ -27,7 +27,10 @@ var (
 	// history, so gage's automatic sync paths warn once and proceed with
 	// the local copy rather than failing (see "Sync model" in the design
 	// doc). Only an explicitly invoked sync verb surfaces it as an error,
-	// which is why it carries an exit code at all.
+	// which is why it carries an exit code at all — exitcode.Unreachable,
+	// deliberately its own code rather than Conflict, so that "retry this
+	// later" and "a human has to resolve something" stay distinguishable
+	// to a script and not only to a reader of the message.
 	ErrUnreachable = errors.New("gage: could not reach the remote")
 
 	// ErrAuth means the remote refused access — bad or expired
@@ -101,7 +104,7 @@ func ClassifyFetch(err error) error {
 // for fetch and push.
 func classifyTransport(err error) error {
 	if isUnreachable(err) {
-		return exitcode.Wrap(exitcode.Conflict, fmt.Errorf("%w: %v", ErrUnreachable, err))
+		return exitcode.Wrap(exitcode.Unreachable, fmt.Errorf("%w: %v", ErrUnreachable, err))
 	}
 	if isAuth(err) {
 		return exitcode.Wrap(exitcode.LockedOrAuth, fmt.Errorf("%w: %v", ErrAuth, err))
@@ -117,7 +120,13 @@ func isUnreachable(err error) bool {
 	if errors.Is(err, ErrUnreachable) {
 		return true
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	// Both context errors, not just the deadline: gage's own
+	// RemoteOpTimeout produces DeadlineExceeded, and a frontend that
+	// cancels an in-flight sync produces Canceled. Neither says anything
+	// about either side's history, and leaving Canceled out would send it
+	// to the divergence bucket by elimination — turning "you pressed
+	// ctrl-C" into "origin has diverged".
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
 	var netErr net.Error

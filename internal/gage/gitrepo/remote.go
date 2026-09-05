@@ -266,12 +266,8 @@ func FastForward(dir string) (bool, error) {
 		return false, nil
 	}
 
-	clean, err := IsClean(dir)
-	if err != nil {
+	if err := requireCleanWorkTree(dir, "fast-forwarding over them"); err != nil {
 		return false, err
-	}
-	if !clean {
-		return false, fmt.Errorf("gitrepo: %s has uncommitted changes; not fast-forwarding over them", dir)
 	}
 
 	repo, err := git.PlainOpen(dir)
@@ -313,31 +309,36 @@ func AheadCount(dir string) (int, error) {
 	if remote == nil {
 		return 0, nil
 	}
-	base, err := mergeBase(local, remote)
+	// Everything the remote already has. A commit is "pending" exactly
+	// when the local head can reach it and this set can't.
+	//
+	// It has to be the whole reachable set rather than the single
+	// merge-base commit, because the two stop being equivalent the moment
+	// a merge commit sits between the local head and the base. Walking
+	// back from a merge descends into its *other* parent, re-entering the
+	// history behind the base without ever passing through the base
+	// itself — so a walk that only stopped at that one hash counted the
+	// entire shared history as local work, and reported a vault's whole
+	// commit count as "N local commits pending". See
+	// TestAheadCountIsNotFooledByAMergeCommit.
+	have, err := reachableFrom(remote)
 	if err != nil {
 		return 0, err
 	}
 
-	// A breadth-first walk back from the local head that stops descending
-	// at the merge base: what's left is exactly the commits this side
-	// added since the histories parted.
-	stop := plumbing.ZeroHash
-	if base != nil {
-		stop = base.Hash
-	}
 	seen := map[plumbing.Hash]bool{}
 	queue := []*object.Commit{local}
 	count := 0
 	for len(queue) > 0 {
 		c := queue[0]
 		queue = queue[1:]
-		if c.Hash == stop || seen[c.Hash] {
+		if seen[c.Hash] || have[c.Hash] {
 			continue
 		}
 		seen[c.Hash] = true
 		count++
 		for _, parent := range c.ParentHashes {
-			if parent == stop || seen[parent] {
+			if seen[parent] || have[parent] {
 				continue
 			}
 			pc, err := repo.CommitObject(parent)
@@ -348,6 +349,20 @@ func AheadCount(dir string) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+// reachableFrom returns the hashes of every commit reachable from c,
+// including c itself.
+func reachableFrom(c *object.Commit) (map[plumbing.Hash]bool, error) {
+	seen := map[plumbing.Hash]bool{}
+	err := object.NewCommitPreorderIter(c, nil, nil).ForEach(func(x *object.Commit) error {
+		seen[x.Hash] = true
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: walking the remote's history: %w", err)
+	}
+	return seen, nil
 }
 
 // headAndTracking resolves the local branch's commit and the commit its

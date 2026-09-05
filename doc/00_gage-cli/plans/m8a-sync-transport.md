@@ -47,13 +47,27 @@ test harness this milestone already builds for divergence testing.
   `ErrRemoteUnreachable`), returned identically by the real go-git-backed
   implementation and by the fake the offline test injects.
   - **Unreachable** — DNS failure, connection refused, timeout,
-    `context.DeadlineExceeded`; detected via `net.Error`/`*net.OpError`/
-    `*net.DNSError` in the error chain. This is never the human's fault,
-    so it's warn-and-proceed, not a failure: one warning, the triggering
-    operation (the write, the pull-on-unlock) still succeeds on its own
-    terms, `exitcode.Success`, and the next successful sync retries with
-    nothing to remember in between — same shape as `newIdentity`'s
-    mlock-failure warn-and-continue in `unlock.go`.
+    `context.DeadlineExceeded` *and* `context.Canceled`; detected via
+    `net.Error`/`*net.OpError`/`*net.DNSError` in the error chain. This is
+    never the human's fault, so it's warn-and-proceed, not a failure: one
+    warning, the triggering operation (the write, the pull-on-unlock)
+    still succeeds on its own terms, `exitcode.Success`, and the next
+    successful sync retries with nothing to remember in between — same
+    shape as `newIdentity`'s mlock-failure warn-and-continue in
+    `unlock.go`.
+
+    An *explicitly invoked* sync verb does surface it, and it gets its own
+    exit code — **`exitcode.Unreachable` (7), added by this milestone**,
+    not `Conflict`. The whole point of the classification is that "retry
+    this unchanged when the network is back" and "a human has to reconcile
+    two histories" are different situations; sharing exit code 1 would
+    have made that difference visible only to someone reading the message,
+    not to a script. `Conflict`'s own definition — "a state a human must
+    resolve" — doesn't describe a network outage either.
+
+    `context.Canceled` is in the list for the same reason the bucket
+    exists: classification is by elimination, so leaving it out would have
+    turned a cancelled sync into "origin has diverged".
   - **Auth** — `transport.ErrAuthenticationRequired`,
     `ErrAuthorizationFailed`, and `ErrRepositoryNotFound` (go-git's HTTP
     transport wraps all three with `%w`, so `errors.Is` is reliable
@@ -103,6 +117,16 @@ unreachable-style error, rather than depending on a real timeout or a
 missing-path error that wouldn't exercise the same code path gage's real
 offline-handling logic runs.
 
+There is a second, narrower seam for the same reason. A local bare repo
+needs no credentials, so nothing in the harness above can observe whether
+resolved auth actually reaches go-git — the tests pass identically with
+the `Auth:` field deleted. `gittest.RecordingTransport` registers a
+`gagetest://` protocol with go-git's client registry that records the
+`AuthMethod` and endpoint it was handed and then fails, so a test can
+assert on the credentials of a fetch or push that never opens a socket.
+It is also how the auth-*failure* messages are tested, since a real 401
+needs a server.
+
 ## Tests (write first)
 
 **Pull on unlock**
@@ -133,7 +157,9 @@ offline-handling logic runs.
 - [x] A simulated offline push leaves the local commit intact (nothing
       lost); the next successful `use`/push retries and succeeds
 - [x] A push that fails because the remote diverged is reported
-      differently from one that fails because the network is down
+      differently from one that fails because the network is down — in
+      wording *and* in exit code (`Conflict` vs. `Unreachable`), so the
+      distinction survives being read by something other than a human
 
 **Divergence**
 
@@ -157,7 +183,13 @@ offline-handling logic runs.
       catch. This is the security-relevant test of the milestone
 - [x] The same holds for `.gage/config.toml`
 - [x] `gage init` writes the `.gitattributes` marking both files `-merge`
-      (M1 wrote the file; this asserts it actually prevents the merge)
+      — asserted as *content*, deliberately. gage never invokes git's
+      merge machinery, so `.gitattributes` is not what enforces this
+      property: `gitrepo.MergeRemote` is gage's own **file-level** merge,
+      and a file both sides changed is a conflict there whatever any
+      attribute says. The committed file still matters — it binds the real
+      `git` a human may run inside the vault — but the security guarantee
+      is proven by the recipient-file test above, not by this one
 
 **Authentication**
 
@@ -170,9 +202,17 @@ offline-handling logic runs.
       so it's the one that gets a test)
 - [x] `gage auth logout` removes it, and a subsequent push fails with a
       not-authenticated error naming `gage auth login` rather than an
-      opaque transport error
+      opaque transport error — the push half asserted through the
+      recording transport, since a real refusal needs a server
 - [x] A fetch/push against an HTTPS remote uses the stored token for that
-      host; two vaults on the same host share one token
+      host; two vaults on the same host share one token. Asserted at the
+      transport boundary, not just at `remoteauth.Method`: every realistic
+      sync test syncs against a local path where auth is legitimately
+      `nil`, so that harness structurally cannot notice credentials never
+      reaching go-git — deleting `Auth:` from `FetchOptions`/`PushOptions`
+      left the whole suite green. `gittest.RecordingTransport` closes it
+      by registering a `gagetest://` scheme that records what go-git was
+      handed and fails instead of connecting
 - [x] `--host` defaults to the host of the current vault's `origin`
 - [x] A token file with permissions looser than `0600` is refused rather
       than used
@@ -188,6 +228,30 @@ offline-handling logic runs.
       path was taken, not the outcome
 - [x] No token value appears in any error message, log line, or the
       session history file
+
+**Local state a sync has to respect**
+
+- [x] A working tree with uncommitted changes refuses both a
+      fast-forward *and* a merge, with the same `ErrDirtyWorkTree`
+      sentinel and the offending paths named. gage commits its own writes
+      immediately, so uncommitted changes mean something outside gage is
+      mid-edit: a fast-forward's hard reset would discard that work and a
+      merge's staging would publish it to every other device. `Vault`
+      reports either as `exitcode.Conflict` — a state a human resolves,
+      not an internal fault
+- [x] A merge that fails partway through applying itself rolls the
+      working tree back, so a failed merge never leaves a tree that is
+      neither the old state nor the new one (which, now that every sync
+      operation refuses over a dirty tree, would wedge the vault)
+- [x] "N local commit(s) pending" is the truth once a merge commit exists
+      between the local head and the remote-tracking ref — the count stops
+      at everything the remote can reach, not at the merge-base commit
+      alone. Stopping at the single hash let the walk descend through a
+      merge's other parent into the shared history behind the base, and
+      report a vault's *entire* commit count as pending
+- [x] A merge whose follow-up push then fails still reports what is
+      pending (the local write plus the merge commit), rather than the
+      zero that would say the work is published
 
 **`clone`**
 
@@ -252,21 +316,81 @@ offline-handling logic runs.
       happens rather than in each caller
 - [x] Auto push after writes (go-git `Push`), under the same vault lock
       the write holds
+- [x] The *automatic* sync on unlock takes the write lock only if it is
+      free right now, and skips silently if it isn't. It needs the lock at
+      all because a fast-forward resets the working tree — but nobody
+      asked for it, and before this milestone a read took no lock at all.
+      Waiting would put `gage show` behind an unrelated `gage insert` for
+      the full `vaultLockTimeout` and then warn, in exchange for nothing:
+      whoever holds the lock is mid-write and will push when it finishes.
+      Manual `sync`/`pull`/`push` still wait — there the human asked
+- [x] `RemoteOpTimeout` (30s) bounds every network operation, automatic or
+      manual, so neither an unlock nor a terminal hangs on a blackholed
+      host. Exported so a frontend driving `Pull`/`Push`/`Sync` bounds them
+      the same way instead of inventing its own number
 - [x] Divergence detection, with distinct reporting from offline failure
       (the three-way `RemoteSyncer` classification above). Once a push
       is classified as diverged, fetch and classify what diverged —
       disjoint entries (merge and continue), conflicting entry (report,
       point at `gage sync`), recipient files (report as the more severe
       case) — since M8b's resolution consumes that classification
+- [x] gage's own file-level three-way merge (`gitrepo.MergeRemote`), since
+      go-git has none. File-level is not a shortcut: entries are age
+      ciphertext, opaque blobs with no line structure, so a text merge of
+      two edits to one entry could only produce a secret neither device
+      wrote. It is also what makes the recipient-file guarantee
+      independent of `.gitattributes` — see the test note above
+- [x] Both operations that move the working tree refuse over uncommitted
+      changes, sharing one `gitrepo.ErrDirtyWorkTree` sentinel so `Vault`
+      can report either as `exitcode.Conflict` with one `errors.Is`. A
+      partially applied merge rolls itself back, which is safe precisely
+      because the tree was verified clean before the first write —
+      everything discarded is the merge's own work
 - [x] Manual `pull`/`push` via go-git (both already implemented purely in
       go-git — no passthrough, no `git` binary dependency, anywhere in
       `gage`)
+- [x] Sync verbs resolve their vault *without unlocking it*
+      (`vaultForSync` / `Session.VaultWithoutUnlocking`) — the one command
+      family that deliberately skips `withUnlockedVault`. A fast-forward,
+      and a merge whose two sides touched different entries, decrypt
+      nothing, so prompting for a passphrase up front would ask for a key
+      most syncs never use
+- [x] `gage clone` picks the branch to clone explicitly rather than
+      following the remote's HEAD. A vault's remote routinely has a HEAD
+      pointing at a branch that doesn't exist: modern `git init --bare`
+      sets HEAD to `refs/heads/main` before any commit, while go-git — what
+      gage commits with — creates `refs/heads/master`. One extra
+      round trip on a once-per-vault operation beats a bare "reference not
+      found"
 - [x] `gage clone` (go-git `PlainClone`, reusing this milestone's
       bare-remote test harness); reads the cloned `.gage/config.toml` to
       learn the vault's default method — what a subsequent `identity add`
       will suggest for this device, not a constraint on it
       (Q-METHOD-SCOPE) — and reports plainly if the local device
       isn't yet a recipient
+
+## Corrections made during review
+
+Recorded because each was a checkbox that was ticked before the behaviour
+underneath it was right, and the shape of the mistake is worth keeping:
+
+- **`AheadCount` reported a vault's whole history as pending.** Walking
+  back from the local head and stopping at the merge-*base commit* is only
+  equivalent to "commits the remote lacks" while no merge sits in between.
+  Once one does, the walk descends into the merge's other parent and
+  re-enters the shared history behind the base without ever passing
+  through it. Reproduced at 7 where 2 was truthful; on a real vault it
+  would have been the entire commit count.
+- **Nothing tested that a stored token reaches go-git.** Every sync test
+  syncs against a local path, where `nil` auth is correct — so the whole
+  suite stayed green with `Auth:` deleted from both option structs. Two
+  plan checkboxes were ticked against tests that only exercised
+  `remoteauth.Method` in isolation.
+- **Offline and diverged shared exit code 1**, which is the one
+  distinction this milestone exists to draw.
+- **`MergeRemote` swept a human's uncommitted edits into an automatic
+  merge commit and pushed them**, while `FastForward` refused over the
+  same state.
 
 ## Definition of done
 
@@ -287,3 +411,10 @@ you can't yet read tells you so plainly.
 - M10's opportunistic trust-cache warning must also fire on `sync`
   specifically, because a clean fast-forward sync can complete without
   ever calling `Unlock` — so it can't ride the unlock hook alone.
+- **M9's `--reencrypt` holds the write lock for a long time.** The
+  automatic sync on unlock skips a contended lock rather than waiting, so
+  reads stay responsive while it runs; that is a property to keep, not an
+  accident to tidy away.
+- **`exitcode.Unreachable` (7) is new here.** Anything later that
+  enumerates exit codes — docs, shell completions, a man page — has one
+  more to list.

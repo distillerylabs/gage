@@ -25,6 +25,17 @@ const vaultLockTimeout = 10 * time.Second
 // remember. Reads never call this — see "Concurrent processes and the
 // vault lock" in the design doc.
 func (v *Vault) withWriteLock(fn func() error) error {
+	return v.withWriteLockTimeout(vaultLockTimeout, fn)
+}
+
+// withWriteLockTimeout is withWriteLock with the wait spelled out.
+//
+// A timeout of 0 tries exactly once and gives up — what the *automatic*
+// sync on unlock wants. Nobody asked for that sync, so it must not make a
+// read queue behind an unrelated write; see Vault.syncOnUnlock. Callers
+// distinguish "someone else holds it" from a real failure with
+// errors.As against *vaultlock.ContendedError.
+func (v *Vault) withWriteLockTimeout(timeout time.Duration, fn func() error) error {
 	path, err := LockFilePath(v.Name)
 	if err != nil {
 		return err
@@ -33,7 +44,7 @@ func (v *Vault) withWriteLock(fn func() error) error {
 		return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: creating lock directory: %w", err))
 	}
 
-	lock, err := vaultlock.Acquire(path, vaultLockTimeout)
+	lock, err := vaultlock.Acquire(path, timeout)
 	if err != nil {
 		return exitcode.Wrap(exitcode.Conflict, fmt.Errorf("gage: %w", err))
 	}

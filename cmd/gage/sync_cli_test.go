@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -276,8 +278,14 @@ func TestSyncOnAVaultWithNoRemoteSaysSoAndSucceeds(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("sync on a local-only vault exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
 	}
-	if !strings.Contains(res.Stdout, "in sync") {
-		t.Errorf("sync said %q, want a plain nothing-to-do line", res.Stdout)
+	// Not "already in sync with origin": there is no origin, and naming
+	// one that doesn't exist is how someone concludes their remote is
+	// configured when it isn't.
+	if !strings.Contains(res.Stdout, "local-only") {
+		t.Errorf("sync said %q, want it to say the vault is local-only", res.Stdout)
+	}
+	if strings.Contains(res.Stdout, "origin") && !strings.Contains(res.Stdout, "no remote") {
+		t.Errorf("sync said %q, want it not to claim a relationship with an origin", res.Stdout)
 	}
 }
 
@@ -297,4 +305,99 @@ func listRemoteEntries(t *testing.T, d *gittest.Device) []string {
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+// TestOfflineExitsUnreachableAndDivergedExitsConflict is M8a's whole
+// contract expressed as exit status rather than prose.
+//
+// The two are the same failed push and need different things from
+// whoever is watching: one is worth retrying unchanged when the network
+// comes back, the other needs a human. Sharing exit code 1 made that
+// difference visible only to someone reading the message.
+func TestOfflineExitsUnreachableAndDivergedExitsConflict(t *testing.T) {
+	isolateXDG(t)
+	gittest.InstallRecordingTransport(t, &net.OpError{
+		Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused"),
+	})
+
+	// A vault whose remote is permanently unreachable. init says so and
+	// still succeeds — the vault is durable locally either way.
+	res := runCLI(t, []string{"init", "personal", "--remote", gittest.URL("git.example.com", "me/vault.git")}, "")
+	if res.Code != 0 {
+		t.Fatalf("init against an unreachable remote exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+
+	res = runCLI(t, []string{"push"}, "")
+	if res.Code != int(exitcode.Unreachable) {
+		t.Errorf("offline push exit code = %d, want %d (unreachable); stderr=%s",
+			res.Code, exitcode.Unreachable, res.Stderr)
+	}
+	if res.Code == int(exitcode.Conflict) {
+		t.Error("offline push exits as a conflict, which is what a real divergence exits as")
+	}
+}
+
+// TestPushNamesTheConflictingPathsJustLikeSync: a push is where a
+// divergence is discovered, so it has to be at least as informative
+// about one as `sync` is. Only `sync` listing the paths made `push` the
+// worse way to learn about the identical situation.
+func TestPushNamesTheConflictingPathsJustLikeSync(t *testing.T) {
+	isolateXDG(t)
+	vaultPath, remote := initVaultWithRemote(t, "personal")
+
+	other := gittest.NewDevice(t, remote)
+	other.WriteCommitPush(t, "shared.txt", "their version", "their edit")
+
+	if err := os.WriteFile(filepath.Join(vaultPath, "shared.txt"), []byte("my version"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitrepo.CommitAll(vaultPath, "my edit"); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"push"}, "")
+	if res.Code != int(exitcode.Conflict) {
+		t.Fatalf("push on a real conflict exit code = %d, want %d; stderr=%s",
+			res.Code, exitcode.Conflict, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "shared.txt") {
+		t.Errorf("push stderr = %q, want it to name the conflicting path the way `sync` does", res.Stderr)
+	}
+}
+
+// TestSyncRefusesOverUncommittedChanges: gage commits its own writes
+// immediately, so uncommitted changes in a vault mean something outside
+// gage is mid-edit. Merging on top of them would sweep half-typed work
+// into an automatic merge commit and push it to every other device.
+func TestSyncRefusesOverUncommittedChanges(t *testing.T) {
+	isolateXDG(t)
+	vaultPath, remote := initVaultWithRemote(t, "personal")
+
+	other := gittest.NewDevice(t, remote)
+	other.WriteCommitPush(t, "theirs.txt", "theirs", "their edit")
+
+	if err := os.WriteFile(filepath.Join(vaultPath, "mine.txt"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitrepo.CommitAll(vaultPath, "my edit"); err != nil {
+		t.Fatal(err)
+	}
+	// Uncommitted, and written after the last commit so nothing swept it in.
+	if err := os.WriteFile(filepath.Join(vaultPath, "scratch.txt"), []byte("half-typed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"sync"}, "")
+	if res.Code != int(exitcode.Conflict) {
+		t.Fatalf("sync over a dirty tree exit code = %d, want %d (conflict); stderr=%s",
+			res.Code, exitcode.Conflict, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "scratch.txt") {
+		t.Errorf("stderr = %q, want it to name the uncommitted file", res.Stderr)
+	}
+
+	fresh := gittest.NewDevice(t, remote)
+	if fresh.Exists(t, "scratch.txt") {
+		t.Error("a half-typed local file was published by an automatic merge")
+	}
 }
