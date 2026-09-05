@@ -36,6 +36,8 @@ func runSession(app *App) error {
 		// would use, so `show foo` works before any `use`. Naming it
 		// doesn't unlock it — the first command that needs a key does.
 		Current: g.Current,
+		// nil means the real clock; only a test sets this.
+		Now: app.Now,
 	})
 	// Close is what zeroes every held key on the way out, so it runs on
 	// every exit path — `exit`, Ctrl-D, or an error out of the loop.

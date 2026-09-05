@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -33,6 +34,16 @@ type App struct {
 	// only means anything against a real file descriptor — this is the
 	// one seam production code and tests genuinely need to differ on.
 	IsTerminal func() bool
+
+	// Now is the clock the session's idle timeout reads, defaulting to
+	// time.Now when nil. It exists for the same reason IsTerminal does:
+	// a test needs to differ from production on it and cannot fake it
+	// any other way. Real elapsed time is not usable here — Windows'
+	// time.Now advances in steps of up to ~15ms, so two commands in one
+	// scripted session routinely read the identical instant and no
+	// timeout, however small, elapses between them. See
+	// TestConfiguredIdleTimeoutReachesTheSession.
+	Now func() time.Time
 
 	// Session is non-nil only while the REPL is running. It's what makes
 	// every entry command work unchanged in both modes: the handlers all

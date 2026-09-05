@@ -12,6 +12,7 @@ import (
 
 	"github.com/denmark/gage/internal/gage/atomicfile"
 	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/denmark/gage/internal/gage/memlock"
 )
 
 // shippedScryptWorkFactor is the log2 cost gage wraps identity files at
@@ -275,7 +276,14 @@ func parseIdentityFile(plaintext []byte) (*age.X25519Identity, []byte, error) {
 			return nil, nil, exitcode.Wrap(exitcode.Conflict,
 				fmt.Errorf("%w: its key line does not parse: %v", ErrCorruptIdentityFile, err))
 		}
-		return ident, bytes.Clone(line), nil
+		// Allocated through memlock rather than bytes.Clone so this key
+		// owns every page it sits on: page locks are not reference
+		// counted, so a second key sharing this page would have its
+		// protection released by whichever Identity closed first. See
+		// memlock.Alloc.
+		secret := memlock.Alloc(len(line))
+		copy(secret, line)
+		return ident, secret, nil
 	}
 	return nil, nil, exitcode.Wrap(exitcode.Conflict,
 		fmt.Errorf("%w: it contains no %s\u2026 line", ErrCorruptIdentityFile, identityFileSecretPrefix))

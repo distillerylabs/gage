@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/config"
@@ -23,6 +24,14 @@ import (
 // next: after `use personal` that's the passphrase prompt.
 func runSessionScript(t *testing.T, script string) cliResult {
 	t.Helper()
+	return runSessionScriptWithClock(t, script, nil)
+}
+
+// runSessionScriptWithClock is runSessionScript with the session's idle
+// clock injected. A nil now means the real one. See stepClock for why a
+// scripted session can't use real elapsed time.
+func runSessionScriptWithClock(t *testing.T, script string, now func() time.Time) cliResult {
+	t.Helper()
 	var stdout, stderr bytes.Buffer
 	in := strings.NewReader(script)
 	app := &App{
@@ -31,6 +40,7 @@ func runSessionScript(t *testing.T, script string) cliResult {
 		In:         in,
 		Build:      BuildInfo{Version: "v1.2.3", Commit: "abcdef1"},
 		IsTerminal: func() bool { return true },
+		Now:        now,
 	}
 	app.Prompter = newTerminalPrompter(in, &stderr)
 	code := runApp(app, []string{})
@@ -537,26 +547,56 @@ func TestUnknownSessionCommandReportsAndContinues(t *testing.T) {
 	}
 }
 
-// TestConfiguredIdleTimeoutReachesTheSession proves the [shell]
-// setting is actually wired to the Session's re-lock, rather than being
-// parsed and dropped. The timeout's own behavior is tested against an
-// injected clock in internal/gage; this asserts only the connection, and
-// it does so without waiting: a 1ns timeout has always elapsed by the
-// next command.
+// stepClock is a clock that advances a fixed step every time it is
+// read, which is how a scripted session gets simulated idle time without
+// a hook between its commands.
+//
+// Reading advances it because there is nowhere else to put the advance:
+// the session is driven end to end through runApp, so a test has no
+// moment between two typed lines at which to move a clock by hand. Any
+// two commands therefore see at least one step of elapsed time, which is
+// all a wiring test needs. The library's own idle-timeout tests
+// (internal/gage) drive a clock they move explicitly, and that is where
+// the boundary behavior — just inside the window versus just past it —
+// is pinned.
+type stepClock struct {
+	t    time.Time
+	step time.Duration
+}
+
+func (c *stepClock) now() time.Time {
+	c.t = c.t.Add(c.step)
+	return c.t
+}
+
+// TestConfiguredIdleTimeoutReachesTheSession proves the [shell] setting
+// is actually wired to the Session's re-lock, rather than being parsed
+// and dropped.
+//
+// The clock is injected rather than real. An earlier version of this
+// test configured "1ns" on the theory that any real elapsed time would
+// exceed it, and it failed on Windows: time.Now there advances in steps
+// of up to ~15ms, so `use personal` and the command after it read the
+// identical instant and nothing ever aged out. Injecting the clock also
+// lets the configured value be a realistic 10m rather than a duration
+// chosen to be beneath the clock's resolution — so this now checks that
+// the configured timeout reaches the session, where "1ns" would have
+// passed against any hardcoded tiny value.
 func TestConfiguredIdleTimeoutReachesTheSession(t *testing.T) {
 	isolateXDG(t)
 	initEntryTestVault(t, "personal")
 	insertEntry(t, "personal", "ProtonMail", "correcthorsebatterystaple")
-	setShellConfig(t, config.Shell{IdleTimeout: "1ns"})
+	setShellConfig(t, config.Shell{IdleTimeout: "10m"})
 
-	res := runSessionScript(t, script(
+	clock := &stepClock{t: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC), step: time.Hour}
+	res := runSessionScriptWithClock(t, script(
 		"use personal",
 		testPassphrase,
 		"status",
 		"show ProtonMail",
 		testPassphrase,
 		"exit",
-	))
+	), clock.now)
 	if res.Code != 0 {
 		t.Fatalf("session exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
 	}
@@ -568,6 +608,36 @@ func TestConfiguredIdleTimeoutReachesTheSession(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "correcthorsebatterystaple") {
 		t.Errorf("the re-unlocked command didn't complete:\n%s", res.Stdout)
+	}
+}
+
+// TestConfiguredIdleTimeoutIsNotAppliedTooEagerly is the other half, and
+// the reason the test above can't stand alone: with a step well under
+// the configured timeout, nothing ages out and one passphrase covers the
+// whole session. Without this, a build that re-locked on every command
+// regardless of the timeout would satisfy the test above.
+func TestConfiguredIdleTimeoutIsNotAppliedTooEagerly(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	insertEntry(t, "personal", "ProtonMail", "correcthorsebatterystaple")
+	setShellConfig(t, config.Shell{IdleTimeout: "10m"})
+
+	clock := &stepClock{t: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC), step: time.Second}
+	res := runSessionScriptWithClock(t, script(
+		"use personal",
+		testPassphrase,
+		"status",
+		"show ProtonMail",
+		"exit",
+	), clock.now)
+	if res.Code != 0 {
+		t.Fatalf("session exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "unlocked") {
+		t.Errorf("the vault re-locked well inside its idle timeout:\n%s", res.Stdout)
+	}
+	if got := countPassphrasePrompts(res.Stdout + res.Stderr); got != 1 {
+		t.Errorf("asked for a passphrase %d times inside the idle timeout, want 1:\n%s", got, res.Stdout)
 	}
 }
 
