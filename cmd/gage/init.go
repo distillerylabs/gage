@@ -215,9 +215,9 @@ func publishNewVault(app *App, name, path, remote string) error {
 			return nil
 		}
 		return exitcode.Wrap(exitcode.CodeOf(err), fmt.Errorf(
-			"gage: %q was created locally, but publishing it to %s failed: %w\n"+
+			"%q was created locally, but publishing it to %s failed: %s\n"+
 				"gage: gage never creates a repository for you — create an empty one there, then run `gage push`",
-			name, remote, err))
+			name, remote, errorClause(err)))
 	}
 
 	writeOut(app.Out, []string{fmt.Sprintf("gage: published %q to %s", name, remote)})
