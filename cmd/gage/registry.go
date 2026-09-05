@@ -240,7 +240,7 @@ var registry = []CommandInfo{
 	},
 	{
 		Name:         "ls",
-		Short:        "List entry titles",
+		Short:        "List entries with their ids, dates, and last writer",
 		Group:        GroupEntry,
 		Availability: AvailBoth,
 	},

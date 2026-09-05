@@ -1430,7 +1430,9 @@ gage recipient verify [--use NAME]
 ### Entry CRUD
 
 ```
-gage ls [--use NAME]                        # list titles (requires unlock — see below)
+gage ls [--use NAME]                        # list entries: title, short id, created,
+                                              # updated, updated_by (requires unlock —
+                                              # see below)
 gage search <pattern> [--use NAME]          # matches title/description/body
                                               # (decrypts in bulk if no index
                                               # cached yet; alias: gage grep)

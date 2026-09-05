@@ -39,8 +39,8 @@ text means holding every secret value in memory for the session.
 ## Decisions made
 
 - **What the index holds.** Resolved: metadata only — `title`,
-  `description`, and the bookkeeping `ls` prints alongside them (dates,
-  `updated_by`). Never `value`, never `fields`. So the index accelerates
+  `description`, `created`, `updated`, `updated_by`. Never `value`,
+  never `fields`. So the index accelerates
   *resolution* and title/description matching, and nothing else:
   `search`/`grep`'s body-text pass decrypts every entry on demand and
   drops that plaintext before it returns, every time it runs. That makes
@@ -72,6 +72,21 @@ text means holding every secret value in memory for the session.
   builds an equivalent in-memory map for the duration of one call — the
   point is that it isn't persisted or shared, and it dies with the
   process a few milliseconds later.
+- **`ls` prints the dates and `updated_by` too**, extending [M4's
+  output decision](m4-crud.md) (title, then a partial UUID) rather than
+  replacing it: the columns are now title, short id, `created`,
+  `updated`, `updated_by`, one entry per line, still unlabelled so the
+  output stays greppable. The legend lives in `gage help ls`.
+  M4's format predated the index; now that a session holds these fields
+  anyway, printing them costs nothing a listing wasn't already paying.
+  Dates render as plain UTC days — `gage cat` is where the full RFC 3339
+  stamp lives, and two full timestamps per line would bury the titles.
+- **Both modes render `ls` through one path.** `Vault.List` (one-shot,
+  decrypts fresh) and `Session.List` (index-served) return the same
+  `[]ListEntry`, sorted identically — title, then id to break the ties
+  `-f` allows — and cmd/gage has a single renderer for both. Two
+  formatting loops that happen to agree today is exactly the drift this
+  milestone's split implementation would otherwise invite.
 
 ## Tests (write first)
 

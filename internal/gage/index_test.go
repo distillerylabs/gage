@@ -420,6 +420,59 @@ func TestSearchMatchesTitleDescriptionAndBody(t *testing.T) {
 	}
 }
 
+// TestListAgreesBetweenOneShotAndSession is the same two-implementations
+// invariant for `ls`: Vault.List decrypts the vault fresh, Session.List
+// serves the index, and cmd/gage renders whichever it gets through one
+// function — so the rows themselves have to match field for field,
+// including the id tie-break that orders entries sharing a title.
+func TestListAgreesBetweenOneShotAndSession(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	v, err := open("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestSession(t, open, SessionConfig{Current: "personal"})
+	_, ident, err := s.Vault("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	insertEntry(t, v, ident, Entry{Title: "AWS root account", Description: "prod", Value: "x"})
+	insertEntry(t, v, ident, Entry{Title: "a", Value: "y"})
+	insertEntry(t, v, ident, Entry{Title: "Caf\u00e9", Value: "z"})
+	// Two entries sharing a title: only the id tie-break orders these.
+	dup := sampleEntry(time.Now())
+	dup.Title = "a"
+	if _, err := v.Insert(dup, true, ident); err != nil {
+		t.Fatalf("inserting a duplicate title: %v", err)
+	}
+
+	oneShot, err := v.List(ident)
+	if err != nil {
+		t.Fatalf("Vault.List: %v", err)
+	}
+	inSession, err := s.List("")
+	if err != nil {
+		t.Fatalf("Session.List: %v", err)
+	}
+	if !reflect.DeepEqual(oneShot, inSession) {
+		t.Errorf("List differs between modes:\none-shot: %+v\nsession:  %+v", oneShot, inSession)
+	}
+	if len(oneShot) != 4 {
+		t.Errorf("List returned %d rows, want 4", len(oneShot))
+	}
+	// The dates and updated_by ls prints have to survive the round trip
+	// through the index, not just the titles.
+	for _, r := range inSession {
+		if r.Updated.IsZero() || r.Created.IsZero() {
+			t.Errorf("row %+v came back with a zero timestamp", r)
+		}
+		if r.UpdatedBy == "" {
+			t.Errorf("row %+v came back with no updated_by", r)
+		}
+	}
+}
+
 // TestSearchAgreesBetweenOneShotAndSession is M6's "the same thing
 // happens in both modes" invariant applied to the one command M7 splits
 // across two implementations: one-shot decrypts everything and matches

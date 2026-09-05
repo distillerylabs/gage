@@ -47,6 +47,33 @@ func matchesBody(e Entry, lowerPattern string) bool {
 	return false
 }
 
+// List returns every entry's listing metadata — one-shot mode's `ls`,
+// which like every other one-shot read decrypts the whole vault fresh on
+// every call. Session's index-backed List (see Session.List) returns the
+// same rows in the same order without re-decrypting.
+//
+// The decrypted entries are dropped on return: a row carries title,
+// description, dates and updated_by, never the value or the fields.
+func (v *Vault) List(ident *Identity) ([]ListEntry, error) {
+	entries, err := v.decryptAll(ident)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ListEntry, 0, len(entries))
+	for id, e := range entries {
+		out = append(out, ListEntry{
+			ID:          id,
+			Title:       e.Title,
+			Description: e.Description,
+			Created:     e.Created,
+			Updated:     e.Updated,
+			UpdatedBy:   e.UpdatedBy,
+		})
+	}
+	sortListEntries(out)
+	return out, nil
+}
+
 // Search matches pattern (case-insensitively) against every entry's
 // title, description, and decrypted body — one-shot mode's implementation,
 // which like every other one-shot read decrypts the whole vault fresh on

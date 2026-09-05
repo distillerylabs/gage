@@ -26,19 +26,38 @@ type span struct {
 // again. Never a secret value, never a structured field.
 type indexEntry struct {
 	title, description span
-	updated            Timestamp
+	created, updated   Timestamp
 	updatedBy          string
 }
 
-// ListEntry is one row of Session.List's output — ls's title-and-id, plus
-// the description/dates the index also caches (see the M7 plan's
-// "Decisions made") for a later command to use without decrypting again.
+// ListEntry is one row of a vault listing: the metadata `ls` prints —
+// title, id, dates, updated_by — plus the description the index also
+// caches for a later command to use without decrypting again. Produced
+// both by Vault.List (one-shot, always freshly decrypted) and by
+// Session.List (index-served); the two are byte-identical by
+// construction, which is what lets cmd/gage render either with one
+// function.
 type ListEntry struct {
 	ID          uuid.UUID
 	Title       string
 	Description string
+	Created     Timestamp
 	Updated     Timestamp
 	UpdatedBy   string
+}
+
+// sortListEntries fixes ls's order — title first, per the M4 plan's
+// output decision, then id to break ties. The tie-break matters because
+// -f/--force allows duplicate titles: without it, two entries sharing a
+// title would come back in whatever order the map ranged in, and one-shot
+// and session mode could print the same vault in different orders.
+func sortListEntries(rows []ListEntry) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Title != rows[j].Title {
+			return rows[i].Title < rows[j].Title
+		}
+		return rows[i].ID.String() < rows[j].ID.String()
+	})
 }
 
 // Index is a session-scoped cache of one vault's decrypted metadata —
@@ -96,6 +115,7 @@ func (idx *Index) put(id uuid.UUID, e Entry) {
 	idx.entries[id] = indexEntry{
 		title:       idx.store(e.Title),
 		description: idx.store(e.Description),
+		created:     e.Created,
 		updated:     e.Updated,
 		updatedBy:   e.UpdatedBy,
 	}
@@ -124,8 +144,8 @@ func (idx *Index) titles() map[uuid.UUID]string {
 	return out
 }
 
-// list returns every cached entry as a ListEntry, sorted by title then
-// id — the same ordering ls has always used.
+// list returns every cached entry as a ListEntry, in the same order —
+// and carrying the same fields — Vault.List produces one-shot.
 func (idx *Index) list() []ListEntry {
 	out := make([]ListEntry, 0, len(idx.entries))
 	for id, e := range idx.entries {
@@ -133,16 +153,12 @@ func (idx *Index) list() []ListEntry {
 			ID:          id,
 			Title:       idx.text(e.title),
 			Description: idx.text(e.description),
+			Created:     e.created,
 			Updated:     e.updated,
 			UpdatedBy:   e.updatedBy,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Title != out[j].Title {
-			return out[i].Title < out[j].Title
-		}
-		return out[i].ID.String() < out[j].ID.String()
-	})
+	sortListEntries(out)
 	return out
 }
 
