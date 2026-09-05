@@ -96,6 +96,11 @@ type scriptedPrompter struct {
 	chooseIndex    int
 	chooseOverride string
 	chooseErr      error
+
+	// warnings records every Warn call, in order — how the M7 index
+	// tests prove a page-lock failure is (or isn't) reported, and
+	// reported exactly once.
+	warnings []string
 }
 
 func (p *scriptedPrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
@@ -119,7 +124,7 @@ func (p *scriptedPrompter) Choose(list CandidateList) (string, error) {
 
 func (p *scriptedPrompter) Confirm(prompt string) (bool, error) { return true, nil }
 func (p *scriptedPrompter) Value(prompt string) (string, error) { return "", nil }
-func (p *scriptedPrompter) Warn(msg string)                     {}
+func (p *scriptedPrompter) Warn(msg string)                     { p.warnings = append(p.warnings, msg) }
 
 // unlockCount reports how many times this prompter has been asked for a
 // passphrase for one vault — the number every "did it re-prompt?" test

@@ -244,6 +244,19 @@ var registry = []CommandInfo{
 		Group:        GroupEntry,
 		Availability: AvailBoth,
 	},
+	{
+		Name:         "search",
+		Aliases:      []string{"grep"},
+		Short:        "Find entries by title, description, or body text",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "reindex",
+		Short:        "Force a session's cached metadata index to rebuild",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
 }
 
 // commandShort looks up a registry entry's Short description by its

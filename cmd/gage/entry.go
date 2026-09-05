@@ -160,6 +160,7 @@ func newInsertCommand(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				noteIndexEntry(app, v, id, e)
 
 				writeOut(app.Out, []string{fmt.Sprintf("gage: inserted %q (%s)", title, id)})
 				return nil
@@ -223,6 +224,7 @@ func runInsertEdit(app *App, v *gage.Vault, ident *gage.Identity, title, descrip
 	if err != nil {
 		return err
 	}
+	noteIndexEntry(app, v, id, e)
 	writeOut(app.Out, []string{fmt.Sprintf("gage: inserted %q (%s)", e.Title, id)})
 	return nil
 }
@@ -290,20 +292,43 @@ func resolveQuery(app *App, v *gage.Vault, query string, ident *gage.Identity) (
 
 // mutationQuery is what rm/rename pass to the library methods that
 // resolve a query themselves. In one-shot mode that's the typed query,
-// unchanged. In a session it's the id the query resolved to — pre-
+// unchanged, and a zero Entry (there's no session index for a caller to
+// update anyway). In a session it's the id the query resolved to — pre-
 // resolving is what lets those two commands prompt on an ambiguous query
 // like every other command, rather than being the odd pair that fails
 // where `show` asks. The library then re-resolves the id through its
 // exact-UUID stage, which can only match the entry just chosen.
-func mutationQuery(app *App, v *gage.Vault, query string, ident *gage.Identity) (string, error) {
+//
+// The resolved Entry is also returned so rename can build its own
+// post-rename metadata for noteIndexEntry without a second decrypt — see
+// newRenameCommand.
+func mutationQuery(app *App, v *gage.Vault, query string, ident *gage.Identity) (string, gage.Entry, error) {
 	if app.Session == nil {
-		return query, nil
+		return query, gage.Entry{}, nil
 	}
-	id, _, err := resolveQuery(app, v, query, ident)
+	id, e, err := resolveQuery(app, v, query, ident)
 	if err != nil {
-		return "", err
+		return "", gage.Entry{}, err
 	}
-	return id.String(), nil
+	return id.String(), e, nil
+}
+
+// noteIndexEntry tells the session (if any) about e's current
+// title/description so its metadata index — if it has already built one
+// for this vault — reflects the change without a full rebuild. A no-op
+// in one-shot mode, and a no-op inside a session that hasn't indexed
+// this vault yet; see gage.Session.NoteEntry.
+func noteIndexEntry(app *App, v *gage.Vault, id uuid.UUID, e gage.Entry) {
+	if app.Session != nil {
+		app.Session.NoteEntry(v.Name, id, e)
+	}
+}
+
+// forgetIndexEntry is noteIndexEntry's counterpart after `rm`.
+func forgetIndexEntry(app *App, v *gage.Vault, id uuid.UUID) {
+	if app.Session != nil {
+		app.Session.ForgetEntry(v.Name, id)
+	}
 }
 
 // reportAmbiguous prints err's candidate list to stderr if it wraps
@@ -419,6 +444,7 @@ func newEditCommand(app *App) *cobra.Command {
 				if err := v.Update(id, edited); err != nil {
 					return err
 				}
+				noteIndexEntry(app, v, id, edited)
 				writeOut(app.Out, []string{fmt.Sprintf("gage: updated %q (%s)", edited.Title, shortEntryID(id.String()))})
 				return nil
 			})
@@ -441,7 +467,7 @@ func newRenameCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				query, err := mutationQuery(app, v, args[0], ident)
+				query, resolved, err := mutationQuery(app, v, args[0], ident)
 				if err != nil {
 					return err
 				}
@@ -450,6 +476,16 @@ func newRenameCommand(app *App) *cobra.Command {
 					reportAmbiguous(app, err)
 					return err
 				}
+				// Rename only changes the title and re-stamps
+				// updated/updated_by (see Vault.Rename); resolved is
+				// otherwise still the pre-rename entry, so patching just
+				// those three fields is enough to hand NoteEntry the
+				// post-rename metadata without decrypting the vault
+				// again to fetch it.
+				resolved.Title = args[1]
+				resolved.Updated = gage.NewTimestamp(time.Now())
+				resolved.UpdatedBy = ident.Device()
+				noteIndexEntry(app, v, id, resolved)
 				writeOut(app.Out, []string{fmt.Sprintf("gage: renamed to %q (%s)", args[1], shortEntryID(id.String()))})
 				return nil
 			})
@@ -494,6 +530,7 @@ func newGenerateCommand(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				noteIndexEntry(app, v, id, e)
 				writeOut(app.Out, []string{fmt.Sprintf("gage: generated %q (%s)", title, id)})
 				return nil
 			})
@@ -514,7 +551,7 @@ func newRmCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				query, err := mutationQuery(app, v, args[0], ident)
+				query, _, err := mutationQuery(app, v, args[0], ident)
 				if err != nil {
 					return err
 				}
@@ -523,6 +560,7 @@ func newRmCommand(app *App) *cobra.Command {
 					reportAmbiguous(app, err)
 					return err
 				}
+				forgetIndexEntry(app, v, id)
 				writeOut(app.Out, []string{fmt.Sprintf("gage: removed %s", id)})
 				return nil
 			})
@@ -534,6 +572,13 @@ func newRmCommand(app *App) *cobra.Command {
 
 // newLsCommand builds `gage ls`: title first, then a partial (8-hex-char)
 // id, sorted by title — see the M4 plan's "Decisions made" on ls output.
+//
+// In a session this is index-backed (M7): Session.List builds the
+// metadata cache on the first ls/show/search per vault and reuses it on
+// every one after. One-shot mode has no cache to reuse, so it keeps
+// M4's decrypt-every-entry-every-time loop — there is nothing else it
+// could do, since one-shot mode is gone before a second call could ever
+// benefit from one.
 func newLsCommand(app *App) *cobra.Command {
 	var useFlag string
 	cmd := &cobra.Command{
@@ -541,6 +586,14 @@ func newLsCommand(app *App) *cobra.Command {
 		Short: commandShort("ls"),
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if app.Session != nil {
+				rows, err := app.Session.List(useFlag)
+				if err != nil {
+					return err
+				}
+				writeLsRows(app, rows)
+				return nil
+			}
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
 				ids, err := v.EntryIDs()
 				if err != nil {
@@ -568,6 +621,106 @@ func newLsCommand(app *App) *cobra.Command {
 				writeOut(app.Out, lines)
 				return nil
 			})
+		},
+	}
+	addUseFlag(cmd, &useFlag)
+	return cmd
+}
+
+// writeLsRows renders Session.List's rows in the same "title, short id"
+// shape the one-shot path prints, so the two are visually identical.
+func writeLsRows(app *App, rows []gage.ListEntry) {
+	if len(rows) == 0 {
+		return
+	}
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		lines = append(lines, fmt.Sprintf("%s  %s", r.Title, shortEntryID(r.ID.String())))
+	}
+	writeOut(app.Out, lines)
+}
+
+// newSearchCommand builds `gage search` (alias `gage grep`): matches
+// pattern against every entry's title, description, and decrypted body,
+// printing the same "title, short id" rows as ls — never the matched
+// text itself, and never the entry's value, so a hit on a secret's own
+// content doesn't put that content in scrollback. See the M7 plan's
+// "Decisions made".
+//
+// In a session the title/description half is index-backed exactly like
+// ls; the body half always decrypts fresh, on every call, since a
+// secret's plaintext is never something this cache holds onto — see
+// Session.Search.
+func newSearchCommand(app *App) *cobra.Command {
+	var useFlag string
+	cmd := &cobra.Command{
+		Use:     "search <pattern>",
+		Aliases: []string{"grep"},
+		Short:   commandShort("search"),
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if app.Session != nil {
+				results, err := app.Session.Search(useFlag, args[0])
+				if err != nil {
+					return err
+				}
+				writeSearchResults(app, results)
+				return nil
+			}
+			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
+				results, err := v.Search(args[0], ident)
+				if err != nil {
+					return err
+				}
+				writeSearchResults(app, results)
+				return nil
+			})
+		},
+	}
+	addUseFlag(cmd, &useFlag)
+	return cmd
+}
+
+// writeSearchResults renders search/grep's matches the same way ls
+// renders its rows: title and a short id, nothing about where the match
+// was or what it matched.
+func writeSearchResults(app *App, results []gage.SearchResult) {
+	if len(results) == 0 {
+		return
+	}
+	lines := make([]string, 0, len(results))
+	for _, r := range results {
+		lines = append(lines, fmt.Sprintf("%s  %s", r.Title, shortEntryID(r.ID.String())))
+	}
+	writeOut(app.Out, lines)
+}
+
+// newReindexCommand builds `gage reindex`: forces a session's cached
+// metadata index to rebuild from scratch, picking up any change to
+// entries/ that didn't come through gage itself (a manual `git pull`,
+// most commonly). One-shot mode never builds a cache in the first place
+// — every command there already decrypts fresh — so there it only
+// confirms the vault is actually reachable, and says as much rather than
+// silently doing nothing.
+func newReindexCommand(app *App) *cobra.Command {
+	var useFlag string
+	cmd := &cobra.Command{
+		Use:   "reindex",
+		Short: commandShort("reindex"),
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if app.Session == nil {
+				if _, _, err := resolveVaultEntry(useFlag); err != nil {
+					return err
+				}
+				writeOut(app.Out, []string{"gage: one-shot mode does not cache metadata; nothing to reindex"})
+				return nil
+			}
+			if err := app.Session.Reindex(useFlag); err != nil {
+				return err
+			}
+			writeOut(app.Out, []string{"gage: index rebuilt"})
+			return nil
 		},
 	}
 	addUseFlag(cmd, &useFlag)

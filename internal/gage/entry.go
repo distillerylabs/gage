@@ -466,6 +466,9 @@ func (v *Vault) ReadEntry(id uuid.UUID, ident *Identity) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	if v.onDecrypt != nil {
+		v.onDecrypt()
+	}
 	return UnmarshalEntry(plaintext)
 }
 
@@ -589,95 +592,145 @@ func (v *Vault) Remove(query string, ident *Identity) (uuid.UUID, error) {
 // never pre-empt a title hit.
 //
 // It never takes the write lock: resolving is a read. There's no
-// metadata index yet — like every other read in this package, it
-// decrypts every entry on every call; M7 adds the cache.
+// metadata index at the Vault level — Vault stays a stateless,
+// identity-agnostic operator over ciphertext, so it decrypts every
+// entry on every call, in both invocation modes. Session's index (M7)
+// is what caches this for a session, by calling resolveTitleAndUUID
+// (the same stage logic below) against its own cached titles instead of
+// a freshly decrypted map, and only decrypting the one entry that wins.
 func (v *Vault) Resolve(query string, ident *Identity) (uuid.UUID, Entry, error) {
-	ids, err := v.EntryIDs()
+	entries, err := v.decryptAll(ident)
 	if err != nil {
 		return uuid.Nil, Entry{}, err
+	}
+	titles := make(map[uuid.UUID]string, len(entries))
+	for id, e := range entries {
+		titles[id] = e.Title
+	}
+
+	id, err := resolveTitleAndUUID(query, titles)
+	if err != nil {
+		return uuid.Nil, Entry{}, err
+	}
+	return id, entries[id], nil
+}
+
+// decryptAll decrypts every entry in the vault and returns them keyed by
+// id — the one full-decrypt pass behind Resolve and titleExists, and (from
+// M7) behind Session's index build and its body-text search. Vault stays
+// identity-agnostic and stateless around it: nothing here is cached
+// beyond the single call.
+func (v *Vault) decryptAll(ident *Identity) (map[uuid.UUID]Entry, error) {
+	ids, err := v.EntryIDs()
+	if err != nil {
+		return nil, err
 	}
 	entries := make(map[uuid.UUID]Entry, len(ids))
 	for _, id := range ids {
 		e, err := v.ReadEntry(id, ident)
 		if err != nil {
-			return uuid.Nil, Entry{}, err
+			return nil, err
 		}
 		entries[id] = e
 	}
+	return entries, nil
+}
 
-	if id, e, err, done := resolveStage(query, matchExactTitle(query, entries), entries); done {
-		return id, e, err
+// resolveTitleAndUUID runs the four-stage resolution algorithm — exact
+// title → substring title → exact UUID → substring UUID → not found —
+// against titles alone, so it can run identically over a freshly
+// decrypted map (Vault.Resolve) or a session's cached index (M7's
+// Session.Resolve), and the two can never silently drift apart.
+//
+// A stage that produces zero matches falls through to the next; a stage
+// that produces more than one stops there and reports *that* stage's
+// matches as ambiguous, never spilling into a later stage — an exact
+// title match always wins over a substring match of a different entry,
+// even when the substring stage would itself have been unique.
+//
+// Title is checked before UUID on purpose, not merely by convention: see
+// the M5 plan's "Decisions made" for the bug this ordering fixes — an
+// earlier version of this resolver tried UUID matches first, which let a
+// query naming one entry's *exact, literal title* silently resolve to a
+// *different* entry instead, whenever the query also happened to be a
+// unique UUID substring elsewhere in the vault. Checking every title
+// stage first closes that hole structurally: by the time UUID matching
+// ever runs, no entry's title matched the query at all, so a UUID hit can
+// never pre-empt a title hit.
+func resolveTitleAndUUID(query string, titles map[uuid.UUID]string) (uuid.UUID, error) {
+	if id, err, done := resolveStage(query, matchExactTitle(query, titles), titles); done {
+		return id, err
 	}
-	if id, e, err, done := resolveStage(query, matchSubstringTitle(query, entries), entries); done {
-		return id, e, err
+	if id, err, done := resolveStage(query, matchSubstringTitle(query, titles), titles); done {
+		return id, err
 	}
-	if id, e, err, done := resolveStage(query, matchExactUUID(query, entries), entries); done {
-		return id, e, err
+	if id, err, done := resolveStage(query, matchExactUUID(query, titles), titles); done {
+		return id, err
 	}
-	if id, e, err, done := resolveStage(query, matchSubstringUUID(query, entries), entries); done {
-		return id, e, err
+	if id, err, done := resolveStage(query, matchSubstringUUID(query, titles), titles); done {
+		return id, err
 	}
 
-	return uuid.Nil, Entry{}, exitcode.Wrap(exitcode.NotFound,
+	return uuid.Nil, exitcode.Wrap(exitcode.NotFound,
 		fmt.Errorf("%w: %q", ErrEntryNotFound, query))
 }
 
-// matchExactTitle is Resolve's first stage: every entry whose title is
+// matchExactTitle is the first stage: every entry whose title is
 // byte-for-byte equal to query.
-func matchExactTitle(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+func matchExactTitle(query string, titles map[uuid.UUID]string) []uuid.UUID {
 	var matches []uuid.UUID
-	for id, e := range entries {
-		if e.Title == query {
+	for id, title := range titles {
+		if title == query {
 			matches = append(matches, id)
 		}
 	}
 	return matches
 }
 
-// matchSubstringTitle is Resolve's second stage: every entry whose title
+// matchSubstringTitle is the second stage: every entry whose title
 // contains query, case-insensitively. Title-only — description and body
 // are `search`'s job, not addressing's; see the M5 plan's "Decisions
 // made."
-func matchSubstringTitle(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+func matchSubstringTitle(query string, titles map[uuid.UUID]string) []uuid.UUID {
 	lowerQuery := strings.ToLower(query)
 	var matches []uuid.UUID
-	for id, e := range entries {
-		if strings.Contains(strings.ToLower(e.Title), lowerQuery) {
+	for id, title := range titles {
+		if strings.Contains(strings.ToLower(title), lowerQuery) {
 			matches = append(matches, id)
 		}
 	}
 	return matches
 }
 
-// matchExactUUID is Resolve's third stage: query parsed as a UUID
-// (accepting any of uuid.Parse's accepted spellings — hyphenated,
-// hyphen-less, braced, urn:uuid: prefixed) against every entry's id,
-// exactly. A query that doesn't even parse as a UUID matches nothing
-// here rather than erroring — Resolve's job is to keep trying stages,
-// not to reject a query early because one particular stage can't use it.
-func matchExactUUID(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+// matchExactUUID is the third stage: query parsed as a UUID (accepting
+// any of uuid.Parse's accepted spellings — hyphenated, hyphen-less,
+// braced, urn:uuid: prefixed) against every entry's id, exactly. A query
+// that doesn't even parse as a UUID matches nothing here rather than
+// erroring — resolution's job is to keep trying stages, not to reject a
+// query early because one particular stage can't use it.
+func matchExactUUID(query string, titles map[uuid.UUID]string) []uuid.UUID {
 	qid, err := uuid.Parse(query)
 	if err != nil {
 		return nil
 	}
-	if _, ok := entries[qid]; !ok {
+	if _, ok := titles[qid]; !ok {
 		return nil
 	}
 	return []uuid.UUID{qid}
 }
 
-// matchSubstringUUID is Resolve's fourth and last stage: every entry
-// whose canonical UUID string contains query as a substring, hyphens and
-// case ignored on both sides — a superset of "prefix," so `ls`'s short-id
+// matchSubstringUUID is the fourth and last stage: every entry whose
+// canonical UUID string contains query as a substring, hyphens and case
+// ignored on both sides — a superset of "prefix," so `ls`'s short-id
 // convention keeps working. A query with no hex-and-hyphen characters at
 // all simply can't be a substring of any UUID's canonical form (which is
 // exactly those characters), so this stage naturally matches nothing for
 // an ordinary word without needing a separate "does this look like a
 // UUID" guard the way an earlier version of this stage did.
-func matchSubstringUUID(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
+func matchSubstringUUID(query string, titles map[uuid.UUID]string) []uuid.UUID {
 	strippedQuery := strings.ToLower(strings.ReplaceAll(query, "-", ""))
 	var matches []uuid.UUID
-	for id := range entries {
+	for id := range titles {
 		strippedID := strings.ToLower(strings.ReplaceAll(id.String(), "-", ""))
 		if strings.Contains(strippedID, strippedQuery) {
 			matches = append(matches, id)
@@ -690,23 +743,23 @@ func matchSubstringUUID(query string, entries map[uuid.UUID]Entry) []uuid.UUID {
 // this stage, keep going" (done == false, zero matches) or a final
 // outcome (done == true): the sole match, or an AmbiguousQueryError over
 // every match at this stage.
-func resolveStage(query string, matches []uuid.UUID, entries map[uuid.UUID]Entry) (id uuid.UUID, e Entry, err error, done bool) {
+func resolveStage(query string, matches []uuid.UUID, titles map[uuid.UUID]string) (id uuid.UUID, err error, done bool) {
 	switch len(matches) {
 	case 0:
-		return uuid.Nil, Entry{}, nil, false
+		return uuid.Nil, nil, false
 	case 1:
-		return matches[0], entries[matches[0]], nil, true
+		return matches[0], nil, true
 	default:
-		return uuid.Nil, Entry{}, ambiguousError(query, matches, entries), true
+		return uuid.Nil, ambiguousError(query, matches, titles), true
 	}
 }
 
 // ambiguousError builds an AmbiguousQueryError over ids, sorted by title
 // then id for a deterministic, human-sensible candidate list.
-func ambiguousError(query string, ids []uuid.UUID, entries map[uuid.UUID]Entry) error {
+func ambiguousError(query string, ids []uuid.UUID, titles map[uuid.UUID]string) error {
 	sorted := append([]uuid.UUID(nil), ids...)
 	sort.Slice(sorted, func(i, j int) bool {
-		ti, tj := entries[sorted[i]].Title, entries[sorted[j]].Title
+		ti, tj := titles[sorted[i]], titles[sorted[j]]
 		if ti != tj {
 			return ti < tj
 		}
@@ -714,26 +767,22 @@ func ambiguousError(query string, ids []uuid.UUID, entries map[uuid.UUID]Entry) 
 	})
 	candidates := make([]Candidate, len(sorted))
 	for i, id := range sorted {
-		candidates[i] = Candidate{ID: id.String(), Title: entries[id].Title}
+		candidates[i] = Candidate{ID: id.String(), Title: titles[id]}
 	}
 	return exitcode.Wrap(exitcode.Ambiguous,
 		&AmbiguousQueryError{List: CandidateList{Query: query, Candidates: candidates}})
 }
 
 // titleExists reports whether any entry currently has exactly title,
-// decrypting every entry to check — there is no index yet (M4 explicitly
-// decrypts everything every time; M7 adds a cache). Used by Insert's
-// duplicate-title guard.
+// decrypting every entry to check — there is no Vault-level index (M4
+// explicitly decrypts everything every time; M7's cache lives on
+// Session, not here). Used by Insert's duplicate-title guard.
 func (v *Vault) titleExists(title string, ident *Identity) (bool, error) {
-	ids, err := v.EntryIDs()
+	entries, err := v.decryptAll(ident)
 	if err != nil {
 		return false, err
 	}
-	for _, id := range ids {
-		e, err := v.ReadEntry(id, ident)
-		if err != nil {
-			return false, err
-		}
+	for _, e := range entries {
 		if e.Title == title {
 			return true, nil
 		}
