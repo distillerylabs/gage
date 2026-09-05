@@ -482,6 +482,16 @@ func newRenameCommand(app *App) *cobra.Command {
 				// those three fields is enough to hand NoteEntry the
 				// post-rename metadata without decrypting the vault
 				// again to fetch it.
+				//
+				// The updated stamp here is this clock reading, not the
+				// one Vault.Rename wrote a moment earlier, so the cached
+				// value can sit up to a second ahead of the file's when
+				// the two readings straddle a second boundary. Nothing
+				// renders the index's dates today; the alternative — a
+				// fresh decrypt purely to copy a timestamp gage already
+				// knows — costs more than the discrepancy does. A
+				// command that starts displaying them should re-read
+				// rather than trust this field.
 				resolved.Title = args[1]
 				resolved.Updated = gage.NewTimestamp(time.Now())
 				resolved.UpdatedBy = ident.Device()

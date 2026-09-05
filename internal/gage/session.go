@@ -447,12 +447,22 @@ func (s *Session) Search(name, pattern string) ([]SearchResult, error) {
 		}
 	}
 	for id, e := range bodyEntries {
+		if _, matchedOnText := matched[id]; matchedOnText {
+			// The index already matched this entry on its title or
+			// description, and that classification wins: MatchedBody
+			// means the match came from the body *rather than* from
+			// title/description, and one-shot's Vault.Search gives the
+			// text stages the same precedence. Without this, an entry
+			// whose title and value both contain the pattern would be
+			// reported as a body match in a session and a title match
+			// one-shot — the same entry and query, classified two ways
+			// depending only on which mode asked.
+			continue
+		}
 		if !matchesBody(e, lowerPattern) {
 			continue
 		}
-		r := matched[id]
-		r.ID, r.Title, r.Description, r.MatchedBody = id, e.Title, e.Description, true
-		matched[id] = r
+		matched[id] = SearchResult{ID: id, Title: e.Title, Description: e.Description, MatchedBody: true}
 	}
 
 	out := make([]SearchResult, 0, len(matched))

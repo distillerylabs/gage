@@ -3,9 +3,11 @@ package gage
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -418,6 +420,56 @@ func TestSearchMatchesTitleDescriptionAndBody(t *testing.T) {
 	}
 }
 
+// TestSearchAgreesBetweenOneShotAndSession is M6's "the same thing
+// happens in both modes" invariant applied to the one command M7 splits
+// across two implementations: one-shot decrypts everything and matches
+// it, a session matches title/description from the index and only the
+// body fresh. Those are two code paths, so nothing but a test comparing
+// them keeps them answering identically.
+//
+// The overlap case is the one that actually caught a bug: an entry whose
+// title *and* value both match used to come back MatchedBody=true in a
+// session and MatchedBody=false one-shot, because the session's body
+// pass overwrote the index's own classification instead of deferring to
+// it.
+func TestSearchAgreesBetweenOneShotAndSession(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	v, err := open("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestSession(t, open, SessionConfig{Current: "personal"})
+	_, ident, err := s.Vault("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	insertEntry(t, v, ident, Entry{Title: "AWS root account", Value: "x"})
+	insertEntry(t, v, ident, Entry{Title: "Cloud creds", Description: "shared aws credentials", Value: "y"})
+	insertEntry(t, v, ident, Entry{Title: "Unrelated", Value: "the aws secret key is here"})
+	// Matches on both title and body — the classification overlap.
+	insertEntry(t, v, ident, Entry{Title: "AWS backup", Value: "aws-secret-value"})
+	// Matches on both description and body.
+	insertEntry(t, v, ident, Entry{Title: "Ops", Description: "aws notes", Value: "aws again"})
+	insertEntry(t, v, ident, Entry{Title: "Nothing", Value: "irrelevant"})
+
+	for _, query := range []string{"aws", "AWS", "root", "nothing", "no-such-match"} {
+		t.Run(query, func(t *testing.T) {
+			oneShot, err := v.Search(query, ident)
+			if err != nil {
+				t.Fatalf("one-shot Search: %v", err)
+			}
+			inSession, err := s.Search("", query)
+			if err != nil {
+				t.Fatalf("session Search: %v", err)
+			}
+			if !reflect.DeepEqual(oneShot, inSession) {
+				t.Errorf("Search(%q) differs between modes:\none-shot: %+v\nsession:  %+v", query, oneShot, inSession)
+			}
+		})
+	}
+}
+
 // TestSearchFirstCallBuildsIndexWithoutADoubleDecrypt is the M7 plan's
 // "a first search builds the index from that same pass rather than
 // decrypting twice."
@@ -514,6 +566,12 @@ func TestIndexArenaNeverHoldsASecretValue(t *testing.T) {
 
 	if _, err := s.List(""); err != nil {
 		t.Fatalf("List: %v", err)
+	}
+	// show, too: Resolve is the one index path that decrypts a whole
+	// entry — value and fields included — to return it, so it's the most
+	// plausible way for a secret to end up cached by accident.
+	if _, _, err := s.Resolve("", "Sentinel Title"); err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
 	if _, err := s.Search("", "sentinel"); err != nil {
 		t.Fatalf("Search: %v", err)
@@ -654,6 +712,137 @@ func TestIndexDoesNotWarnAgainWhenUnlockAlreadyWarned(t *testing.T) {
 	}
 	if len(p.warnings) != 1 {
 		t.Errorf("building the index warned again even though unlock already did: %d total, want still 1: %v", len(p.warnings), p.warnings)
+	}
+}
+
+// TestIndexArenaGrowthPreservesEveryEntryAndItsPageLocks exercises the
+// one part of Index that a handful of short-titled entries never
+// reaches: outgrowing the initial arena. Growth allocates a new arena,
+// copies the live bytes across, locks the new one, and unlocks/zeroes
+// the old — pointer-swapping under page locks, which is exactly where a
+// silent corruption or a leaked lock would hide.
+//
+// The entries here are sized so several doublings are guaranteed
+// (indexArenaMinSize is the starting point), and the counting locker
+// pins the lock bookkeeping: every arena after the first replaces one
+// that must have been released, so unlocks always trail locks by exactly
+// one until discard squares them up.
+func TestIndexArenaGrowthPreservesEveryEntryAndItsPageLocks(t *testing.T) {
+	counter := &countingLocker{inner: alwaysLocks{}}
+	idx := newIndex(counter, true)
+
+	const entries = 400
+	want := map[uuid.UUID]ListEntry{}
+	for i := range entries {
+		id := uuid.MustParse(fmt.Sprintf("%08x-0000-4000-8000-000000000000", i))
+		e := Entry{
+			Title:       fmt.Sprintf("title-%03d-%s", i, strings.Repeat("t", 20)),
+			Description: fmt.Sprintf("desc-%03d-%s", i, strings.Repeat("d", 30)),
+			UpdatedBy:   "laptop-1",
+		}
+		idx.put(id, e)
+		want[id] = ListEntry{ID: id, Title: e.Title, Description: e.Description, UpdatedBy: e.UpdatedBy}
+	}
+
+	if idx.used <= indexArenaMinSize {
+		t.Fatalf("stored only %d bytes, which never outgrows the %d-byte starting arena — this test isn't exercising growth",
+			idx.used, indexArenaMinSize)
+	}
+	if counter.locks < 2 {
+		t.Fatalf("the arena was locked %d time(s), so it never grew", counter.locks)
+	}
+	if counter.unlocks != counter.locks-1 {
+		t.Errorf("locks=%d unlocks=%d: every arena but the current one must have been released",
+			counter.locks, counter.unlocks)
+	}
+
+	got := idx.list()
+	if len(got) != entries {
+		t.Fatalf("list returned %d rows, want %d", len(got), entries)
+	}
+	for _, row := range got {
+		w := want[row.ID]
+		if row.Title != w.Title || row.Description != w.Description {
+			t.Fatalf("entry %s survived growth as %q/%q, want %q/%q",
+				row.ID, row.Title, row.Description, w.Title, w.Description)
+		}
+	}
+
+	// Resolution reads the same spans through a different path, so it
+	// would catch an offset that only list() happens to get right.
+	id, err := resolveTitleAndUUID(want[uuid.MustParse("00000063-0000-4000-8000-000000000000")].Title, idx.titles())
+	if err != nil {
+		t.Fatalf("resolving a post-growth title: %v", err)
+	}
+	if id.String() != "00000063-0000-4000-8000-000000000000" {
+		t.Errorf("resolved %s, want the entry that owns that title", id)
+	}
+
+	live := idx.arena
+	idx.discard()
+	if counter.unlocks != counter.locks {
+		t.Errorf("after discard, locks=%d unlocks=%d — the live arena's lock leaked", counter.locks, counter.unlocks)
+	}
+	for i, b := range live {
+		if b != 0 {
+			t.Fatalf("arena byte %d is %#x after discard, want zeroed", i, b)
+		}
+	}
+}
+
+// TestIdleTimeoutDiscardsIndexLikeAnExplicitLock: the M7 test list names
+// both triggers ("explicit `lock` or idle timeout"). They share
+// lockHeld today, but that's a fact about the current implementation
+// rather than one the explicit-lock test can assert — this is what
+// stops a future refactor from expiring a key while leaving its
+// decrypted metadata behind.
+func TestIdleTimeoutDiscardsIndexLikeAnExplicitLock(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	v, err := open("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := newFakeClock()
+	s, _ := newTestSession(t, open, SessionConfig{
+		Current:     "personal",
+		IdleTimeout: time.Minute,
+		Now:         clock.now,
+	})
+	_, ident, err := s.Vault("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertTitled(t, v, ident, "AWS")
+
+	var decrypts int
+	v.onDecrypt = func() { decrypts++ }
+	if _, err := s.List(""); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if decrypts != 1 {
+		t.Fatalf("got %d decrypts building the index, want 1", decrypts)
+	}
+	if s.vaults["personal"].index == nil {
+		t.Fatal("no index after List")
+	}
+
+	// Age the vault out. Status is enough to trigger the check — the
+	// timeout is evaluated at the start of every Session call.
+	clock.advance(2 * time.Minute)
+	if s.Status()[0].Unlocked {
+		t.Fatal("vault still reports unlocked after the idle timeout")
+	}
+	if s.vaults["personal"].index != nil {
+		t.Error("the idle timeout dropped the key but left the decrypted metadata index behind")
+	}
+
+	// And the next command rebuilds from scratch rather than serving
+	// rows from a cache that outlived its key.
+	if _, err := s.List(""); err != nil {
+		t.Fatalf("List after the timeout: %v", err)
+	}
+	if decrypts != 2 {
+		t.Errorf("total decrypts = %d, want 2 (the index was rebuilt after the timeout)", decrypts)
 	}
 }
 
