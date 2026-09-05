@@ -7,7 +7,10 @@
 package gitrepo
 
 import (
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -176,6 +179,70 @@ func IsClean(dir string) (bool, error) {
 		return false, fmt.Errorf("gitrepo: reading status: %w", err)
 	}
 	return status.IsClean(), nil
+}
+
+// ErrDirtyWorkTree means a vault's working tree has staged or unstaged
+// changes, so an operation that would move it declined to run.
+//
+// gage commits every write immediately, so a dirty tree means something
+// *outside* gage is mid-edit. Both operations that move the tree refuse
+// over one, for the same reason from two directions: a fast-forward's
+// hard reset would discard the work outright, and a merge's commit would
+// publish it under a message nobody wrote it for. Neither is gage's call
+// to make on someone else's unfinished editing.
+var ErrDirtyWorkTree = errors.New("gitrepo: the working tree has uncommitted changes")
+
+// maxNamedDirtyPaths caps how many paths a refusal spells out. A vault
+// mid-restore can have thousands, and an error message is a sentence, not
+// a report.
+const maxNamedDirtyPaths = 5
+
+// DirtyPaths lists the vault-relative paths with staged or unstaged
+// changes, sorted. An empty result means the tree is clean.
+func DirtyPaths(dir string) ([]string, error) {
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: opening %s: %w", dir, err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: opening worktree: %w", err)
+	}
+	status, err := wt.Status()
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: reading status: %w", err)
+	}
+
+	paths := make([]string, 0, len(status))
+	for path, st := range status {
+		if st.Staging == git.Unmodified && st.Worktree == git.Unmodified {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// requireCleanWorkTree is the guard both tree-moving operations open
+// with. remedy completes the sentence "..., so gage is not <remedy>".
+func requireCleanWorkTree(dir, remedy string) error {
+	paths, err := DirtyPaths(dir)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	named := paths
+	suffix := ""
+	if len(named) > maxNamedDirtyPaths {
+		named = named[:maxNamedDirtyPaths]
+		suffix = fmt.Sprintf(" and %d more", len(paths)-maxNamedDirtyPaths)
+	}
+	return fmt.Errorf("%w (%s%s), so gage is not %s; commit or discard them first",
+		ErrDirtyWorkTree, strings.Join(named, ", "), suffix, remedy)
 }
 
 // CommitCount returns the number of commits reachable from HEAD.

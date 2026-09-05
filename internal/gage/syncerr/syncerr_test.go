@@ -24,19 +24,29 @@ func TestClassifyPushSortsTheThreeBuckets(t *testing.T) {
 			name: "connection refused is unreachable",
 			err:  &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")},
 			want: ErrUnreachable,
-			code: exitcode.Conflict,
+			code: exitcode.Unreachable,
 		},
 		{
 			name: "DNS failure is unreachable",
 			err:  &net.DNSError{Err: "no such host", Name: "github.com"},
 			want: ErrUnreachable,
-			code: exitcode.Conflict,
+			code: exitcode.Unreachable,
 		},
 		{
 			name: "a timeout is unreachable",
 			err:  fmt.Errorf("fetching: %w", context.DeadlineExceeded),
 			want: ErrUnreachable,
-			code: exitcode.Conflict,
+			code: exitcode.Unreachable,
+		},
+		{
+			// A cancelled context is a network operation that did not
+			// happen, not a statement about either side's history —
+			// without this it would fall to the divergence bucket by
+			// elimination and report "origin has diverged" for a ctrl-C.
+			name: "a cancelled context is unreachable",
+			err:  fmt.Errorf("pushing: %w", context.Canceled),
+			want: ErrUnreachable,
+			code: exitcode.Unreachable,
 		},
 		{
 			name: "authentication required is auth",
@@ -137,5 +147,28 @@ func TestClassifyPassesNilThrough(t *testing.T) {
 	}
 	if err := ClassifyFetch(nil); err != nil {
 		t.Errorf("ClassifyFetch(nil) = %v, want nil", err)
+	}
+}
+
+// TestOfflineAndDivergedDoNotShareAnExitCode is the whole reason
+// Unreachable is its own code: the two situations need different things
+// from whoever is watching. "Retry when the network is back" and "a human
+// has to reconcile two histories" being indistinguishable to a script
+// would have undone the classification everywhere except the message
+// text.
+func TestOfflineAndDivergedDoNotShareAnExitCode(t *testing.T) {
+	offline := ClassifyPush(&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")})
+	diverged := ClassifyPush(errors.New("non-fast-forward update: refs/heads/master"))
+
+	offlineCode := exitcode.CodeOf(offline)
+	divergedCode := exitcode.CodeOf(diverged)
+	if offlineCode == divergedCode {
+		t.Fatalf("offline and diverged both exit %v; a caller cannot tell them apart", offlineCode)
+	}
+	if offlineCode != exitcode.Unreachable {
+		t.Errorf("offline exit code = %v, want unreachable", offlineCode)
+	}
+	if divergedCode != exitcode.Conflict {
+		t.Errorf("diverged exit code = %v, want conflict", divergedCode)
 	}
 }

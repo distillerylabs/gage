@@ -8,6 +8,7 @@ import (
 
 	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/denmark/gage/internal/gage/gitrepo"
 )
 
 // vaultForSync resolves which vault a sync verb targets, without
@@ -80,6 +81,12 @@ func newPushCommand(app *App) *cobra.Command {
 
 			report, err := v.Push(ctx)
 			if err != nil {
+				// Same reporting as `sync`: a push is where a divergence
+				// is discovered, so it is where the paths have to be
+				// named. Only the summary differing between the two verbs
+				// would leave `push` the less informative way to find out
+				// about the identical situation.
+				reportConflicts(app, v, report)
 				return err
 			}
 			writeOut(app.Out, []string{syncLine(v, report)})
@@ -123,7 +130,17 @@ func newSyncCommand(app *App) *cobra.Command {
 }
 
 // syncLine renders what a successful sync actually did, in one line.
+//
+// The origin lookup separates the two ways of having nothing to do: a
+// vault that matches its origin, and a local-only vault that has no
+// origin to match. Telling someone with no remote that they are "in sync
+// with origin" names a thing that doesn't exist. A lookup that fails is
+// not worth failing a successful sync over, so it falls through to the
+// ordinary wording.
 func syncLine(v *gage.Vault, r gage.SyncReport) string {
+	if remote, err := gitrepo.RemoteURL(v.Path); err == nil && remote == "" {
+		return fmt.Sprintf("gage: %q is local-only; there is no remote to sync with", v.Name)
+	}
 	switch {
 	case r.Merged && r.Pushed:
 		return fmt.Sprintf("gage: merged origin's changes into %q and pushed", v.Name)

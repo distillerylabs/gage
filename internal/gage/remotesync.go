@@ -10,6 +10,7 @@ import (
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
 	"github.com/denmark/gage/internal/gage/syncerr"
+	"github.com/denmark/gage/internal/gage/vaultlock"
 )
 
 // RemoteOpTimeout bounds every network operation gage starts on its own —
@@ -187,6 +188,32 @@ func (v *Vault) underWriteLock(fn func() (SyncReport, error)) (SyncReport, error
 	return report, inner
 }
 
+// tryPull is Pull for the automatic path: it runs only if this vault's
+// write lock is free right now, and reports busy rather than waiting.
+//
+// The wait is what makes the difference. Before M8a a read took no lock
+// at all; wiring the catch-up into every unlock would otherwise make
+// `gage show` sit behind an unrelated `gage insert` for the full
+// vaultLockTimeout and then warn — a slower, noisier read in exchange for
+// nothing, since whoever holds the lock is mid-write and will push when
+// it finishes. Being one sync late is the better trade. Manual
+// sync/pull/push still wait: there the human asked.
+func (v *Vault) tryPull(ctx context.Context) (report SyncReport, busy bool, err error) {
+	var inner error
+	lockErr := v.withWriteLockTimeout(0, func() error {
+		report, inner = v.pull(ctx)
+		return nil
+	})
+	var contended *vaultlock.ContendedError
+	switch {
+	case errors.As(lockErr, &contended):
+		return SyncReport{}, true, nil
+	case lockErr != nil:
+		return SyncReport{}, false, lockErr
+	}
+	return report, false, inner
+}
+
 // pull is Pull's body, with this vault's write lock already held.
 func (v *Vault) pull(ctx context.Context) (SyncReport, error) {
 	var report SyncReport
@@ -207,14 +234,14 @@ func (v *Vault) pull(ctx context.Context) (SyncReport, error) {
 func (v *Vault) fastForward(report SyncReport) (SyncReport, error) {
 	state, err := gitrepo.Compare(v.Path)
 	if err != nil {
-		return report, exitcode.Wrap(exitcode.Internal, err)
+		return report, syncStateError(err)
 	}
 
 	switch state {
 	case gitrepo.RemoteBehind:
 		moved, err := gitrepo.FastForward(v.Path)
 		if err != nil {
-			return report, exitcode.Wrap(exitcode.Internal, err)
+			return report, syncStateError(err)
 		}
 		report.Pulled = moved
 		if moved {
@@ -226,9 +253,23 @@ func (v *Vault) fastForward(report SyncReport) (SyncReport, error) {
 
 	report.Ahead, err = gitrepo.AheadCount(v.Path)
 	if err != nil {
-		return report, exitcode.Wrap(exitcode.Internal, err)
+		return report, syncStateError(err)
 	}
 	return report, nil
+}
+
+// syncStateError attaches the right exit code to a failure from the local
+// git layer.
+//
+// A working tree something outside gage left uncommitted changes in is a
+// state a human must resolve — Conflict, and phrased as gage's own
+// message rather than as an internal fault, because it is neither
+// unexpected nor a bug. Everything else really is Internal.
+func syncStateError(err error) error {
+	if errors.Is(err, gitrepo.ErrDirtyWorkTree) {
+		return exitcode.Wrap(exitcode.Conflict, fmt.Errorf("gage: %w", err))
+	}
+	return exitcode.Wrap(exitcode.Internal, err)
 }
 
 // push is Push's body, with this vault's write lock already held.
@@ -263,7 +304,7 @@ func (v *Vault) push(ctx context.Context) (SyncReport, error) {
 
 	state, err := gitrepo.Compare(v.Path)
 	if err != nil {
-		return report, exitcode.Wrap(exitcode.Internal, err)
+		return report, syncStateError(err)
 	}
 	switch state {
 	case gitrepo.RemoteBehind:
@@ -276,14 +317,24 @@ func (v *Vault) push(ctx context.Context) (SyncReport, error) {
 	case gitrepo.RemoteDiverged:
 		result, err := gitrepo.MergeRemote(v.Path, mergeCommitMessage)
 		if err != nil {
-			return report, exitcode.Wrap(exitcode.Internal, err)
+			return report, syncStateError(err)
 		}
 		if len(result.Conflicts) > 0 {
 			report.Conflicts = result.Conflicts
+			// A failure to count is not worth losing the conflict report
+			// over: the conflict is the thing the human has to act on,
+			// and Summary reads correctly with a zero count.
 			report.Ahead, _ = gitrepo.AheadCount(v.Path)
 			return report, v.divergedError(report)
 		}
 		report.Merged = true
+		// Counted here rather than only after a successful push, so a
+		// merge whose follow-up push then fails still reports how much is
+		// pending — the merge commit included.
+		report.Ahead, err = gitrepo.AheadCount(v.Path)
+		if err != nil {
+			return report, syncStateError(err)
+		}
 		// The merge brought in whatever the other device wrote, so a
 		// session's cached metadata is stale for the same reason a pull
 		// makes it stale.
@@ -373,8 +424,13 @@ func (v *Vault) syncOnUnlock(p Prompter) {
 	ctx, cancel := context.WithTimeout(context.Background(), RemoteOpTimeout)
 	defer cancel()
 
-	report, err := v.Pull(ctx)
+	report, busy, err := v.tryPull(ctx)
 	switch {
+	case busy:
+		// Another gage process is mid-write and will push when it
+		// finishes. Silent on purpose: nothing is wrong, nothing is
+		// stale that the next unlock won't pick up, and a warning here
+		// would fire on ordinary concurrency.
 	case err != nil:
 		warn(p, "gage: %s; continuing with the local copy of %q", offlineOrError(err), v.Name)
 	case report.Diverged:

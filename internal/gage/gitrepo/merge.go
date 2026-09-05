@@ -51,7 +51,19 @@ type MergeResult struct {
 // Nothing is written when the merge conflicts: the caller gets the list
 // and the vault is left exactly as it was, so detection never leaves a
 // half-merged tree behind for the next command to trip over.
+//
+// A dirty working tree is refused up front, the same way FastForward
+// refuses one. The reasons are mirror images: a fast-forward's hard reset
+// would *discard* someone's uncommitted editing, while this merge's
+// `git add -A`-equivalent staging would *publish* it, swept into a merge
+// commit nobody wrote it for and pushed to every other device. gage
+// commits its own writes immediately, so a dirty tree here always means
+// something outside gage is mid-edit.
 func MergeRemote(dir, message string) (MergeResult, error) {
+	if err := requireCleanWorkTree(dir, "merging origin's changes on top of them"); err != nil {
+		return MergeResult{}, err
+	}
+
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("gitrepo: opening %s: %w", dir, err)
@@ -107,17 +119,62 @@ func MergeRemote(dir, message string) (MergeResult, error) {
 		return MergeResult{Conflicts: conflicts}, nil
 	}
 
+	// applied grows *before* each write rather than after, so a path that
+	// failed halfway through being written is still rolled back.
+	applied := make([]string, 0, len(takeRemote))
 	for _, path := range takeRemote {
+		applied = append(applied, path)
 		if err := applyRemoteVersion(dir, remote, path); err != nil {
-			return MergeResult{}, err
+			return MergeResult{}, rollback(repo, dir, local.Hash, applied, localFiles, err)
 		}
 	}
 
 	hash, err := commitMerge(repo, message, local.Hash, remote.Hash)
 	if err != nil {
-		return MergeResult{}, err
+		return MergeResult{}, rollback(repo, dir, local.Hash, applied, localFiles, err)
 	}
 	return MergeResult{Merged: true, Commit: hash}, nil
+}
+
+// rollback undoes a merge that failed partway through applying itself,
+// and returns cause so the caller still sees why it failed.
+//
+// Without this a failed merge leaves a tree that is neither the old state
+// nor the new one — and since every later sync operation now refuses over
+// a dirty tree, that state would wedge the vault until a human cleaned it
+// up by hand. Discarding is safe here and only here: MergeRemote verified
+// the tree was clean before writing anything, so everything being undone
+// is this merge's own work.
+//
+// The hard reset restores tracked files; paths the merge *created* are
+// untracked and invisible to it, so they are removed by name first.
+func rollback(repo *git.Repository, dir string, local plumbing.Hash, applied []string,
+	localFiles map[string]blobVersion, cause error) error {
+	fail := func(err error) error {
+		return fmt.Errorf("%w (and rolling the partial merge back failed: %v)", cause, err)
+	}
+
+	for _, path := range applied {
+		if _, tracked := localFiles[path]; tracked {
+			continue
+		}
+		full, err := safeJoin(dir, path)
+		if err != nil {
+			return fail(err)
+		}
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			return fail(err)
+		}
+	}
+
+	wt, err := repo.Worktree()
+	if err != nil {
+		return fail(err)
+	}
+	if err := wt.Reset(&git.ResetOptions{Commit: local, Mode: git.HardReset}); err != nil {
+		return fail(err)
+	}
+	return cause
 }
 
 // blobVersion identifies one path's content at one commit. Mode is part

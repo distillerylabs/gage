@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
 	"github.com/denmark/gage/internal/gage/gittest"
 	"github.com/denmark/gage/internal/gage/syncerr"
@@ -626,4 +627,156 @@ func writeVaultFile(t *testing.T, v *Vault, path, content string) {
 	if err := os.WriteFile(filepath.Join(v.Path, filepath.FromSlash(path)), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestUnlockDoesNotQueueBehindAConcurrentWrite is the counterpart to
+// TestSyncTakesTheWriteLock: a *manual* sync waits for the lock, the
+// automatic one on unlock does not.
+//
+// Before M8a a read took no lock at all. Wiring the catch-up into every
+// unlock put `gage show` behind an unrelated `gage insert` for the full
+// vaultLockTimeout, ending in a warning — a slower, noisier read in
+// exchange for nothing, since whoever holds the lock is mid-write and
+// will push when it finishes.
+func TestUnlockDoesNotQueueBehindAConcurrentWrite(t *testing.T) {
+	v, id, _ := newSyncVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	path, err := LockFilePath(v.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := vaultlock.Acquire(path, 0)
+	if err != nil {
+		t.Fatalf("acquiring the lock externally: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	p := &fakePrompter{}
+	done := make(chan struct{})
+	go func() {
+		v.syncOnUnlock(p)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the automatic sync on unlock waited for a write lock held elsewhere; " +
+			"a read must not queue behind an unrelated write")
+	}
+
+	// Skipping is not a problem worth telling anyone about: nothing is
+	// wrong, and warning here would fire on ordinary concurrency.
+	if len(p.warnings) != 0 {
+		t.Errorf("a skipped automatic sync warned: %q", p.warnings)
+	}
+}
+
+// TestSyncReportsADirtyWorkTreeAsAConflictNotAnInternalError: something
+// outside gage leaving uncommitted changes in the vault is a state a
+// human resolves, so it has to read as one — not as an internal fault,
+// and not by being silently swept into an automatic merge commit.
+func TestSyncReportsADirtyWorkTreeAsAConflictNotAnInternalError(t *testing.T) {
+	v, id, remote := newSyncVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	// The write happens offline, so its commit stays local and there is
+	// still something to push later. (A write with the network up would
+	// have merged and published on the spot, leaving nothing to sync.)
+	v.remoteSyncer = &fakeSyncer{pushErr: unreachableError()}
+	if _, err := v.Insert(sampleEntry(time.Now()), false, &id); err != nil {
+		t.Fatal(err)
+	}
+	v.remoteSyncer = nil
+
+	other := gittest.NewDevice(t, remote)
+	other.WriteCommitPush(t, "notes.txt", "theirs", "their commit")
+
+	// Now something outside gage leaves an edit uncommitted. It has to be
+	// written *after* the last gage write: gage's own CommitAll sweeps the
+	// whole tree, so any write of its own would have committed this too.
+	writeVaultFile(t, v, "hand-edited.txt", "half-typed note")
+
+	_, err := v.Sync(context.Background())
+	if err == nil {
+		t.Fatal("Sync ran with uncommitted changes in the working tree, want it refused")
+	}
+	if !errors.Is(err, gitrepo.ErrDirtyWorkTree) {
+		t.Errorf("Sync error = %v, want ErrDirtyWorkTree", err)
+	}
+	if code := exitcode.CodeOf(err); code != exitcode.Conflict {
+		t.Errorf("exit code = %v, want conflict — this is a state a human resolves, not a gage bug", code)
+	}
+	if !strings.Contains(err.Error(), "hand-edited.txt") {
+		t.Errorf("error = %q, want it to name the uncommitted path", err)
+	}
+
+	// Untouched: the edit is still uncommitted and unpublished.
+	if got := readVaultFile(t, v, "hand-edited.txt"); got != "half-typed note" {
+		t.Errorf("hand-edited.txt = %q, want the human's edit left alone", got)
+	}
+	fresh := gittest.NewDevice(t, remote)
+	if fresh.Exists(t, "hand-edited.txt") {
+		t.Error("a half-typed local file was published to the remote by an automatic merge")
+	}
+}
+
+// TestAPendingMergeStillReportsWhatIsPending: a merge whose follow-up
+// push fails leaves two unpublished commits (the local write and the
+// merge). Reporting 0 would tell someone their work is published when it
+// isn't.
+func TestAPendingMergeStillReportsWhatIsPending(t *testing.T) {
+	v, id, remote := newSyncVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	// Offline for the write, so its commit is still pending afterwards.
+	v.remoteSyncer = &fakeSyncer{pushErr: unreachableError()}
+	if _, err := v.Insert(sampleEntry(time.Now()), false, &id); err != nil {
+		t.Fatal(err)
+	}
+
+	other := gittest.NewDevice(t, remote)
+	other.WriteCommitPush(t, "notes.txt", "theirs", "their commit")
+
+	// The first push is rejected as diverged so the merge happens; the
+	// second one, after the merge, fails as unreachable.
+	v.remoteSyncer = &sequencedSyncer{
+		vault: v,
+		pushErrs: []error{
+			syncerr.ClassifyPush(errors.New("non-fast-forward update: refs/heads/master")),
+			unreachableError(),
+		},
+	}
+
+	report, err := v.Push(context.Background())
+	if !errors.Is(err, syncerr.ErrUnreachable) {
+		t.Fatalf("Push error = %v, want the second push's unreachable failure", err)
+	}
+	if !report.Merged {
+		t.Fatal("the divergence was never merged, so this is not the case under test")
+	}
+	if report.Ahead != 2 {
+		t.Errorf("Ahead = %d, want 2 (the local write + the merge commit) — "+
+			"an unpushed merge must not report nothing pending", report.Ahead)
+	}
+}
+
+// sequencedSyncer fails each push with the next error in turn, and
+// fetches for real, so a test can drive the merge-then-fail path.
+type sequencedSyncer struct {
+	vault    *Vault
+	pushErrs []error
+	pushes   int
+}
+
+func (s *sequencedSyncer) Fetch(ctx context.Context) error {
+	_, err := gitrepo.Fetch(ctx, s.vault.Path)
+	return err
+}
+
+func (s *sequencedSyncer) Push(ctx context.Context) error {
+	err := s.pushErrs[min(s.pushes, len(s.pushErrs)-1)]
+	s.pushes++
+	return err
 }
