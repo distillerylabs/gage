@@ -40,10 +40,53 @@ test harness this milestone already builds for divergence testing.
 
 ## Decisions to make first
 
-- **Push failure vs. divergence.** A failed push because the remote
-  diverged is a different user-facing situation from a failed push
-  because the network is down. Both leave the local commit intact;
-  they need different messages and probably different exit codes.
+- **Push failure vs. divergence.** Resolved: `RemoteSyncer` classifies
+  every `Fetch`/`Push` error into exactly three buckets before it ever
+  reaches `Vault`'s sync logic, so neither `Vault` nor `cmd/gage` parses
+  error text to tell them apart — a sentinel error per bucket (e.g.
+  `ErrRemoteUnreachable`), returned identically by the real go-git-backed
+  implementation and by the fake the offline test injects.
+  - **Unreachable** — DNS failure, connection refused, timeout,
+    `context.DeadlineExceeded`; detected via `net.Error`/`*net.OpError`/
+    `*net.DNSError` in the error chain. This is never the human's fault,
+    so it's warn-and-proceed, not a failure: one warning, the triggering
+    operation (the write, the pull-on-unlock) still succeeds on its own
+    terms, `exitcode.Success`, and the next successful sync retries with
+    nothing to remember in between — same shape as `newIdentity`'s
+    mlock-failure warn-and-continue in `unlock.go`.
+  - **Auth** — `transport.ErrAuthenticationRequired`,
+    `ErrAuthorizationFailed`, and `ErrRepositoryNotFound` (go-git's HTTP
+    transport wraps all three with `%w`, so `errors.Is` is reliable
+    here). Fold `ErrRepositoryNotFound` in here rather than treating it
+    as a distinct "vanished repo" case: for a private remote, most hosts
+    return the same "not found" for "doesn't exist" and "you can't see
+    it," so at push/fetch time (unlike at `init`, where the repo just
+    plain doesn't exist yet) it reads as an access problem. Reported with
+    the Authentication section's host-naming message, `exitcode.LockedOrAuth`
+    (already documented on that code as covering "an expired auth
+    token").
+  - **Diverged** — everything else, by elimination. Don't pattern-match
+    go-git's non-fast-forward rejection string to detect this directly:
+    `Remote.Push`'s real client-side fast-forward check
+    (`checkFastForwardUpdate` in go-git's `remote.go`) returns a bare
+    `fmt.Errorf("non-fast-forward update: %s", ...)` that does **not**
+    wrap the exported `git.ErrNonFastForwardUpdate` sentinel — that
+    sentinel is only ever returned by `Worktree.Pull`'s ff-only path, not
+    by `Push`. Code written as `errors.Is(err, git.ErrNonFastForwardUpdate)`
+    on a push result will silently never match a real divergence, and the
+    raw string isn't a stable API to match on either. Classifying by
+    elimination sidesteps both problems, and it's sound here specifically
+    because gage's remotes are dedicated, hook-free, LFS-free repos — a
+    personal vault's git remote has no server-side rejection reason other
+    than divergence. Maps to `exitcode.Conflict` (already documented on
+    that code as covering "a sync divergence"); the specific wording
+    (entry-level conflict pointing at `gage sync` vs. the recipient/config
+    "more severe" case) comes from the merge classification that follows
+    fetch, not from this bucket by itself.
+
+  Both leave the local commit intact regardless of bucket — divergence
+  and unreachable differ in whether a human needs to act, not in whether
+  data was lost.
 
 ## Test harness
 
@@ -164,7 +207,20 @@ offline-handling logic runs.
       between `Vault`'s sync logic and go-git — real go-git-backed
       implementation in production and in the realistic bare-repo tests,
       a fake in the one offline-handling test where a deterministic
-      injected error matters more than a real network failure
+      injected error matters more than a real network failure. Both
+      implementations return one of the three classified sentinel errors
+      from "Push failure vs. divergence" above (unreachable / auth /
+      diverged) — `Vault` and `cmd/gage` never inspect a raw go-git or
+      transport error directly
+- [ ] The real implementation's divergence-by-elimination branch (the
+      code that decides "not unreachable, not auth, therefore diverged")
+      carries a comment citing go-git's `Remote.Push` not wrapping
+      `ErrNonFastForwardUpdate` the way `Worktree.Pull` does — see
+      [open-questions.md](open-questions.md#go-gits-push-doesnt-wrap-errnonfastforwardupdate-so-m8a-classifies-divergence-by-elimination-instead)
+      — so a future reader doesn't mistake the elimination logic for the
+      intended design and "simplify" it back into a direct (and silently
+      broken) `errors.Is(err, git.ErrNonFastForwardUpdate)` check. Worth
+      an upstream go-git issue/PR once M8a ships
 - [ ] Remote authentication (Q-GIT-AUTH): HTTPS + token via go-git's
       `BasicAuth`, tokens stored per-host at `$GAGE_STATE/tokens/<host>`
       (`0600`) through M0's atomic-write helper; best-effort ssh-agent
@@ -191,11 +247,12 @@ offline-handling logic runs.
       happens rather than in each caller
 - [ ] Auto push after writes (go-git `Push`), under the same vault lock
       the write holds
-- [ ] Divergence detection, with distinct reporting from offline failure.
-      Classify what diverged — disjoint entries (merge and continue),
-      conflicting entry (report, point at `gage sync`), recipient files
-      (report as the more severe case) — since M8b's resolution consumes
-      that classification
+- [ ] Divergence detection, with distinct reporting from offline failure
+      (the three-way `RemoteSyncer` classification above). Once a push
+      is classified as diverged, fetch and classify what diverged —
+      disjoint entries (merge and continue), conflicting entry (report,
+      point at `gage sync`), recipient files (report as the more severe
+      case) — since M8b's resolution consumes that classification
 - [ ] Manual `pull`/`push` via go-git (both already implemented purely in
       go-git — no passthrough, no `git` binary dependency, anywhere in
       `gage`)
