@@ -180,6 +180,19 @@ func (v *Vault) AddRecipient(device, pubkey string, reencrypt bool, ident *Ident
 		if err := v.requireRecipientsInSync(); err != nil {
 			return err
 		}
+		// And M10's blocking check, second. The precondition above only
+		// catches a list that disagrees with itself; a change pulled from
+		// another device is perfectly consistent and still unreviewed
+		// here. Without this, the cache regeneration at the tail of this
+		// method would bless that key along with the one the operator
+		// actually named — and with --reencrypt, would do it after
+		// rewriting every entry to it. Ordering is the point: it runs
+		// before the first byte, so a declined answer leaves nothing to
+		// undo, and after requireRecipientsInSync so nobody is asked to
+		// approve an operation that is about to be refused.
+		if err := v.confirmRecipientTrust(ident.frontend()); err != nil {
+			return err
+		}
 
 		current, err := v.Recipients()
 		if err != nil {
@@ -248,6 +261,13 @@ func (v *Vault) RemoveRecipient(query string, reencrypt bool, ident *Identity) (
 		// operator is not asked to approve an operation that is about to
 		// be refused anyway.
 		if err := v.requireRecipientsInSync(); err != nil {
+			return err
+		}
+		// M10's blocking check, for the same reason as in AddRecipient and
+		// in the same position: this verb also regenerates the cache on
+		// success, so it must not become a way to bless a recipient change
+		// that arrived from somewhere else.
+		if err := v.confirmRecipientTrust(ident.frontend()); err != nil {
 			return err
 		}
 

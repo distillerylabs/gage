@@ -136,6 +136,24 @@ the first would miss someone who edits only the second.
   them about their own change at their very next `insert`, which is the
   fastest way to teach someone to ignore the warning. It is the "or
   explicitly reviewed" half of the design's definition of the cache.
+  - **Corrected after implementation: both verbs run the blocking check
+    too, before they write.** "The operator just reviewed that list" is
+    true of the key they named and of nothing else. A recipient change
+    pulled from another device is unreviewed here even when it is
+    perfectly consistent — both files edited, `verify` passing, so
+    `requireRecipientsInSync` has nothing to object to — and the
+    regeneration above would then bless that key alongside the
+    operator's own, silently and for good. With `--reencrypt` it is
+    worse: every existing entry is rewritten to a list nobody here
+    approved *before* the blessing lands, which is precisely the
+    "encrypted to a recipient list this device never reviewed" that the
+    milestone exists to prevent, reached through a command the operator
+    thought was about something else. So `confirmRecipientTrust` runs in
+    both verbs, after `requireRecipientsInSync` (nobody is asked to
+    approve an operation about to be refused) and before the first byte.
+    The regeneration still happens on success, so the operator is still
+    never warned about their own add — they are asked once about the
+    change they did not make, and the cache then covers both.
 
 ## Tests (write first)
 
@@ -204,6 +222,21 @@ the first would miss someone who edits only the second.
       into one — rather than silently doing nothing or silently covering
       the whole session (added during implementation; see the decision
       above)
+- [x] The opportunistic warning reaches the operator from a real one-shot
+      `gage ls`/`gage show` on **stderr**, so a redirected stdout still
+      carries only the entry, and neither command blocks, asks, or
+      regenerates the cache (the CLI half of the `Vault.Unlock` hook test)
+- [x] A session-mode encrypting command asks the same question a one-shot
+      one does, rendered by the real terminal prompter — the half of "the
+      same way ... as for a session-mode one" that a library test, which
+      proves its point by having no `Session` at all, cannot reach
+- [x] `recipient add`/`remove` over a recipient change this device has
+      never reviewed — one that is internally consistent, so the
+      out-of-sync refusal does not fire — ask before writing anything,
+      re-encrypt nothing when declined, and do not launder the pulled key
+      into the cache; confirming lets the add through and regenerates
+      once, covering both keys (added during implementation; see the
+      corrected decision above)
 
 ## Implementation
 
@@ -251,6 +284,10 @@ the first would miss someone who edits only the second.
 - [x] Cache regeneration as the last step of a successful `AddRecipient`/
       `RemoveRecipient`, and `$GAGE_STATE/<vault>/` deleted by
       `vault remove`
+- [x] `confirmRecipientTrust` in `AddRecipient`/`RemoveRecipient` as
+      well, sitting between `requireRecipientsInSync` and the first
+      write, so the regeneration above cannot bless a recipient change
+      that arrived from another device — see the corrected decision
 
 ## Definition of done
 
@@ -258,7 +295,10 @@ Full test list green on all three CI platforms. A recipient added by
 another device produces a legible diff and a prompt on this one, once —
 and a hand-edited `.age-recipients` produces a warning that doesn't go
 away by clicking yes — or by running `recipient add`, which refuses over
-the divergence instead of rebuilding it away.
+the divergence instead of rebuilding it away. Nor is `recipient add` a
+quiet way past the prompt when the two files agree: it asks about the
+change this device hasn't reviewed before it writes or re-encrypts
+anything.
 
 ## Affects later milestones
 
