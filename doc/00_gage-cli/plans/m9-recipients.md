@@ -170,6 +170,12 @@ untouched rather than half-migrated.
       proceeding — the reset is automatic, but never silent, since the
       "only an interrupted `--reencrypt` could cause this" assumption
       isn't provable, only likely
+- [x] A crash in the window *after* the recipient files are written but
+      before the commit is reset too, in both shapes it occurs: an
+      interrupted `--reencrypt` (entries dirty as well) and an
+      interrupted plain `recipient add` (the pair the only dirty thing in
+      the tree). Added during review — see "The reset's coverage beyond
+      `entries/` needed its own test" below
 
 **`verify`**
 
@@ -295,6 +301,25 @@ var ErrLastRecipient, ErrRecipientExists, ErrRecipientNotFound, ErrReencryptRequ
       confirmation.** Removing the only recipient is refused outright, so
       it must never reach a question a "yes" could answer — otherwise
       confirming would look like it should work
+- [x] **The reset's coverage beyond `entries/` needed its own test.**
+      `onReencryptEntry` fires only while entries are being written, so
+      every atomicity test built on it crashes with `.age-recipients` and
+      `config.toml` still clean — the one window this bullet's own
+      implementation note calls out was the one the seam structurally
+      could not reach. Narrowing `gitrepo.ResetHard` to `entries/` left
+      the entire suite green, so the coverage was asserted in a comment
+      and nowhere else. `TestInterruptedRecipientWriteLeavesNoHalfMigratedState`
+      closes it by reproducing the window through `writeRecipientFiles`
+      itself — the genuine last act before either verb's single commit —
+      rather than by hand-writing two lookalike files. The plain-`add`
+      shape is the one that bites: it touches no entry, so a reset keyed
+      off `entries/` finds nothing to do, warns about nothing, and lets
+      the next write commit the abandoned recipient list, leaving a vault
+      whose recipient files name a key no entry is encrypted to. The test
+      asserts the new entry is *unreadable* by the never-added device,
+      which pins the reset ahead of the encrypt rather than merely ahead
+      of the commit. `TestResetHardDiscardsChangesOutsideEntries` pins
+      the same property at the `gitrepo` level
 - [x] **cmd/gage's test `fakePrompter` now echoes warnings to stderr.**
       The real `terminalPrompter` writes them there (prompts and warnings
       go to stderr so a redirected stdout carries only the secret), and a
@@ -315,5 +340,18 @@ interrupted re-encryption is provably invisible in committed history.
   trust cache's whole premise is that a legitimate `recipient add` touches
   `.age-recipients` and `config.toml` together — the mismatch case is the
   tampering signature.
+  - **M10 revises `AddRecipient`/`RemoveRecipient` as shipped here.**
+    Both rebuild `.age-recipients` from `config.toml`'s list, so running
+    either against an already-diverged vault quietly overwrites the stray
+    key and commits a clean pair. M10 refuses over a failing
+    `VerifyRecipients()` instead: erasing the divergence destroys the
+    evidence its trust cache exists to surface, and a green `verify`
+    obtained that way launders an unreviewed key into an approved one
+    through a command the operator thought was about adding a device.
+    The check lands ahead of the re-encryption rather than beside the
+    recipient-file write, so the refusal cannot itself leave the
+    half-migrated state this milestone rules out. See M10's "Decisions to
+    make first" — including the open question of how a diverged vault is
+    repaired, since the refusal needs an exit to ship with.
 - The dirty-tree reset established here runs under the vault lock; if
   that ordering is ever loosened, M4's concurrency guarantee breaks.

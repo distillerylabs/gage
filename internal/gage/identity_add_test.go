@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -47,8 +48,15 @@ func TestAddIdentityWritesItsOwnWrappedFileAndReturnsAPublicKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("no wrapped identity file at %s: %v", path, err)
 		}
-		if perm := info.Mode().Perm(); perm != 0o600 {
-			t.Errorf("identity file mode = %v, want 0600", perm)
+		// Windows doesn't model Unix permission bits; asserting them
+		// there would be asserting a fiction rather than a guarantee.
+		// The mode itself is CreateIdentity's, covered on Unix here and
+		// in unlock_test.go — this asserts the second device's file gets
+		// it too, not just the first.
+		if runtime.GOOS != "windows" {
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				t.Errorf("identity file mode = %04o, want 0600", perm)
+			}
 		}
 		// The first device's file is untouched — one file per device,
 		// not one file per vault.

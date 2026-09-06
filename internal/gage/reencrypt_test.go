@@ -433,7 +433,10 @@ func TestDirtyWorkTreeIsResetBeforeAnySubsequentWrite(t *testing.T) {
 				t.Errorf("the tree is still dirty after %s", name)
 			}
 			// The reset restored the entry rather than deleting it.
-			if _, err := v.ReadEntry(ids[1], &id); err != nil && name != "remove" {
+			// Asserted for every verb including remove, which deletes
+			// ids[0] and so must leave the dirtied ids[1] readable just
+			// like the others.
+			if _, err := v.ReadEntry(ids[1], &id); err != nil {
 				t.Errorf("the untouched entry %s no longer decrypts after the reset: %v", ids[1], err)
 			}
 		})
@@ -520,5 +523,131 @@ func TestDirtyWorkTreeResetWarnsNamingTheDiscardedPaths(t *testing.T) {
 	}
 	if got := p.warnings[warningsBefore:]; len(got) != 0 {
 		t.Errorf("a write over a clean tree warned anyway: %q", got)
+	}
+}
+
+// TestInterruptedRecipientWriteLeavesNoHalfMigratedState covers the half
+// of the plan's dirty-tree requirement the entry-loop crash seam
+// structurally cannot reach: "The reset covers the whole vault working
+// tree rather than only entries/ — a crash in the narrow window after
+// the recipient files are written but before the commit dirties those
+// two as well, and a reset that skipped them would leave exactly the
+// half-migrated state this milestone exists to rule out."
+//
+// onReencryptEntry fires only while entries are being written, so every
+// other atomicity test crashes with .age-recipients and config.toml
+// still clean. Without this test a reset narrowed to entries/ passes the
+// whole suite, and a vault would quietly commit a recipient list naming
+// a key no entry is encrypted to.
+//
+// Both crash shapes are driven, because they fail differently. A
+// --reencrypt dies with entries dirty *and* the recipient pair dirty; a
+// plain `recipient add` never touches an entry at all, so its window
+// leaves the pair as the only dirty thing in the tree — the shape a
+// reset that keys off entries/ skips entirely rather than merely
+// under-reports.
+//
+// The state is reproduced through writeRecipientFiles itself — the
+// genuine last act before either verb's single commit — rather than by
+// hand-writing two files that merely resemble it.
+func TestInterruptedRecipientWriteLeavesNoHalfMigratedState(t *testing.T) {
+	cases := map[string]struct{ dirtyAnEntry bool }{
+		"interrupted reencrypt": {dirtyAnEntry: true},
+		"interrupted plain add": {dirtyAnEntry: false},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+
+			p := &confirmingPrompter{fakePrompter: fakePrompter{passphrases: []string{testPassphrase}}, confirm: true}
+			id := unlockAsWith(t, v, laptop, p)
+			defer func() { _ = id.Close() }()
+
+			ids := seedEntries(t, v, &id, 2)
+			phone := newTestDevice(t, "personal", "phone-1")
+
+			mustNotBeCommitted := []string{".age-recipients", ".gage/config.toml"}
+			if tc.dirtyAnEntry {
+				mustNotBeCommitted = append(mustNotBeCommitted, dirtyEntries(t, v, ids[1]))
+			}
+
+			current, err := v.Recipients()
+			if err != nil {
+				t.Fatal(err)
+			}
+			halfMigrated := append(append([]VaultRecipient{}, current...),
+				VaultRecipient{Device: "phone-1", Pubkey: phone.pubkey})
+			if err := v.writeRecipientFiles(halfMigrated); err != nil {
+				t.Fatalf("staging the crash window's recipient files: %v", err)
+			}
+
+			// The state under test has to actually exist, or everything
+			// below passes vacuously.
+			if !listHas(readRecipientsFile(t, v), phone.pubkey) {
+				t.Fatal("the staged .age-recipients does not name the new key; this test would prove nothing")
+			}
+			if !listHas(configPubkeys(t, v), phone.pubkey) {
+				t.Fatal("the staged config.toml does not name the new key; this test would prove nothing")
+			}
+
+			warningsBefore := len(p.warnings)
+			before := commitCount(t, v)
+			newID, err := v.Insert(sampleEntry(time.Now().Add(time.Hour)), true, &id)
+			if err != nil {
+				t.Fatalf("Insert over a half-migrated tree: %v", err)
+			}
+
+			// Both sides of the pair are back at HEAD.
+			if listHas(readRecipientsFile(t, v), phone.pubkey) {
+				t.Error(".age-recipients still names the interrupted run's key; the reset skipped it")
+			}
+			if listHas(configPubkeys(t, v), phone.pubkey) {
+				t.Error(".gage/config.toml still names the interrupted run's key; the reset skipped it")
+			}
+
+			// And nothing left over rode into the write's own commit,
+			// which is the half-migrated state itself: a recipient list
+			// naming a key that only the entries this write happened to
+			// touch are actually encrypted to.
+			if got := commitCount(t, v); got != before+1 {
+				t.Errorf("commit count = %d, want %d — the reset must not commit", got, before+1)
+			}
+			paths := commitPaths(t, v, headHash(t, v))
+			for _, unwanted := range mustNotBeCommitted {
+				if listHas(paths, unwanted) {
+					t.Errorf("the write's commit contains %s (it touched %v); the interrupted run's leftovers were folded in",
+						unwanted, paths)
+				}
+			}
+
+			// The reset ran before the write encrypted anything, not
+			// merely before it committed: had .age-recipients still held
+			// the staged key at encrypt time, the new entry would be
+			// readable by a device this vault never actually added.
+			phoneID := unlockAs(t, v, phone)
+			defer func() { _ = phoneID.Close() }()
+			if _, err := v.ReadEntry(newID, &phoneID); !errors.Is(err, ErrNotARecipient) {
+				t.Errorf("the entry written after the reset is readable by the never-added recipient (err=%v); "+
+					"the reset ran after the recipient list was read for encryption", err)
+			}
+
+			// Never silent, and the warning names both files rather than
+			// only the entries the other reset tests cover.
+			added := strings.Join(p.warnings[warningsBefore:], "\n")
+			for _, want := range []string{".age-recipients", ".gage/config.toml"} {
+				if !strings.Contains(added, want) {
+					t.Errorf("warnings = %q, want one naming the discarded %s", added, want)
+				}
+			}
+
+			clean, err := gitrepo.IsClean(v.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !clean {
+				t.Error("the tree is still dirty after the write")
+			}
+		})
 	}
 }
