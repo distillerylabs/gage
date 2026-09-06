@@ -15,7 +15,12 @@ func Run(args []string, in io.Reader, out, errW io.Writer, isTerminal func() boo
 	// Prompts and warnings go to stderr, not stdout: a `gage show foo >
 	// secret.txt` must put only the secret in the file, while the human
 	// still sees the passphrase prompt they're answering.
-	app.Prompter = newTerminalPrompter(in, errW)
+	prompter := newTerminalPrompter(in, errW)
+	// Whether there is anyone to ask. Only conflict resolution consults
+	// it, and it is what makes `gage sync` refuse to pick a version of a
+	// secret in a script or in CI rather than choosing one silently.
+	prompter.interactive = isTerminal()
+	app.Prompter = prompter
 	return runApp(app, args)
 }
 

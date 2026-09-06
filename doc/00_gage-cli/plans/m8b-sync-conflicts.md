@@ -98,71 +98,71 @@ secrets.
 
 **Resolution mechanics**
 
-- [ ] A conflicting entry is presented with both sides' `updated` and
+- [x] A conflicting entry is presented with both sides' `updated` and
       `updated_by` decrypted and shown, via `Prompter` (a fake in tests)
       as a typed value — never printed from the library
-- [ ] `keep local` leaves the local version in place; the remote version
+- [x] `keep local` leaves the local version in place; the remote version
       is not present afterward
-- [ ] `keep remote` replaces the local version with the remote one
-- [ ] `keep both` keeps the local version at its existing UUID *and*
+- [x] `keep remote` replaces the local version with the remote one
+- [x] `keep both` keeps the local version at its existing UUID *and*
       writes the remote version as a new entry under a fresh UUID — both
       are decryptable afterward, and neither value was lost
-- [ ] `keep both`'s new entry carries the losing side's original
+- [x] `keep both`'s new entry carries the losing side's original
       `updated`/`updated_by` verbatim, not the resolving device's
       identity or the resolution time
-- [ ] After `keep both`, the two same-titled entries resolve through M5's
+- [x] After `keep both`, the two same-titled entries resolve through M5's
       ambiguous-query path (candidate list, one-shot fails, session
       prompts) rather than one shadowing the other
-- [ ] `skip` leaves that entry conflicted, moves to the next, and ends
+- [x] `skip` leaves that entry conflicted, moves to the next, and ends
       the sync without pushing — the tree still has unresolved conflicts
-- [ ] `abort` restores the exact pre-sync state: HEAD, working tree, and
+- [x] `abort` restores the exact pre-sync state: HEAD, working tree, and
       index unchanged, nothing pushed
-- [ ] A delete/modify conflict (one side removed the entry, the other
+- [x] A delete/modify conflict (one side removed the entry, the other
       edited it) is presented with the surviving version shown, and
       resolving it either way produces a consistent tree
 
 **History**
 
-- [ ] A resolved sync produces a merge commit with two parents — the
+- [x] A resolved sync produces a merge commit with two parents — the
       local head and the fetched remote head
-- [ ] Local commit granularity survives the merge: the individual local
+- [x] Local commit granularity survives the merge: the individual local
       write commits are still present and walkable, not flattened
-- [ ] `gage log` and `history --decrypt` (M12) traverse a merge commit
+- [x] `gage log` and `history --decrypt` (M12) traverse a merge commit
       without error — asserted structurally here so M12 doesn't discover
       it late
-- [ ] The merge commit's message names the number of entries resolved
+- [x] The merge commit's message names the number of entries resolved
       and contains no entry title or plaintext (extends M4's
       commit-message confidentiality rule to merges)
 
 **Unlocking and interaction with other milestones**
 
-- [ ] A sync that fast-forwards cleanly never unlocks an identity —
+- [x] A sync that fast-forwards cleanly never unlocks an identity —
       resolution is what forces the unlock, not `sync` itself
-- [ ] A sync whose divergence touches only *different* entries also
+- [x] A sync whose divergence touches only *different* entries also
       completes without unlocking (M8a merges it; this milestone isn't
       reached)
-- [ ] A sync reaching a real entry conflict prompts for unlock at that
+- [x] A sync reaching a real entry conflict prompts for unlock at that
       point, not before
-- [ ] In a session where the vault is already unlocked, resolution reuses
+- [x] In a session where the vault is already unlocked, resolution reuses
       the cached `Identity` without re-prompting
-- [ ] Resolution updates M7's metadata index: entries replaced by `keep
+- [x] Resolution updates M7's metadata index: entries replaced by `keep
       remote` and added by `keep both` are visible to the next `ls`
       without a manual `reindex`
-- [ ] A recipient-file conflict is *not* presented through this entry
+- [x] A recipient-file conflict is *not* presented through this entry
       menu — it routes to M10's trust-cache confirmation instead
       (asserted here as "doesn't reach the entry resolver"; M10 owns the
       positive case)
 
 **Non-interactive**
 
-- [ ] `gage sync` with no interactive `Prompter` available fails on the
+- [x] `gage sync` with no interactive `Prompter` available fails on the
       first conflict with a clear message, rather than choosing a side
-- [ ] `--yes` does *not* resolve conflicts — it retains only its
+- [x] `--yes` does *not* resolve conflicts — it retains only its
       trust-cache meaning
 
 **Locking**
 
-- [ ] The vault's write lock is held for the entire interactive
+- [x] The vault's write lock is held for the entire interactive
       resolution (acquired before the first conflict prompt, released
       only on completion, `skip`-triggered end, or `abort`) — a second
       process attempting a write against the same vault blocks on the
@@ -171,26 +171,73 @@ secrets.
 
 ## Implementation
 
-- [ ] Conflict presentation as a typed value: both decrypted entries plus
-      their metadata and the conflict kind, returned by the library;
-      `cmd/gage` renders the `[l/r/b/s/q]` prompt from the design doc
-- [ ] An entry-write primitive that accepts explicit `created`/
-      `updated`/`updated_by` instead of stamping them from the current
-      device and clock — needed only by `keep both`'s losing-side write;
-      every other write path keeps using the stamping behavior from M4
-- [ ] `keep local` / `keep remote` / `keep both` application, with `keep
-      both` allocating a fresh UUID for the losing side and preserving its
-      `updated`/`updated_by` via the primitive above
-- [ ] `skip` and `abort` paths, with `abort` restoring the pre-sync state
-      exactly
-- [ ] Delete/modify conflict handling
-- [ ] Merge commit creation with both parents, message naming the count
-      of resolved entries and no plaintext
-- [ ] Lazy unlock: resolution triggers `Vault.Unlock` at the point a
-      conflict needs decrypting, reusing a session's cached `Identity`
-      when there is one
-- [ ] Index updates for every applied resolution
-- [ ] Non-interactive refusal, per the decision above
+- [x] Conflict presentation as a typed value: both decrypted entries plus
+      their metadata and the conflict kind, returned by the library
+      (`EntryConflict`/`ConflictSide`); `cmd/gage` renders the
+      `[l/r/b/s/q]` prompt from the design doc in
+      `terminalPrompter.ResolveConflict`. `ConflictPrompter` is a
+      *separate* optional interface rather than a new `Prompter` method,
+      which is what makes the non-interactive refusal structural — a
+      frontend with nobody to ask simply doesn't implement it — and
+      leaves all seven existing `Prompter` implementations untouched
+- [x] ~~An entry-write primitive that accepts explicit `created`/
+      `updated`/`updated_by`~~ — **already existed.** `Vault.WriteEntry`
+      stamps nothing; it marshals and encrypts the `Entry` it is handed,
+      and the *callers* (`gage edit`, `Rename`) do the stamping. So
+      `keep both` preserves the losing side's provenance for free. What
+      this milestone did add is `Vault.encryptEntry`: WriteEntry's first
+      half, returning the ciphertext rather than writing it, so the new
+      entry can be created *by the merge commit* instead of by a write
+      the resolver would then have to remember to undo
+- [x] `keep local` / `keep remote` / `keep both` application, with `keep
+      both` allocating a fresh UUID for the losing side and preserving
+      its `created`/`updated`/`updated_by` verbatim. It re-encrypts
+      rather than copying the remote's ciphertext, which normalizes the
+      new file to *this* vault's current recipient list
+- [x] `skip` and `abort` paths. Both are all-or-nothing, and get that
+      for free: nothing is written until every conflict has a real
+      answer, so there is no partial state to restore. A skip that
+      applied the *other* entries and committed a merge would mark the
+      remote's history as incorporated with the skipped entry still at
+      its local version — "skip" would have silently become "keep local"
+- [x] Delete/modify conflict handling: the deleting side is presented as
+      absent (`ConflictSide.Present`), the prompt says so, and either
+      answer leaves a consistent tree
+- [x] Merge commit creation with both parents (local first, then the
+      fetched remote head), message naming the count of resolved entries
+      and no plaintext
+- [x] Lazy unlock: `ConflictResolver.Unlock` is a callback, called at
+      most once and only when a conflict actually needs decrypting. A
+      session hands back its cached `Identity`; one-shot mode unlocks on
+      the spot; a fast-forward or disjoint merge never calls it
+- [x] Index updates for every applied resolution, via `notePulled` — the
+      same invalidation a fast-forward triggers, for the same reason
+- [x] Non-interactive refusal, per the decision above, reachable two
+      ways: the library's (the `Prompter` doesn't implement
+      `ConflictPrompter`, or is nil) and the CLI's
+      (`terminalPrompter.interactive` is false, which is what `--script`,
+      `--stdin` and CI hit)
+- [x] **The gitrepo merge seam.** `MergeRemote` computed and applied in
+      one call, and wrote nothing when it conflicted — correct for
+      detection, unusable for resolution, which has to happen *between*
+      those two halves. Split into `PrepareMerge` (decide, write
+      nothing) and `PendingMerge.Commit` (apply choices, create `keep
+      both`'s file, commit with both parents), with `Content` reading
+      either side out of the git objects — the remote's version was
+      never written to the working tree. `MergeRemote` is now those two
+      calls, so M8a's path and this one cannot drift
+- [x] **Merge-created files are written 0600.** `applyRemoteVersion` used
+      the mode git recorded, which is 0644 for every blob. It only bit on
+      a file the merge *created* (an overwrite keeps the mode the file
+      already has), so before this milestone nothing hit it — a
+      delete/modify resolved as `keep remote` does. An entry file gage
+      writes itself is 0600, and how an entry arrived should not decide
+      who can read its file
+- [x] **A fresh timeout for the post-resolution push.** `RemoteOpTimeout`
+      bounds gage's *network* work, and the questions sit in the middle
+      of it — a deadline generous for a fetch is meaningless against a
+      human weighing up two versions of a password. Reusing the expired
+      one would fail to push a merge that is already committed
 
 ## Definition of done
 
