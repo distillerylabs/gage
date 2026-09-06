@@ -43,6 +43,32 @@ the first would miss someone who edits only the second.
 
 ## Decisions to make first
 
+- **A recipient change over a vault that fails `verify` is refused, not
+  silently repaired.** Resolved: refuse. M9's `AddRecipient` and
+  `RemoveRecipient` rebuild `.age-recipients` from `config.toml`'s list,
+  so running either against an already-diverged vault overwrites the
+  stray key out of existence and commits the result as an ordinary
+  recipient change. That is exactly backwards for this milestone: a key
+  in one file and not the other is the tampering signature the whole
+  trust cache exists to surface, and the silent repair destroys the
+  evidence, produces a clean `verify`, and regenerates the cache against
+  a list nobody reviewed — laundering an unreviewed key into a trusted
+  one through a command the operator thought was about something else.
+  So both verbs run `VerifyRecipients()` before they write anything and
+  fail with the differences when it reports out of sync, rendered the
+  same way `recipient verify` already renders them. This revises code M9
+  shipped; it is recorded here rather than there because the reason for
+  it is M10's premise, not M9's.
+  - **Open: how a diverged vault is repaired**, since the refusal
+    otherwise has no exit — and "refuse with no way forward" is worse
+    than either alternative. Both files are plaintext by design, so
+    hand-editing always works and may be the honest answer for a state
+    that is supposed to be unreachable. The alternative is an explicit
+    verb — `gage recipient verify --repair`, writing `.age-recipients`
+    from `config.toml` behind a confirmation naming every key it drops —
+    which performs the same overwrite, but as a deliberate, visible act
+    rather than a side effect of an unrelated `add`. Decide before
+    implementing the refusal, since the two ship together.
 - **What `--yes` does in the mismatched case.** `--yes` bypasses the
   confirmation for scripting/CI. In the routine case that's clearly fine.
   In the *mismatched* case — the actual tampering signature — does
@@ -100,6 +126,18 @@ the first would miss someone who edits only the second.
 - [ ] The cache is written under `$GAGE_STATE`, never inside the vault,
       and never committed — a `git status` after a cache regeneration is
       clean
+- [ ] `recipient add` and `recipient remove` against a vault whose
+      `.age-recipients` and `config.toml` disagree are both refused,
+      naming the specific differences, and leave both files
+      byte-identical — the stray key is still there afterwards for
+      `verify` to keep reporting, rather than having been rebuilt away
+- [ ] A refused recipient change commits nothing, pushes nothing, and
+      leaves the trust cache at its old value, so a mismatch cannot be
+      laundered into an approved state by retrying the add
+- [ ] The refusal is asserted with `--reencrypt` as well as without it:
+      the rebuild that erases the evidence is in the shared tail both
+      paths commit through, so covering only the plain add would leave
+      the more destructive verb unguarded
 
 ## Implementation
 
@@ -121,13 +159,25 @@ the first would miss someone who edits only the second.
 - [ ] `RecipientChangeWarning` (or similar) structured type returned by
       the library on a trust-cache mismatch; `cmd/gage` renders it as the
       terminal diff + `[y/N]` prompt
+- [ ] A `VerifyRecipients()` precondition on M9's `AddRecipient` and
+      `RemoveRecipient`, refusing over a failing verify instead of
+      rebuilding `.age-recipients` from `config.toml` — see the resolved
+      decision above. It belongs inside `withVaultWrite`, under the vault
+      lock and before `commitRecipientList` writes anything, so the
+      refusal can't race a concurrent repair; and it must sit ahead of
+      the re-encryption rather than beside the recipient-file write,
+      since aborting after every entry has been rewritten would be its
+      own half-migrated state
+- [ ] Whatever the open sub-decision above settles on for repairing a
+      diverged vault — the refusal and its exit ship together
 
 ## Definition of done
 
 Full test list green on all three CI platforms. A recipient added by
 another device produces a legible diff and a prompt on this one, once —
 and a hand-edited `.age-recipients` produces a warning that doesn't go
-away by clicking yes.
+away by clicking yes — or by running `recipient add`, which refuses over
+the divergence instead of rebuilding it away.
 
 ## Affects later milestones
 

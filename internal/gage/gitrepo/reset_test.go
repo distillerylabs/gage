@@ -15,6 +15,11 @@ func seededRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	writeWorktreeFile(t, dir, "entries/tracked.age", "committed")
+	// A vault is not only entries/: the two files that define who can
+	// read it sit at the root, and an interrupted recipient write is the
+	// one case that dirties them. A repo without them can't tell a reset
+	// that covers the working tree from one that covers entries/.
+	writeWorktreeFile(t, dir, ".age-recipients", "age1committed\n")
 	if _, err := InitAndCommit(dir, "seed"); err != nil {
 		t.Fatal(err)
 	}
@@ -124,4 +129,41 @@ func TestResetHardLeavesHEADWhereItWas(t *testing.T) {
 	if n, err := CommitCount(dir); err != nil || n != 1 {
 		t.Errorf("commit count = %d (err=%v), want 1 — the reset must not commit", n, err)
 	}
+}
+
+// TestResetHardDiscardsChangesOutsideEntries pins the coverage M9's
+// dirty-tree precondition actually needs: the whole working tree, not
+// just entries/.
+//
+// An interrupted `recipient add` is the shape that makes this
+// load-bearing rather than pedantic. It writes .age-recipients and
+// .gage/config.toml and commits — it never touches an entry — so a crash
+// in that window leaves the recipient pair as the *only* dirty thing in
+// the tree. A reset that keys off entries/ finds nothing to do, returns
+// no paths, warns about nothing, and lets the next write commit the
+// abandoned recipient list as if someone had meant it: a vault whose
+// recipient files name a key no entry is encrypted to, which is the
+// half-migrated state M9 exists to rule out.
+func TestResetHardDiscardsChangesOutsideEntries(t *testing.T) {
+	dir := seededRepo(t)
+
+	writeWorktreeFile(t, dir, ".age-recipients", "age1committed\nage1abandoned\n")
+
+	discarded, err := ResetHard(dir)
+	if err != nil {
+		t.Fatalf("ResetHard: %v", err)
+	}
+	if len(discarded) != 1 || discarded[0] != ".age-recipients" {
+		t.Fatalf("ResetHard reported %v, want [.age-recipients] — a dirty file outside entries/ must be "+
+			"discarded and named, or the reset is silent about the one window that dirties nothing else", discarded)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, ".age-recipients"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "age1committed\n" {
+		t.Errorf(".age-recipients = %q, want its committed content back", got)
+	}
+	mustBeClean(t, dir)
 }
