@@ -37,11 +37,11 @@ secrets.
 
 ## Design references
 
-- ["What \"diverged\" actually means"](../tdds/gage-cli-design.md) — the
+- ["What \"diverged\" actually means"](../../tdds/gage-cli-design.md) — the
   five situations and which ones reach this milestone
-- ["Resolving an entry conflict"](../tdds/gage-cli-design.md) — the
+- ["Resolving an entry conflict"](../../tdds/gage-cli-design.md) — the
   prompt, `keep both`'s rationale, and why the result is a merge commit
-- ["Local trust cache"](../tdds/gage-cli-design.md) — recipient-file
+- ["Local trust cache"](../../tdds/gage-cli-design.md) — recipient-file
   conflicts resolve through the trust-cache confirmation, not this menu
 
 ## Decisions to make first

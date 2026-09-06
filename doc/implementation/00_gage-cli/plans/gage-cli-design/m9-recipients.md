@@ -26,13 +26,13 @@ untouched rather than half-migrated.
 
 ## Design references
 
-- ["Recipient / access management"](../tdds/gage-cli-design.md) — the
+- ["Recipient / access management"](../../tdds/gage-cli-design.md) — the
   command surface and `--reencrypt`'s all-or-nothing contract
-- ["Local identity storage"](../tdds/gage-cli-design.md) — why losing an
+- ["Local identity storage"](../../tdds/gage-cli-design.md) — why losing an
   identity file is a recovery problem, not a backup problem
-- ["`--reencrypt` is all-or-nothing, on purpose"](../tdds/gage-cli-design.md)
+- ["`--reencrypt` is all-or-nothing, on purpose"](../../tdds/gage-cli-design.md)
   — why incremental commits are worse than a long single one
-- ["`identity` vs `recipient` stay separate"](../tdds/gage-cli-design.md)
+- ["`identity` vs `recipient` stay separate"](../../tdds/gage-cli-design.md)
 
 ## Decisions to make first
 

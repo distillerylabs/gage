@@ -26,11 +26,11 @@ sites.
 
 ## Design references
 
-- ["Addressing entries & the metadata index"](../tdds/gage-cli-design.md)
+- ["Addressing entries & the metadata index"](../../tdds/gage-cli-design.md)
   — the resolution order and the library-returns-a-candidate-list rule
-- ["Entry CRUD"](../tdds/gage-cli-design.md) — `show` vs `cat` (value
+- ["Entry CRUD"](../../tdds/gage-cli-design.md) — `show` vs `cat` (value
   only vs. full YAML), the `insert -e` abort conditions
-- ["A few decisions worth calling out"](../tdds/gage-cli-design.md) — the
+- ["A few decisions worth calling out"](../../tdds/gage-cli-design.md) — the
   `$EDITOR` scratch file's tmpfs-where-available posture
 
 ## Decisions made
@@ -61,7 +61,7 @@ sites.
   prefix-only (the original scope) is intentional now that they run
   last — matching `ls`'s short-id convention no longer needs prefix
   specifically once title can never be shadowed by it.
-  See ["Addressing entries & the metadata index"](../tdds/gage-cli-design.md)
+  See ["Addressing entries & the metadata index"](../../tdds/gage-cli-design.md)
   for the full reasoning, now recorded there rather than only here.
 - **`rename` enforces the same duplicate-title check as `insert`,
   with the same `-f` override.** Even though M5's resolver now handles an

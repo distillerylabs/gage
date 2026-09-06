@@ -158,7 +158,7 @@ most likely mean storing entries via the Contents API rather than
 `clone`/`fetch`/`push`. That interacts with two things already committed
 to in the design doc — principle 3 ("sync happens via the backing
 store") is fine with it, but the sync model's ["commit is local,
-instant, and always happens"](../tdds/gage-cli-design.md) durability
+instant, and always happens"](../../tdds/gage-cli-design.md) durability
 guarantee assumes a local object store that an API-backed vault wouldn't
 have. It's also a *vault type* question as much as an auth question, so
 it may belong under the design doc's "Vault types" section rather than
@@ -323,7 +323,7 @@ it visible rather than causing it:
 - **Principle 1** says "each vault has exactly one decryption method
   chosen at `init` time," and `.gage/config.toml` carries a single
   `[method] kind = ...` to match.
-- **["`identity` vs `recipient` stay separate"](../tdds/gage-cli-design.md)**
+- **["`identity` vs `recipient` stay separate"](../../tdds/gage-cli-design.md)**
   says the opposite: "A YubiKey-based vault might have a laptop identity
   via NFC/USB touch and a phone identity via the Secure Enclave — same
   recipient list, different local mechanics." Secure Enclave and YubiKey
@@ -481,7 +481,7 @@ out of scope for a first cut.
 
 ## Design-doc amendments
 
-Changes [gage-cli-design.md](../tdds/gage-cli-design.md) needs. `[x]`
+Changes [gage-cli-design.md](../../tdds/gage-cli-design.md) needs. `[x]`
 means applied to the design doc; entries are kept after application as a
 record of what changed and why.
 
@@ -503,7 +503,7 @@ across what, and the contended-lock behavior. Decision already taken
 
 ### `[x]` A2 — Resolve the `generate` title-vs-query contradiction
 
-["Addressing entries"](../tdds/gage-cli-design.md) lists `generate`
+["Addressing entries"](../../tdds/gage-cli-design.md) lists `generate`
 among the query-taking commands; the command reference says
 `gage generate <title>`. `generate` creates a new entry, so it takes a
 title — the query framing is most likely a leftover. Confirm and remove
@@ -577,7 +577,7 @@ one-shot surface. Per Q-HELP-SURFACES: `gage help` ≡ `gage --help`,
 
 ### `[x]` A11 — Widen the session command list to the management commands
 
-["Session-only commands"](../tdds/gage-cli-design.md) says "all entry
+["Session-only commands"](../../tdds/gage-cli-design.md) says "all entry
 commands (`show`, `ls`, `insert`, ...) work against the current session
 vault" and doesn't mention `vault`/`identity`/`recipient` at all. Per
 Q-CMD-AVAILABILITY those are session-available too, and `init`/`clone`

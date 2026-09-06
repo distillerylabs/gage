@@ -22,11 +22,11 @@ Nothing.
 
 ## Design references
 
-- ["Library architecture"](../tdds/gage-cli-design.md) — the
+- ["Library architecture"](../../tdds/gage-cli-design.md) — the
   library/frontend split and why interactive decisions are data
-- ["Global config"](../tdds/gage-cli-design.md) — XDG roles and the
+- ["Global config"](../../tdds/gage-cli-design.md) — XDG roles and the
   Windows mapping
-- ["Local identity storage"](../tdds/gage-cli-design.md) — path shape
+- ["Local identity storage"](../../tdds/gage-cli-design.md) — path shape
   only; nothing is written here yet
 
 ## Decisions to make first

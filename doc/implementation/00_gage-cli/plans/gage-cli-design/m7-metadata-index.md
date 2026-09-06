@@ -29,11 +29,11 @@ text means holding every secret value in memory for the session.
 
 ## Design references
 
-- ["Addressing entries & the metadata index"](../tdds/gage-cli-design.md)
+- ["Addressing entries & the metadata index"](../../tdds/gage-cli-design.md)
   — why `ls` can't be cheap anymore, and what the index holds
-- ["Library architecture"](../tdds/gage-cli-design.md) — the index
+- ["Library architecture"](../../tdds/gage-cli-design.md) — the index
   belongs to `Session`, not `Vault`
-- ["A few decisions worth calling out"](../tdds/gage-cli-design.md) — the
+- ["A few decisions worth calling out"](../../tdds/gage-cli-design.md) — the
   in-memory, session-scoped, never-written-to-disk rule
 
 ## Decisions made

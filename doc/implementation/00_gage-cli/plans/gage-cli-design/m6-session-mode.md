@@ -32,11 +32,11 @@ decrypt-on-demand per command.
 
 ## Design references
 
-- ["Session model"](../tdds/gage-cli-design.md) — the two invocation
+- ["Session model"](../../tdds/gage-cli-design.md) — the two invocation
   modes, the REPL transcript, and why there's no daemon
-- ["Why an idle timeout still matters despite process-scoped keys"](../tdds/gage-cli-design.md)
-- ["Session-only commands"](../tdds/gage-cli-design.md)
-- ["A few decisions worth calling out"](../tdds/gage-cli-design.md) — the
+- ["Why an idle timeout still matters despite process-scoped keys"](../../tdds/gage-cli-design.md)
+- ["Session-only commands"](../../tdds/gage-cli-design.md)
+- ["A few decisions worth calling out"](../../tdds/gage-cli-design.md) — the
   history file's plaintext-query-only rule
 
 ## Decisions to make first

@@ -15,7 +15,7 @@ Every write is a git commit (no push yet), **held under M0's vault lock**
 for the whole read-modify-commit sequence. This is the first milestone
 where two `gage` processes could corrupt each other, and the design
 actively encourages multiple processes — see
-["Trade-off vs. a shared agent"](../tdds/gage-cli-design.md).
+["Trade-off vs. a shared agent"](../../tdds/gage-cli-design.md).
 
 Each `Vault` method takes the `Identity` from M2's `Vault.Unlock` as an
 explicit parameter and never unlocks internally — `cmd/gage`'s one-shot
@@ -37,11 +37,11 @@ round trip exists for it to share.
 
 ## Design references
 
-- ["Entry CRUD"](../tdds/gage-cli-design.md) — the command surface and
+- ["Entry CRUD"](../../tdds/gage-cli-design.md) — the command surface and
   the notes on `insert`'s mutually exclusive input modes
-- ["Sync model"](../tdds/gage-cli-design.md) — "commit is local, instant,
+- ["Sync model"](../../tdds/gage-cli-design.md) — "commit is local, instant,
   and always happens"; push is M8a's problem
-- ["Session model"](../tdds/gage-cli-design.md) — one-shot mode's
+- ["Session model"](../../tdds/gage-cli-design.md) — one-shot mode's
   unlock-use-close contract
 
 ## Decisions made

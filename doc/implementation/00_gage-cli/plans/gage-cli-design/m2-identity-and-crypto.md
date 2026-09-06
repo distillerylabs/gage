@@ -36,12 +36,12 @@ purely additive (a recovery key alongside the device's own).
 
 ## Design references
 
-- ["Local identity storage"](../tdds/gage-cli-design.md) — why the file
+- ["Local identity storage"](../../tdds/gage-cli-design.md) — why the file
   lives under `$GAGE_DATA` and nowhere else, and why losing it is a
   recovery problem rather than a backup problem
-- ["Session model"](../tdds/gage-cli-design.md) — page-locking,
+- ["Session model"](../../tdds/gage-cli-design.md) — page-locking,
   core-dump suppression, and the honest Windows gap
-- ["Library architecture"](../tdds/gage-cli-design.md) — the
+- ["Library architecture"](../../tdds/gage-cli-design.md) — the
   method-agnostic `Prompter.Unlock` exchange and typed unlock errors
 
 ## Decisions to make first

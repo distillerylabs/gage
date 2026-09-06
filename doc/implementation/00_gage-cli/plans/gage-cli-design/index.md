@@ -1,7 +1,7 @@
 # Implementation plan
 
 Sequential milestones for building out
-[gage-cli-design.md](../tdds/gage-cli-design.md). Each milestone should
+[gage-cli-design.md](../../tdds/gage-cli-design.md). Each milestone should
 leave the tool in a runnable, testable state — no milestone should require
 reworking a prior one, though later milestones may extend earlier
 abstractions.
@@ -95,7 +95,7 @@ generating a local identity to supply the key itself.
 
 Every milestone builds its logic into the `internal/gage` library first
 and wires `cmd/gage` (Cobra) on top as a thin frontend — see the design
-doc's ["Library architecture"](../tdds/gage-cli-design.md). This is what
+doc's ["Library architecture"](../../tdds/gage-cli-design.md). This is what
 keeps a future GUI/TUI addable later without reworking any milestone
 here: it's a second frontend over the same methods, not a refactor of
 them.

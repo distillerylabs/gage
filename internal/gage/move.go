@@ -5,7 +5,7 @@ package gage
 // With one flat recipient list per vault, there's nothing to move an
 // entry *between* within a vault, so moving it to another vault is
 // literally what "share this credential with someone" means in this
-// design — see doc/implementation/00_gage-cli/plans/m11-cross-vault-sharing.md and the
+// design — see doc/implementation/00_gage-cli/plans/gage-cli-design/m11-cross-vault-sharing.md and the
 // design doc's "mv/cp are now cross-vault, and that's the sharing
 // mechanism."
 

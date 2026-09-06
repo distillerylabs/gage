@@ -35,11 +35,11 @@ the first would miss someone who edits only the second.
 
 ## Design references
 
-- ["Trust boundaries"](../tdds/gage-cli-design.md) — the two questions
+- ["Trust boundaries"](../../tdds/gage-cli-design.md) — the two questions
   that get conflated, and why this is guarantee #2's mitigation
-- ["Local trust cache"](../tdds/gage-cli-design.md) — what's cached, when
+- ["Local trust cache"](../../tdds/gage-cli-design.md) — what's cached, when
   it's checked, and the two different resolution outcomes
-- ["Cache regeneration isn't one-size-fits-all"](../tdds/gage-cli-design.md)
+- ["Cache regeneration isn't one-size-fits-all"](../../tdds/gage-cli-design.md)
 
 ## Decisions to make first
 

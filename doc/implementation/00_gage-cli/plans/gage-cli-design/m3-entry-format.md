@@ -19,10 +19,10 @@ left here is serialization and file placement.
 
 ## Design references
 
-- ["Entry format"](../tdds/gage-cli-design.md) — the fixed metadata
+- ["Entry format"](../../tdds/gage-cli-design.md) — the fixed metadata
   fields and the `value`/`fields` split that replaces `pass`/`passage`'s
   positional convention
-- ["On-disk layout"](../tdds/gage-cli-design.md) — why filenames are
+- ["On-disk layout"](../../tdds/gage-cli-design.md) — why filenames are
   opaque UUIDs under `entries/`
 
 ## Decisions to make first

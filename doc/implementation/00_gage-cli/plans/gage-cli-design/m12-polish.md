@@ -24,12 +24,12 @@ dangerous command in the tool.
 
 ## Design references
 
-- ["Notes on `show`"](../tdds/gage-cli-design.md) — `--field`, `-c`, `-q`
+- ["Notes on `show`"](../../tdds/gage-cli-design.md) — `--field`, `-c`, `-q`
   semantics and why `--field NAME` with `-q` scopes the QR
-- ["Sync (vault-generic, git-implemented today)"](../tdds/gage-cli-design.md)
+- ["Sync (vault-generic, git-implemented today)"](../../tdds/gage-cli-design.md)
   — `log` vs `history --decrypt`
-- ["`history --decrypt` is still the one meaningfully more dangerous tier"](../tdds/gage-cli-design.md)
-- ["Non-interactive session mode"](../tdds/gage-cli-design.md)
+- ["`history --decrypt` is still the one meaningfully more dangerous tier"](../../tdds/gage-cli-design.md)
+- ["Non-interactive session mode"](../../tdds/gage-cli-design.md)
 
 ## Decisions to make first
 

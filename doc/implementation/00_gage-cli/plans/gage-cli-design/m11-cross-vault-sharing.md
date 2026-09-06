@@ -30,11 +30,11 @@ holding any of the matching private keys.
 
 ## Design references
 
-- ["Why no per-directory sharing"](../tdds/gage-cli-design.md) — why a
+- ["Why no per-directory sharing"](../../tdds/gage-cli-design.md) — why a
   second vault replaced per-subtree recipients, and the `mv --to-vault`
   example
-- ["`mv`/`cp` are now cross-vault, and that's the sharing mechanism"](../tdds/gage-cli-design.md)
-- ["Local trust cache"](../tdds/gage-cli-design.md) — the destination
+- ["`mv`/`cp` are now cross-vault, and that's the sharing mechanism"](../../tdds/gage-cli-design.md)
+- ["Local trust cache"](../../tdds/gage-cli-design.md) — the destination
   vault's cache is the one checked
 
 ## Decisions to make first

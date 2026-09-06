@@ -36,13 +36,13 @@ bare-remote test harness exists to clone *from*.
 
 ## Design references
 
-- ["Vault types"](../tdds/gage-cli-design.md) — why `type` is a
+- ["Vault types"](../../tdds/gage-cli-design.md) — why `type` is a
   first-class field and why `--type` exists with one accepted value
-- ["On-disk layout"](../tdds/gage-cli-design.md) — what lives where and
+- ["On-disk layout"](../../tdds/gage-cli-design.md) — what lives where and
   why `.age-recipients` stays flat while `config.toml` nests
-- ["Global config"](../tdds/gage-cli-design.md) — the registry schema and
+- ["Global config"](../../tdds/gage-cli-design.md) — the registry schema and
   `[vaults.<name>.<type>]` namespacing
-- ["Git-specific commands"](../tdds/gage-cli-design.md) — why
+- ["Git-specific commands"](../../tdds/gage-cli-design.md) — why
   `set-remote` is namespaced under `git` and why there's no passthrough
 
 ## Decisions to make first

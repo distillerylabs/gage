@@ -31,11 +31,11 @@ test harness this milestone already builds for divergence testing.
 
 ## Design references
 
-- ["Sync model"](../tdds/gage-cli-design.md) — the local-durability vs.
+- ["Sync model"](../../tdds/gage-cli-design.md) — the local-durability vs.
   network-risk split, and why divergence is kicked to a human
-- ["Sync (vault-generic, git-implemented today)"](../tdds/gage-cli-design.md)
+- ["Sync (vault-generic, git-implemented today)"](../../tdds/gage-cli-design.md)
   — the command surface
-- ["Vault lifecycle"](../tdds/gage-cli-design.md) — `clone`'s "does NOT
+- ["Vault lifecycle"](../../tdds/gage-cli-design.md) — `clone`'s "does NOT
   grant you access" behavior
 
 ## Decisions to make first
