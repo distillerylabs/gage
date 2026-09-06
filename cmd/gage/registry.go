@@ -321,6 +321,18 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "mv",
+		Short:        "Move an entry to another vault — the sharing mechanism",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "cp",
+		Short:        "Copy an entry into another vault, keeping the original",
+		Group:        GroupEntry,
+		Availability: AvailBoth,
+	},
+	{
 		Name:         "ls",
 		Short:        "List entries with their ids, dates, and last writer",
 		Group:        GroupEntry,

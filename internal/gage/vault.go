@@ -38,21 +38,36 @@ func (v *Vault) withWriteLock(fn func() error) error {
 // distinguish "someone else holds it" from a real failure with
 // errors.As against *vaultlock.ContendedError.
 func (v *Vault) withWriteLockTimeout(timeout time.Duration, fn func() error) error {
-	path, err := LockFilePath(v.Name)
+	lock, err := acquireVaultLock(v.Name, timeout)
 	if err != nil {
 		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: creating lock directory: %w", err))
-	}
-
-	lock, err := vaultlock.Acquire(path, timeout)
-	if err != nil {
-		return exitcode.Wrap(exitcode.Conflict, fmt.Errorf("gage: %w", err))
 	}
 	defer func() { _ = lock.Release() }()
 
 	return fn()
+}
+
+// acquireVaultLock opens (creating if needed) and locks the named vault's
+// advisory write-lock file, wrapping every failure with the exit code a
+// caller expects: exitcode.Conflict for a contended lock, exitcode.Internal
+// for anything else. It is the one place that translates a bare
+// vaultlock.Acquire into gage's own error shape, shared by
+// withWriteLockTimeout (one vault) and withTwoVaultLocks (M11's mv/cp,
+// two).
+func acquireVaultLock(vault string, timeout time.Duration) (*vaultlock.Lock, error) {
+	path, err := LockFilePath(vault)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: creating lock directory: %w", err))
+	}
+
+	lock, err := vaultlock.Acquire(path, timeout)
+	if err != nil {
+		return nil, exitcode.Wrap(exitcode.Conflict, fmt.Errorf("gage: %w", err))
+	}
+	return lock, nil
 }
 
 // Vault is a single vault's on-disk state: config, recipients, entries. It
@@ -112,6 +127,18 @@ type Vault struct {
 	// would turn the simulated crash into ordinary cleanup, and the
 	// crash test would silently start proving something else.
 	onReencryptEntry func(done int)
+
+	// onMoveDestCommitted, if set on the *source* vault Move/Copy was
+	// called on, is called once the destination's write-and-commit
+	// sequence has succeeded, before the source-side removal (Move) or
+	// return (Copy) runs. Test-only; nil everywhere else.
+	//
+	// It exists for the same reason onReencryptEntry does: M11's
+	// crash-safety claim is about what an interruption between the two
+	// vaults' writes leaves behind, and a test panics from inside this
+	// hook — never recovers — to produce that interruption honestly
+	// rather than simulating its aftermath by hand.
+	onMoveDestCommitted func()
 }
 
 // Unlock lives in unlock.go.

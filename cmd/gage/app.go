@@ -154,6 +154,8 @@ func NewRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newRenameCommand(app))
 	root.AddCommand(newGenerateCommand(app))
 	root.AddCommand(newRmCommand(app))
+	root.AddCommand(newMvCommand(app))
+	root.AddCommand(newCpCommand(app))
 	root.AddCommand(newLsCommand(app))
 	root.AddCommand(newSearchCommand(app))
 	root.AddCommand(newReindexCommand(app))
