@@ -691,7 +691,9 @@ func TestREPLIsAThinWiringLayer(t *testing.T) {
 	app.Session = sess
 
 	// `use work` -> Session.Use("work")
-	if quit := execSessionLine(app, "use work"); quit {
+	if quit, err := execSessionLine(app, "use work"); err != nil {
+		t.Fatalf("`use work`: %v", err)
+	} else if quit {
 		t.Fatal("`use` ended the session")
 	}
 	if got := sess.Current(); got != "work" {
@@ -699,7 +701,9 @@ func TestREPLIsAThinWiringLayer(t *testing.T) {
 	}
 
 	// `lock work` -> Session.Lock("work"), and the result is rendered.
-	if quit := execSessionLine(app, "lock work"); quit {
+	if quit, err := execSessionLine(app, "lock work"); err != nil {
+		t.Fatalf("`lock work`: %v", err)
+	} else if quit {
 		t.Fatal("`lock` ended the session")
 	}
 	if st := sess.Status(); len(st) != 1 || st[0].Unlocked {
@@ -710,11 +714,11 @@ func TestREPLIsAThinWiringLayer(t *testing.T) {
 	}
 
 	// `exit` -> quit, without having been dispatched anywhere else.
-	if quit := execSessionLine(app, "exit"); !quit {
-		t.Error("`exit` didn't end the session")
+	if quit, err := execSessionLine(app, "exit"); err != nil || !quit {
+		t.Errorf("`exit` didn't end the session (quit=%v err=%v)", quit, err)
 	}
-	if quit := execSessionLine(app, "quit"); !quit {
-		t.Error("`quit`, exit's alias, didn't end the session")
+	if quit, err := execSessionLine(app, "quit"); err != nil || !quit {
+		t.Errorf("`quit`, exit's alias, didn't end the session (quit=%v err=%v)", quit, err)
 	}
 }
 

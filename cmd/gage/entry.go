@@ -389,9 +389,20 @@ func newCatCommand(app *App) *cobra.Command {
 
 // newShowCommand builds `gage show`: the value field only, not the full
 // YAML `gage cat` prints — see "Notes on show" in the design doc.
-// --field/-c/-q are deferred to M12.
+//
+// --field/-c/-q all narrow or redirect that one value rather than adding
+// output: --field picks a different one, -q renders it as a QR code
+// instead of printing it, and -c puts it on the clipboard instead of
+// printing it. That is why they compose through a single showValue and a
+// single emitSecret rather than each growing its own branch — "which
+// value" and "where does it go" are two decisions, not four commands.
 func newShowCommand(app *App) *cobra.Command {
-	var useFlag string
+	var (
+		useFlag   string
+		fieldFlag string
+		clipFlag  bool
+		qrFlag    bool
+	)
 	cmd := &cobra.Command{
 		Use:   "show <query>",
 		Short: commandShort("show"),
@@ -402,15 +413,31 @@ func newShowCommand(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintln(app.Out, e.Value); err != nil {
-					return exitcode.Wrap(exitcode.Internal, err)
+				value, err := showValue(e, fieldFlag)
+				if err != nil {
+					return err
 				}
-				return nil
+				return emitSecret(app, value, clipFlag, qrFlag)
 			})
 		},
 	}
 	addUseFlag(cmd, &useFlag)
+	cmd.Flags().StringVar(&fieldFlag, "field", "",
+		"print one entry from `fields` instead of the value")
+	cmd.Flags().BoolVarP(&clipFlag, "clip", "c", false,
+		"copy to the clipboard instead of printing, and clear it after a timeout")
+	cmd.Flags().BoolVarP(&qrFlag, "qr", "q", false,
+		"render a QR code instead of printing the value")
 	return cmd
+}
+
+// showValue picks which of an entry's values `show` was asked for: the
+// primary `value` by default, or one named entry from `fields`.
+func showValue(e gage.Entry, field string) (string, error) {
+	if field == "" {
+		return e.Value, nil
+	}
+	return e.Field(field)
 }
 
 // newEditCommand builds `gage edit`: resolve query, run the shared
@@ -508,12 +535,18 @@ func newRenameCommand(app *App) *cobra.Command {
 
 // newGenerateCommand builds `gage generate`: like insert, but the value
 // is drawn from gage.GenerateValue instead of coming from the human.
-// -l/--no-symbols customization is deferred to M12.
+//
+// -l/--no-symbols are passed through as a GenerateOptions rather than
+// being interpreted here: the length floor, the default, and the two
+// alphabets are all properties of what a generated secret is, which is
+// the library's business. This layer only turns flags into a value.
 func newGenerateCommand(app *App) *cobra.Command {
 	var (
 		useFlag         string
 		descriptionFlag string
 		forceFlag       bool
+		lengthFlag      int
+		noSymbolsFlag   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "generate <title>",
@@ -522,7 +555,10 @@ func newGenerateCommand(app *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			title := args[0]
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				value, err := gage.GenerateValue()
+				value, err := gage.GenerateValue(gage.GenerateOptions{
+					Length:    lengthFlag,
+					NoSymbols: noSymbolsFlag,
+				})
 				if err != nil {
 					return err
 				}
@@ -549,6 +585,14 @@ func newGenerateCommand(app *App) *cobra.Command {
 	addUseFlag(cmd, &useFlag)
 	cmd.Flags().StringVar(&descriptionFlag, "description", "", "optional description")
 	cmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "allow inserting a duplicate title")
+	// Defaulted to 0 rather than to the real default length so that
+	// "unset" stays distinguishable from "asked for the default" — the
+	// library is what knows what the default is, and duplicating the
+	// number here is how the two would eventually disagree.
+	cmd.Flags().IntVarP(&lengthFlag, "length", "l", 0,
+		fmt.Sprintf("length of the generated value (default %d, minimum %d)",
+			gage.GenerateDefaultLength, gage.GenerateMinLength))
+	cmd.Flags().BoolVar(&noSymbolsFlag, "no-symbols", false, "draw from letters and digits only")
 	return cmd
 }
 

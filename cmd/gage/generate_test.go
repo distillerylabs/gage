@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
@@ -100,5 +101,54 @@ func TestGenerateProducesExactlyOneCommitAndSetsTimestamps(t *testing.T) {
 	}
 	if got.UpdatedBy != device {
 		t.Errorf("updated_by = %q, want this device's recorded name %q", got.UpdatedBy, device)
+	}
+}
+
+// TestGenerateRespectsLengthAndNoSymbols: both flags reach the value
+// that actually lands in the vault, not just the library call.
+func TestGenerateRespectsLengthAndNoSymbols(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	if res := runCLI(t, []string{"generate", "Long", "-l", "40"}, ""); res.Code != 0 {
+		t.Fatalf("generate -l failed: %s", res.Stderr)
+	}
+	if got := catEntry(t, "Long"); len(got.Value) != 40 {
+		t.Errorf("generated value length = %d, want 40", len(got.Value))
+	}
+
+	if res := runCLI(t, []string{"generate", "Plain", "--no-symbols", "-l", "32"}, ""); res.Code != 0 {
+		t.Fatalf("generate --no-symbols failed: %s", res.Stderr)
+	}
+	got := catEntry(t, "Plain")
+	if len(got.Value) != 32 {
+		t.Errorf("generated value length = %d, want 32", len(got.Value))
+	}
+	for _, r := range got.Value {
+		isAlnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !isAlnum {
+			t.Fatalf("--no-symbols value %q contains %q", got.Value, r)
+		}
+	}
+}
+
+// TestGenerateRejectsAnUnreasonablySmallLength: the entry must not be
+// created at all — a weak secret refused after being committed would be
+// no refusal.
+func TestGenerateRejectsAnUnreasonablySmallLength(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	res := runCLI(t, []string{"generate", "Weak", "-l", "4"}, "")
+	if res.Code != int(exitcode.Usage) {
+		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
+	}
+	if !strings.Contains(res.Stderr, "8") {
+		t.Errorf("rejection does not say what the minimum is: %q", res.Stderr)
+	}
+
+	ls := runCLI(t, []string{"ls"}, "")
+	if strings.Contains(ls.Stdout, "Weak") {
+		t.Errorf("a rejected generate still created the entry:\n%s", ls.Stdout)
 	}
 }

@@ -520,6 +520,7 @@ origin = "https://git.internal.example/secrets/work-vault.git"
 prompt = "[{vault}{lock}] gage> "    # {vault}, {lock} (🔓/🔒), {dirty} tokens available
 idle_timeout = "10m"                 # auto re-lock a session vault after inactivity
 history_file = "$GAGE_STATE/history"   # command names/paths only, never values
+clipboard_timeout = "45s"            # how long `show -c` leaves a value on the clipboard
 ```
 
 `device` and `method` are this machine's answers to "who am I in that
@@ -750,6 +751,29 @@ at a TTY:
 gage --script deploy-secrets.gage      # reads session commands from a file
 cat commands.txt | gage --stdin        # same, from stdin
 ```
+
+Both stop at the first failing command rather than running the rest
+against a state the script's author never anticipated, and neither writes
+to the history file — that file records what a human typed at a prompt.
+
+**Where the passphrase comes from**, in this fixed order:
+
+1. `GAGE_PASSPHRASE`, if set.
+2. Otherwise a prompt — but only under `--script`, which leaves stdin
+   free for a human to answer on. `--stdin` has already spent stdin on
+   the command stream and can never prompt; a prompt there would race the
+   script for the same bytes.
+3. Otherwise a refusal naming the variable, with `exitcode.LockedOrAuth`.
+   Never a read that cannot be answered, and never an empty passphrase
+   reported as a wrong one.
+
+`GAGE_PASSPHRASE` opens an *existing* identity only. It is never used for
+`init` or `identity add`, where the answer protects a brand-new key and
+so cannot be checked against anything — a typo in the variable would be
+unrecoverable, and nobody would find out until the next unlock. It also
+gets exactly one attempt, since the variable gives the same answer every
+time. There is no per-vault spelling: a script driving two vaults
+reassigns the variable between them.
 
 ### Session-only commands
 
@@ -1494,7 +1518,19 @@ Notes on `show`:
   included, when you actually want everything.
 - `--field NAME`: prints one entry from `fields` instead of `value`
   (e.g. `--field username`, `--field totp_seed`).
-- `-c`: copies to clipboard, auto-clears after a short timeout.
+- `-c`: copies to clipboard, auto-clears after a short timeout
+  (`[shell].clipboard_timeout`, 45s by default). The clear always happens
+  inside the process that wrote the clipboard — never a forked child,
+  which would be exactly the surviving background process principle 5
+  refuses — so the two modes differ in who waits: a one-shot `gage show
+  -c` blocks until the timeout with its notice on stderr (Ctrl-C clears
+  early and still exits 0), while in a session the prompt returns
+  immediately and the clear runs on a timer, with session exit clearing
+  anything still pending. The clear is skipped if the clipboard changed
+  after `gage` wrote it — compared by hash, so a pending clear is not a
+  second copy of the secret in memory. A process killed outright never
+  reaches its clear; that is a documented limit, like the Windows
+  core-dump gap above.
 - `-q`: renders a terminal QR code **instead of** printing plaintext — this
   is the scan-with-Camera-app workflow, now built into the tool instead of
   being a manual `-q`-then-decode dance.

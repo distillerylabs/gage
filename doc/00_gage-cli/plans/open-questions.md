@@ -660,6 +660,31 @@ Per Q-DEVICE-NAME. Four changes:
    the path-traversal rule, framed against the design's own trust
    boundary (a committed file that any git-writer can edit).
 
+### `[x]` A17 — Document `--clip`'s clear semantics {#a17}
+
+M12's resolution. The design doc says only that `-c` "copies to
+clipboard, auto-clears after a short timeout," which leaves the part that
+actually matters unstated: *which process* does the clearing. Needs, in
+"Notes on `show`": the clear happens inside the process that wrote the
+clipboard and never in a forked child (principle 5); one-shot `-c`
+therefore blocks until the timeout with its notice on stderr, and
+Ctrl-C clears early and still exits 0; in-session `-c` is a timer and
+session exit clears a pending copy; the clear is skipped if the
+clipboard changed after gage wrote it, compared by hash. Plus
+`clipboard_timeout` (default `45s`) in the `[shell]` config example.
+
+### `[x]` A18 — Say where a non-interactive session's passphrase comes from {#a18}
+
+M12's resolution. "Non-interactive session mode" shows `--script` and
+`--stdin` but never says how a run with no human at a TTY unlocks
+anything — and `--stdin` structurally cannot prompt, since stdin is the
+command stream. Needs: `GAGE_PASSPHRASE`, tried first, then a prompt if
+stdin is a terminal, then a hard failure with `exitcode.LockedOrAuth`
+naming the variable; that it is honored for unlocking an existing
+identity only, never for choosing a new one's passphrase; and that a
+script driving two vaults reassigns the variable between them, there
+being no per-vault spelling.
+
 ---
 
 ## Accepted risks
@@ -719,3 +744,20 @@ existing ciphertext. Accepted on the grounds that the vault-level version
 can gate an entry-schema migration — a vault at `format_version = 2` can
 be defined to contain v2 entries. Revisit if entry schema churn turns out
 to be more likely than expected.
+
+### A SIGKILL leaves a copied secret on the clipboard
+
+Per M12, `--clip`'s auto-clear runs inside the process that wrote the
+clipboard — no forked clearer, because a process outliving the one that
+unlocked is the daemon principle 5 refuses. The consequence is that a
+`gage` killed outright (SIGKILL, a closed terminal, a crash) never
+reaches its clear, and the secret stays on the clipboard until something
+overwrites it.
+
+Accepted as the correct side of the trade: the alternative is a surviving
+background process holding a fingerprint of a secret gage no longer has
+any key for, which is a worse property than a clipboard entry the user
+can overwrite. It is a documented limit rather than a claimed guarantee,
+the same posture as the Windows core-dump gap in "Session model". Ctrl-C
+during the wait is a clean early clear, so the common interactive
+interruption is handled.

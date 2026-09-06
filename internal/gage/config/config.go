@@ -30,10 +30,16 @@ type VaultEntry struct {
 }
 
 // Shell holds this device's session-mode preferences.
+//
+// ClipboardTimeout is here rather than in a table of its own for the
+// same reason the rest of these are: it is CLI-terminal policy a GUI
+// frontend would not share, alongside the prompt template, the idle
+// re-lock and the history file.
 type Shell struct {
-	Prompt      string `toml:"prompt,omitempty"`
-	IdleTimeout string `toml:"idle_timeout,omitempty"`
-	HistoryFile string `toml:"history_file,omitempty"`
+	Prompt           string `toml:"prompt,omitempty"`
+	IdleTimeout      string `toml:"idle_timeout,omitempty"`
+	HistoryFile      string `toml:"history_file,omitempty"`
+	ClipboardTimeout string `toml:"clipboard_timeout,omitempty"`
 }
 
 // Global is the full shape of $GAGE_CONFIG/config.toml.

@@ -13,24 +13,31 @@ import (
 	"github.com/denmark/gage/internal/gage/exitcode"
 )
 
-// runSession is bare `gage`'s session mode: one Session held across many
-// commands, driven by a line editor. Everything here is wiring — the
-// behavior it drives (unlock once, hold, re-lock on `lock` or on going
-// idle) belongs to gage.Session, which is where it's tested. See
-// "Session model".
-func runSession(app *App) error {
+// openSessionRun builds the Session both session modes run on —
+// interactive and --script/--stdin — and returns the teardown that drops
+// everything it holds.
+//
+// It exists because those two modes differ only in where their command
+// lines come from and how a failure is handled; everything else (the
+// Session itself, the settings, what is released on the way out) is the
+// same, and a second copy of it would be a second place for "and also
+// zero the keys" to be forgotten.
+//
+// prompter is a parameter rather than being read off app because a
+// non-interactive run substitutes its own — see scriptPrompter.
+func openSessionRun(app *App, prompter gage.Prompter) (*gage.Session, shellSettings, func(), error) {
 	g, err := readGlobalConfig()
 	if err != nil {
-		return exitcode.Wrap(exitcode.Internal, err)
+		return nil, shellSettings{}, nil, exitcode.Wrap(exitcode.Internal, err)
 	}
 	settings, err := resolveShellSettings(g.Shell)
 	if err != nil {
-		return err
+		return nil, shellSettings{}, nil, err
 	}
 
 	sess := gage.NewSession(gage.SessionConfig{
 		Open:        openSessionVault,
-		Prompter:    app.Prompter,
+		Prompter:    prompter,
 		IdleTimeout: settings.idleTimeout,
 		// A session starts pointed at the same vault a one-shot command
 		// would use, so `show foo` works before any `use`. Naming it
@@ -39,16 +46,42 @@ func runSession(app *App) error {
 		// nil means the real clock; only a test sets this.
 		Now: app.Now,
 	})
-	// Close is what zeroes every held key on the way out, so it runs on
-	// every exit path — `exit`, Ctrl-D, or an error out of the loop.
-	// Setting App.Session back to nil keeps a returned-to one-shot
-	// command (in tests, which reuse an App) from borrowing a closed
-	// session.
-	defer func() {
+	app.Session = sess
+
+	cleanup := func() {
+		// Close is what zeroes every held key on the way out, so it runs
+		// on every exit path — `exit`, Ctrl-D, a failed script line, or
+		// an error out of the loop. Setting App.Session back to nil
+		// keeps a returned-to one-shot command (in tests, which reuse an
+		// App) from borrowing a closed session.
 		app.Session = nil
 		_ = sess.Close()
-	}()
-	app.Session = sess
+
+		// A session's `show -c` doesn't block — it schedules the clear
+		// and hands the prompt back — so the session's own exit is what
+		// guarantees a copy made a second before `exit` doesn't outlive
+		// the process that made it. Same placement and same reason as
+		// Close: the clipboard is dropped on the way out for exactly the
+		// reasons key material is. Idempotent, so an already-fired timer
+		// makes this a no-op.
+		if err := app.clipboard().clear(); err != nil {
+			writeError(app.Err, err)
+		}
+	}
+	return sess, settings, cleanup, nil
+}
+
+// runSession is bare `gage`'s session mode: one Session held across many
+// commands, driven by a line editor. Everything here is wiring — the
+// behavior it drives (unlock once, hold, re-lock on `lock` or on going
+// idle) belongs to gage.Session, which is where it's tested. See
+// "Session model".
+func runSession(app *App) error {
+	sess, settings, closeSession, err := openSessionRun(app, app.Prompter)
+	if err != nil {
+		return err
+	}
+	defer closeSession()
 
 	hist, err := openHistory(settings.historyFile)
 	if err != nil {
@@ -142,35 +175,43 @@ func (r *repl) run() error {
 		// several Session calls (take the vault, then resolve a query in
 		// it) can't have its key dropped between them. See
 		// Session.InCommand.
-		quit := func() bool {
+		quit, err := func() (bool, error) {
 			defer r.sess.InCommand()()
 			return execSessionLine(app, line)
 		}()
+		if err != nil {
+			// An interactive session reports and carries on: the human
+			// is right there and can retype the line. A scripted one
+			// stops instead — see runScriptSession.
+			reportAmbiguous(app, err)
+			writeError(app.Err, err)
+		}
 		if quit {
 			return nil
 		}
 	}
 }
 
-// execSessionLine runs one typed line, reporting any failure without
-// ending the session. It returns true only for `exit`/`quit`.
-func execSessionLine(app *App, line string) bool {
+// execSessionLine runs one typed line. It returns true for `exit`/`quit`
+// and whatever the command failed with, if anything.
+//
+// Reporting is the caller's job, not this function's, because the two
+// modes genuinely differ on it: an interactive session prints the error
+// and carries on to the next prompt, while a script stops. Returning the
+// error rather than swallowing it is what lets both be written honestly
+// over one implementation.
+func execSessionLine(app *App, line string) (quit bool, err error) {
 	args, err := splitLine(line)
 	if err != nil {
-		writeError(app.Err, err)
-		return false
+		return false, err
 	}
 	if len(args) == 0 {
-		return false
+		return false, nil
 	}
 	if ci, ok := findCommand(args[0]); ok && ci.Name == "exit" {
-		return true
+		return true, nil
 	}
-	if err := runSessionCommand(app, args); err != nil {
-		reportAmbiguous(app, err)
-		writeError(app.Err, err)
-	}
-	return false
+	return false, runSessionCommand(app, args)
 }
 
 // runSessionCommand dispatches one already-split command line: the

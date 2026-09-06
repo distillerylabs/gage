@@ -60,6 +60,14 @@ func chooseRootMode(stdinIsTTY bool) string {
 }
 
 func dispatchRoot(app *App, root *cobra.Command) error {
+	// --script/--stdin are checked before the TTY dispatch, and that
+	// ordering is the point: they are the *explicit* spellings of
+	// "read session commands from somewhere that isn't a prompt", so
+	// they must win over whatever stdin happens to be. A --script run
+	// from a terminal is still a script.
+	if scriptMode(app) {
+		return dispatchScript(app)
+	}
 	if chooseRootMode(app.IsTerminal()) == "session" {
 		return runSession(app)
 	}
