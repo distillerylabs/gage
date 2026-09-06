@@ -68,7 +68,7 @@ func runSession(app *App) error {
 	// From here until the session ends, every human-facing read — a
 	// passphrase, an insert value, a [y/N], a candidate number — goes
 	// through the same reader as the command lines. See lineReader.
-	if tp, ok := app.Prompter.(*terminalPrompter); ok {
+	if tp, ok := terminalPrompterOf(app.Prompter); ok {
 		defer tp.useSessionReader(lr, app.Out)()
 	}
 

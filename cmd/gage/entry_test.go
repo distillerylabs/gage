@@ -275,6 +275,9 @@ func (p *explodingPrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse,
 	return gage.UnlockResponse{}, nil
 }
 func (p *explodingPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (p *explodingPrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
+	return true, nil
+}
 func (p *explodingPrompter) Choose(list gage.CandidateList) (string, error) {
 	return "", nil
 }

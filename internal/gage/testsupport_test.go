@@ -71,7 +71,16 @@ func (f *fakePrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 	return UnlockResponse{Kind: KindPassphrase, Passphrase: f.passphrases[i]}, nil
 }
 
-func (f *fakePrompter) Confirm(prompt string) (bool, error)       { return true, nil }
+func (f *fakePrompter) Confirm(prompt string) (bool, error) { return true, nil }
+
+// ConfirmRecipientChange answers M10's trust-cache question yes, the
+// same way Confirm answers yes: a fake that blocked every write over a
+// recipient change would fail most of this package's tests for a reason
+// none of them are about. Tests that care what was asked use
+// trustPrompter (trustcache_test.go), which records the warning.
+func (f *fakePrompter) ConfirmRecipientChange(w RecipientChangeWarning) (bool, error) {
+	return true, nil
+}
 func (f *fakePrompter) Choose(list CandidateList) (string, error) { return "", nil }
 func (f *fakePrompter) Warn(msg string)                           { f.warnings = append(f.warnings, msg) }
 func (f *fakePrompter) Value(prompt string) (string, error)       { return "", nil }
@@ -84,7 +93,10 @@ type mismatchedPrompter struct{}
 func (mismatchedPrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 	return UnlockResponse{Kind: "yubikey"}, nil
 }
-func (mismatchedPrompter) Confirm(prompt string) (bool, error)       { return true, nil }
+func (mismatchedPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (mismatchedPrompter) ConfirmRecipientChange(w RecipientChangeWarning) (bool, error) {
+	return true, nil
+}
 func (mismatchedPrompter) Choose(list CandidateList) (string, error) { return "", nil }
 func (mismatchedPrompter) Warn(msg string)                           {}
 func (mismatchedPrompter) Value(prompt string) (string, error)       { return "", nil }

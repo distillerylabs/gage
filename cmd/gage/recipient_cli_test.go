@@ -66,6 +66,11 @@ func (p noInteractionPrompter) Confirm(prompt string) (bool, error) {
 	return false, nil
 }
 
+func (p noInteractionPrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
+	p.t.Fatalf("the command asked about a recipient change (%+v); verify must never prompt", w)
+	return false, nil
+}
+
 func (p noInteractionPrompter) Choose(list gage.CandidateList) (string, error) {
 	p.t.Fatalf("the command asked to choose from %+v; verify must never prompt", list)
 	return "", nil

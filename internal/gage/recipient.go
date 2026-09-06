@@ -171,6 +171,16 @@ func (v *Vault) AddRecipient(device, pubkey string, reencrypt bool, ident *Ident
 
 	change := RecipientChange{Device: device, Pubkey: pubkey}
 	err := v.withVaultWrite(ident.warnTo(), func() error {
+		// M10's precondition, first: this verb rebuilds .age-recipients
+		// from config.toml, so running it over a divergence would erase
+		// the stray key and commit the result as an ordinary recipient
+		// change. Under the lock so it can't race a concurrent repair,
+		// and ahead of everything else — including the re-encryption
+		// pass — so a refusal leaves nothing half-migrated.
+		if err := v.requireRecipientsInSync(); err != nil {
+			return err
+		}
+
 		current, err := v.Recipients()
 		if err != nil {
 			return err
@@ -198,7 +208,13 @@ func (v *Vault) AddRecipient(device, pubkey string, reencrypt bool, ident *Ident
 		}
 		change.Reencrypted = n
 		change.Commit = hash
-		return nil
+
+		// The operator just reviewed this list by typing the command, so
+		// M10's cache is regenerated as the last step. Without it, `gage
+		// recipient add` would warn them about their own add at their
+		// very next write, which is the fastest way to teach someone to
+		// stop reading the warning.
+		return v.noteRecipientsReviewed()
 	})
 	if err != nil {
 		return RecipientChange{}, err
@@ -227,6 +243,14 @@ func (v *Vault) RemoveRecipient(query string, reencrypt bool, ident *Identity) (
 
 	var change RecipientChange
 	err := v.withVaultWrite(ident.warnTo(), func() error {
+		// Same M10 precondition as AddRecipient, and first for the same
+		// reasons — including before confirmSelfRemoval below, so the
+		// operator is not asked to approve an operation that is about to
+		// be refused anyway.
+		if err := v.requireRecipientsInSync(); err != nil {
+			return err
+		}
+
 		current, err := v.Recipients()
 		if err != nil {
 			return err
@@ -267,7 +291,9 @@ func (v *Vault) RemoveRecipient(query string, reencrypt bool, ident *Identity) (
 			return err
 		}
 		change = RecipientChange{Device: removed.Device, Pubkey: removed.Pubkey, Commit: hash, Reencrypted: n}
-		return nil
+		// As in AddRecipient: a list the operator changed here needs no
+		// second review at their next write.
+		return v.noteRecipientsReviewed()
 	})
 	if err != nil {
 		return RecipientChange{}, err

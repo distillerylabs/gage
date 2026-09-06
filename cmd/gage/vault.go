@@ -172,7 +172,16 @@ func newVaultRemoveCommand(app *App) *cobra.Command {
 			if err := writeGlobalConfig(g); err != nil {
 				return exitcode.Wrap(exitcode.Internal, err)
 			}
-			return nil
+
+			// Local memory of the vault goes with the registration.
+			// Keeping M10's trust cache would let a later re-add
+			// silently inherit an approval for a recipient list nobody
+			// looked at in the interval, which is the one thing that
+			// cache exists to prevent; dropping it makes a re-add a
+			// first use — the documented weaker-but-honest bootstrap.
+			// It touches nothing inside the vault, which is what `vault
+			// remove` already promises.
+			return gage.RemoveTrustCache(name)
 		},
 	}
 }
