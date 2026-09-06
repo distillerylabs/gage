@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,13 @@ type resolvingPrompter struct {
 	answers   []Resolution
 	answerErr error
 
+	// byTitle, when set, answers by the conflicting entry's title
+	// instead of by position. Conflicts are presented in path order —
+	// that is, by the entries' UUIDs — which no test can predict, so any
+	// test giving two conflicts *different* answers has to address them
+	// by name rather than by turn.
+	byTitle map[string]Resolution
+
 	// before, if set, runs at the start of every ResolveConflict call —
 	// the seam the lock test uses to observe the world mid-resolution.
 	before func()
@@ -47,11 +55,31 @@ func (p *resolvingPrompter) ResolveConflict(c EntryConflict) (Resolution, error)
 	if p.answerErr != nil {
 		return 0, p.answerErr
 	}
+	if p.byTitle != nil {
+		title := c.Local.Entry.Title
+		if !c.Local.Present {
+			title = c.Remote.Entry.Title
+		}
+		answer, ok := p.byTitle[title]
+		if !ok {
+			return 0, errPrompterGaveUp
+		}
+		return answer, nil
+	}
 	i := len(p.presented) - 1
 	if i >= len(p.answers) {
 		return 0, errPrompterGaveUp
 	}
 	return p.answers[i], nil
+}
+
+// answeringByTitle builds a prompter that answers each conflict by the
+// title of the entry it is about.
+func answeringByTitle(byTitle map[string]Resolution) *resolvingPrompter {
+	return &resolvingPrompter{
+		fakePrompter: fakePrompter{passphrases: []string{testPassphrase}},
+		byTitle:      byTitle,
+	}
 }
 
 // answering builds a resolvingPrompter that answers the conflicts it is
@@ -101,6 +129,13 @@ type conflictFixture struct {
 	// assert which one survived without re-deriving it.
 	mine   Entry
 	theirs Entry
+
+	// secondID and its two versions are set only by the two-conflict
+	// fixture, for the tests that give the two entries different
+	// answers.
+	secondID    uuid.UUID
+	mineSecond  Entry
+	theirSecond Entry
 
 	// headBefore is HEAD as of the moment resolution begins, for the
 	// abort/skip tests that assert nothing moved.
@@ -502,6 +537,149 @@ func TestSkipStillPresentsTheRemainingConflicts(t *testing.T) {
 	}
 }
 
+// TestOneSkipAppliesNoneOfTheOtherAnswers is the invariant a partial
+// resolution would break, and the reason nothing is written until every
+// conflict has a real answer.
+//
+// Answering one conflict and skipping the other must apply *neither*. A
+// merge commit carrying only the answered one would mark the remote's
+// history as incorporated with the skipped entry still at its local
+// version — the divergence would be gone and `skip` would have silently
+// become `keep local`, which is the single outcome this milestone
+// exists to prevent.
+func TestOneSkipAppliesNoneOfTheOtherAnswers(t *testing.T) {
+	f := newTwoConflictFixture(t)
+	defer f.close()
+
+	p := answeringByTitle(map[string]Resolution{
+		f.mine.Title:       KeepRemote,
+		f.mineSecond.Title: SkipConflict,
+	})
+	report, err := f.resolveWith(t, p)
+	if err == nil {
+		t.Fatal("a sync with one skipped conflict succeeded, want the unresolved divergence reported")
+	}
+	if report.Merged || report.Pushed {
+		t.Errorf("a skip applied the other answer anyway: Merged=%v Pushed=%v", report.Merged, report.Pushed)
+	}
+	if report.Resolved != 0 {
+		t.Errorf("Resolved = %d, want 0 — a skip applies nothing at all", report.Resolved)
+	}
+	if report.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", report.Skipped)
+	}
+
+	head, err := gitrepo.HeadHash(f.vault.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != f.headBefore {
+		t.Errorf("HEAD moved (%s -> %s) despite one conflict being skipped", f.headBefore, head)
+	}
+
+	// The answered entry is still at its local version: the `keep
+	// remote` above was collected, not applied.
+	got, err := f.vault.ReadEntry(f.entryID, &f.ident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Value != f.mine.Value {
+		t.Errorf("the answered entry = %q, want it untouched at %q — one skip must apply nothing",
+			got.Value, f.mine.Value)
+	}
+}
+
+// TestTwoConflictsTakeTheirOwnAnswers: each conflict is decided on its
+// own, and one merge commit carries all of them. Answering by title
+// rather than by turn is what makes this test independent of the order
+// the two entries' UUIDs happen to sort in.
+func TestTwoConflictsTakeTheirOwnAnswers(t *testing.T) {
+	f := newTwoConflictFixture(t)
+	defer f.close()
+
+	p := answeringByTitle(map[string]Resolution{
+		f.mine.Title:       KeepLocal,
+		f.mineSecond.Title: KeepRemote,
+	})
+	report, err := f.resolveWith(t, p)
+	if err != nil {
+		t.Fatalf("SyncResolving: %v", err)
+	}
+	if report.Resolved != 2 {
+		t.Errorf("Resolved = %d, want 2", report.Resolved)
+	}
+	if len(p.presented) != 2 {
+		t.Fatalf("%d conflicts presented, want 2", len(p.presented))
+	}
+
+	first, err := f.vault.ReadEntry(f.entryID, &f.ident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Value != f.mine.Value {
+		t.Errorf("the entry answered `keep local` = %q, want %q", first.Value, f.mine.Value)
+	}
+	second, err := f.vault.ReadEntry(f.secondID, &f.ident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Value != f.theirSecond.Value {
+		t.Errorf("the entry answered `keep remote` = %q, want %q", second.Value, f.theirSecond.Value)
+	}
+
+	// Two answers, one merge — not one merge commit per question.
+	var merges int
+	for _, c := range walkHistory(t, f.vault.Path) {
+		if c.NumParents() == 2 {
+			merges++
+		}
+	}
+	if merges != 1 {
+		t.Errorf("%d merge commits, want exactly 1 for a resolution answering two conflicts", merges)
+	}
+
+	// And the count in the message is the real one, plural included.
+	if msg := headCommit(t, f.vault.Path).Message; !strings.Contains(msg, "2 entries") {
+		t.Errorf("merge message = %q, want it to name 2 entries resolved", msg)
+	}
+}
+
+// TestAPrompterErrorLeavesTheVaultUntouched: a frontend that fails
+// mid-resolution — a closed terminal, an unreadable stdin — is not an
+// answer. The error reaches the caller and nothing is applied, the same
+// as an abort.
+func TestAPrompterErrorLeavesTheVaultUntouched(t *testing.T) {
+	f := newConflictFixture(t)
+	defer f.close()
+
+	failed := errors.New("the terminal went away")
+	p := answering()
+	p.answerErr = failed
+
+	report, err := f.resolveWith(t, p)
+	if !errors.Is(err, failed) {
+		t.Fatalf("error = %v, want the prompter's own %v", err, failed)
+	}
+	if report.Merged || report.Pushed || report.Resolved != 0 {
+		t.Errorf("a failed prompt still applied something: %+v", report)
+	}
+
+	head, err := gitrepo.HeadHash(f.vault.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != f.headBefore {
+		t.Errorf("HEAD moved (%s -> %s) after the prompter failed", f.headBefore, head)
+	}
+	got, err := f.vault.ReadEntry(f.entryID, &f.ident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Value != f.mine.Value {
+		t.Errorf("value = %q, want the local version untouched", got.Value)
+	}
+}
+
 // TestAbortRestoresThePreSyncState: quitting stops the questions and
 // leaves the vault exactly as it was found.
 func TestAbortRestoresThePreSyncState(t *testing.T) {
@@ -608,6 +786,7 @@ func newTwoConflictFixture(t *testing.T) *conflictFixture {
 	return &conflictFixture{
 		vault: v, ident: id, remote: remote, other: other,
 		entryID: firstID, path: firstPath, mine: mine, theirs: theirFirst,
+		secondID: secondID, mineSecond: mineSecond, theirSecond: theirSecond,
 		headBefore: head,
 	}
 }
@@ -669,6 +848,94 @@ func TestDeleteModifyConflictKeepingTheDeletion(t *testing.T) {
 	if !clean {
 		paths, _ := gitrepo.DirtyPaths(f.vault.Path)
 		t.Errorf("resolving a delete/modify conflict left the tree dirty: %v", paths)
+	}
+}
+
+// TestKeepBothOnADeleteModifyConflictKeepsTheSurvivor: `keep both` still
+// means "lose nothing" when one side has nothing to keep. The local
+// deletion stands at the original id, and the version the other device
+// was still editing comes back as a new entry — so answering with the
+// habitual key never destroys the one surviving copy.
+func TestKeepBothOnADeleteModifyConflictKeepsTheSurvivor(t *testing.T) {
+	f := newDeleteModifyFixture(t)
+	defer f.close()
+
+	if _, err := f.resolveWith(t, answering(KeepBoth)); err != nil {
+		t.Fatalf("SyncResolving: %v", err)
+	}
+
+	ids, err := f.vault.EntryIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("%d entries after keep both on a delete/modify conflict, want 1: %v", len(ids), ids)
+	}
+	// A fresh id, not the deleted one: the local answer was the
+	// deletion, and the surviving version is the *other* thing kept.
+	if ids[0] == f.entryID {
+		t.Errorf("the survivor was restored at the deleted id %s, want a fresh one", f.entryID)
+	}
+
+	got, err := f.vault.ReadEntry(ids[0], &f.ident)
+	if err != nil {
+		t.Fatalf("the surviving version is not decryptable: %v", err)
+	}
+	if got.Value != f.theirs.Value {
+		t.Errorf("value = %q, want the surviving version %q", got.Value, f.theirs.Value)
+	}
+	if got.UpdatedBy != f.theirs.UpdatedBy {
+		t.Errorf("updated_by = %q, want the surviving side's own %q", got.UpdatedBy, f.theirs.UpdatedBy)
+	}
+}
+
+// TestEntryFilesAMergeCreatesAre0600: how an entry arrived must not
+// decide who on the machine can read its file. Both files a resolution
+// can *create* are covered — `keep both`'s new entry, and the one a
+// delete/modify resolved as `keep remote` brings back — because git
+// records every blob as 0644 and the mode has to come from gage instead.
+func TestEntryFilesAMergeCreatesAre0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits aren't modeled on Windows")
+	}
+
+	t.Run("keep both's new entry", func(t *testing.T) {
+		f := newConflictFixture(t)
+		defer f.close()
+
+		if _, err := f.resolveWith(t, answering(KeepBoth)); err != nil {
+			t.Fatalf("SyncResolving: %v", err)
+		}
+		extra := entryIDsOtherThan(t, f.vault, f.entryID)
+		if len(extra) != 1 {
+			t.Fatalf("keep both produced %d extra entr(y/ies), want 1", len(extra))
+		}
+		assertEntryFileMode(t, f.vault, extra[0])
+	})
+
+	t.Run("an entry a merge restored", func(t *testing.T) {
+		f := newDeleteModifyFixture(t)
+		defer f.close()
+
+		if _, err := f.resolveWith(t, answering(KeepRemote)); err != nil {
+			t.Fatalf("SyncResolving: %v", err)
+		}
+		assertEntryFileMode(t, f.vault, f.entryID)
+	})
+}
+
+// assertEntryFileMode checks one entry file's permissions against what
+// every entry gage writes itself gets.
+func assertEntryFileMode(t *testing.T, v *Vault, id uuid.UUID) {
+	t.Helper()
+
+	path := filepath.Join(v.Path, filepath.FromSlash(entryFilePath(id)))
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("%s mode = %04o, want 0600 — a merge-created entry is as readable as any other", path, perm)
 	}
 }
 
@@ -1028,6 +1295,49 @@ func TestRecipientConflictDoesNotReachTheEntryResolver(t *testing.T) {
 	}
 	if report.ConflictKind() != ConflictRecipients {
 		t.Errorf("ConflictKind = %v, want ConflictRecipients", report.ConflictKind())
+	}
+}
+
+// TestANonEntryConflictIsRefusedWithoutUnlocking: a vault is an ordinary
+// git repository, so a file that is neither an entry nor a
+// recipient-defining one can conflict too. There is no [l/r/b] answer
+// that means anything for it, so it is reported — and reported *before*
+// the unlock, since a key nothing will decrypt with is a passphrase
+// prompt asked for nothing.
+func TestANonEntryConflictIsRefusedWithoutUnlocking(t *testing.T) {
+	v, id, remote := newSyncVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	other := gittest.NewDevice(t, remote)
+	other.WriteCommitPush(t, "notes.txt", "their notes", "their change")
+
+	v.remoteSyncer = &fakeSyncer{pushErr: unreachableError()}
+	writeVaultFile(t, v, "notes.txt", "my notes")
+	if _, err := gitrepo.CommitAll(v.Path, "my change"); err != nil {
+		t.Fatal(err)
+	}
+	v.remoteSyncer = nil
+
+	unlock, calls := countingUnlock(&id)
+	p := answering(KeepLocal)
+	report, err := v.SyncResolving(context.Background(), ConflictResolver{Prompter: p, Unlock: unlock})
+	if err == nil {
+		t.Fatal("a conflict on a file that is not an entry resolved, want it refused")
+	}
+	if !strings.Contains(err.Error(), "notes.txt") {
+		t.Errorf("error = %v, want it to name the path that conflicted", err)
+	}
+	if code := exitcode.CodeOf(err); code != exitcode.Conflict {
+		t.Errorf("exit code = %v, want %v", code, exitcode.Conflict)
+	}
+	if len(p.presented) != 0 {
+		t.Errorf("a non-entry conflict was presented as an entry choice: %+v", p.presented)
+	}
+	if *calls != 0 {
+		t.Errorf("a conflict with nothing to decrypt unlocked the vault %d time(s), want 0", *calls)
+	}
+	if report.Merged || report.Pushed {
+		t.Errorf("a refused conflict still changed something: %+v", report)
 	}
 }
 
