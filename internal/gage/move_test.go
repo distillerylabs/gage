@@ -239,6 +239,56 @@ func TestMoveRejectsTheSourceVaultAsItsOwnDestination(t *testing.T) {
 	}
 }
 
+// TestMoveAllowsATitleCollisionInTheDestination is the M11 plan's "Does
+// the source entry's title collide in the destination?" decision: no
+// check, and no -f — the destination ending up with two entries sharing
+// a title is no different from what -f already permits within a single
+// vault. Move/Copy write through Vault.WriteEntry directly rather than
+// Vault.Insert, so titleExists's duplicate-title guard never runs against
+// the destination at all.
+func TestMoveAllowsATitleCollisionInTheDestination(t *testing.T) {
+	src, dest, srcKey, destKey := newMoveTestVaultPair(t, "personal", "shared-family")
+	srcIdent := wrapIdentityFor("laptop-1", srcKey, &fakePrompter{})
+	destIdent := wrapIdentityFor("family-member", destKey, &fakePrompter{})
+
+	e := sampleEntry(time.Now())
+	if _, err := dest.Insert(e, false, destIdent); err != nil {
+		t.Fatalf("seeding a same-titled entry directly into the destination: %v", err)
+	}
+	if _, err := src.Insert(e, false, srcIdent); err != nil {
+		t.Fatalf("seeding source entry: %v", err)
+	}
+
+	res, err := src.Move(e.Title, dest, srcIdent)
+	if err != nil {
+		t.Fatalf("Move with a colliding title at the destination: %v", err)
+	}
+
+	ids, err := dest.EntryIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("destination entries after a colliding move = %d, want 2 (no dedup, no rejection)", len(ids))
+	}
+	titles := 0
+	for _, id := range ids {
+		got, err := dest.ReadEntry(id, destIdent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Title == e.Title {
+			titles++
+		}
+	}
+	if titles != 2 {
+		t.Errorf("entries titled %q in the destination = %d, want 2", e.Title, titles)
+	}
+	if res.Entry.Title != e.Title {
+		t.Errorf("MoveResult.Entry.Title = %q, want %q", res.Entry.Title, e.Title)
+	}
+}
+
 // ---------------------------------------------------------------------
 // M10 trust cache: checked against the destination
 // ---------------------------------------------------------------------
