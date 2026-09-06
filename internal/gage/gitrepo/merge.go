@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,8 +16,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-// MergeResult is what MergeRemote found: either a merge it completed, or
-// the set of paths that stopped it.
+// MergeResult is what a merge found: either one it completed, or the set
+// of paths that stopped it.
 type MergeResult struct {
 	// Merged is true when a merge commit was created. When it's false,
 	// Conflicts says why, and nothing was changed.
@@ -26,6 +27,94 @@ type MergeResult struct {
 	// Conflicts lists the paths both sides changed differently, sorted.
 	// Empty when Merged.
 	Conflicts []string
+}
+
+// MergeSide names one of the two versions a merge is reconciling — which
+// side's content to read, and which side's version to keep for a path
+// both changed.
+type MergeSide int
+
+const (
+	// LocalSide is this device's version: what HEAD has.
+	LocalSide MergeSide = iota
+	// RemoteSide is the fetched version: what the remote-tracking ref
+	// has.
+	RemoteSide
+)
+
+// PendingMerge is a three-way merge that has been *computed* but not
+// applied.
+//
+// It exists because resolving a conflict has to happen between those two
+// halves. MergeRemote decides and applies in one call, which is exactly
+// right when nothing conflicts — but a conflicting entry has to be
+// decrypted, shown to a human and answered before anything can be
+// written, and the whole sync model depends on nothing being written
+// until then. Splitting the two lets a caller read both sides
+// (Content), make up its mind, and only then commit (Commit) — with the
+// same all-or-nothing guarantee MergeRemote already gives, since a
+// caller that decides not to proceed simply never calls Commit and the
+// vault is untouched.
+type PendingMerge struct {
+	dir    string
+	repo   *git.Repository
+	local  *object.Commit
+	remote *object.Commit
+
+	// localFiles is HEAD's tree, kept for rollback: it says which of the
+	// paths a failed Commit had written were tracked (restored by the
+	// hard reset) and which were brand new (removed by name).
+	localFiles map[string]blobVersion
+
+	// conflicts is what both sides changed differently, sorted. Commit
+	// requires a choice for every one of them.
+	conflicts []string
+	// takeRemote is what only the remote touched — applied without
+	// asking anyone, since there is nothing to choose between.
+	takeRemote []string
+}
+
+// Conflicts returns the paths both sides changed differently, sorted. An
+// empty result means Commit can proceed with no choices at all.
+func (m *PendingMerge) Conflicts() []string { return m.conflicts }
+
+// Content returns one side's version of path, and whether that side has
+// it at all — false is a deletion, which is what makes a delete/modify
+// conflict presentable as "one side removed this".
+func (m *PendingMerge) Content(side MergeSide, path string) ([]byte, bool, error) {
+	commit := m.local
+	if side == RemoteSide {
+		commit = m.remote
+	}
+	if commit == nil {
+		return nil, false, nil
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, false, fmt.Errorf("gitrepo: reading tree: %w", err)
+	}
+	file, err := tree.File(path)
+	if err != nil {
+		if errors.Is(err, object.ErrFileNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("gitrepo: reading %s: %w", path, err)
+	}
+
+	// Reader rather than Contents: entry files are age ciphertext, and
+	// Contents would round-trip them through a string.
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, false, fmt.Errorf("gitrepo: reading %s: %w", path, err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, false, fmt.Errorf("gitrepo: reading %s: %w", path, err)
+	}
+	return data, true, nil
 }
 
 // MergeRemote performs gage's three-way merge of the local branch and its
@@ -50,7 +139,22 @@ type MergeResult struct {
 //
 // Nothing is written when the merge conflicts: the caller gets the list
 // and the vault is left exactly as it was, so detection never leaves a
-// half-merged tree behind for the next command to trip over.
+// half-merged tree behind for the next command to trip over. Resolving
+// those conflicts instead of reporting them is PrepareMerge's job.
+func MergeRemote(dir, message string) (MergeResult, error) {
+	merge, err := PrepareMerge(dir)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	if len(merge.conflicts) > 0 {
+		return MergeResult{Conflicts: merge.conflicts}, nil
+	}
+	return merge.Commit(message, nil, nil)
+}
+
+// PrepareMerge computes the merge MergeRemote would perform and stops
+// before writing anything, so a caller can inspect what conflicted and
+// decide.
 //
 // A dirty working tree is refused up front, the same way FastForward
 // refuses one. The reasons are mirror images: a fast-forward's hard reset
@@ -59,45 +163,50 @@ type MergeResult struct {
 // commit nobody wrote it for and pushed to every other device. gage
 // commits its own writes immediately, so a dirty tree here always means
 // something outside gage is mid-edit.
-func MergeRemote(dir, message string) (MergeResult, error) {
+//
+// It is checked here rather than in Commit deliberately: a human is
+// about to be asked which version of a secret to keep, and discovering
+// only afterwards that the answer can't be applied would waste exactly
+// the attention this milestone is spending.
+func PrepareMerge(dir string) (*PendingMerge, error) {
 	if err := requireCleanWorkTree(dir, "merging origin's changes on top of them"); err != nil {
-		return MergeResult{}, err
+		return nil, err
 	}
 
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
-		return MergeResult{}, fmt.Errorf("gitrepo: opening %s: %w", dir, err)
+		return nil, fmt.Errorf("gitrepo: opening %s: %w", dir, err)
 	}
 	local, remote, err := headAndTracking(repo)
 	if err != nil {
-		return MergeResult{}, err
+		return nil, err
 	}
 	if remote == nil {
-		return MergeResult{}, fmt.Errorf("gitrepo: %s has nothing fetched to merge", dir)
+		return nil, fmt.Errorf("gitrepo: %s has nothing fetched to merge", dir)
 	}
 
 	base, err := mergeBase(local, remote)
 	if err != nil {
-		return MergeResult{}, err
+		return nil, err
 	}
 
 	baseFiles, err := treeVersions(base)
 	if err != nil {
-		return MergeResult{}, err
+		return nil, err
 	}
 	localFiles, err := treeVersions(local)
 	if err != nil {
-		return MergeResult{}, err
+		return nil, err
 	}
 	remoteFiles, err := treeVersions(remote)
 	if err != nil {
-		return MergeResult{}, err
+		return nil, err
 	}
 
-	var (
-		conflicts  []string
-		takeRemote []string
-	)
+	merge := &PendingMerge{
+		dir: dir, repo: repo, local: local, remote: remote,
+		localFiles: localFiles,
+	}
 	for _, path := range unionPaths(baseFiles, localFiles, remoteFiles) {
 		b, l, r := baseFiles[path], localFiles[path], remoteFiles[path]
 		switch {
@@ -106,34 +215,109 @@ func MergeRemote(dir, message string) (MergeResult, error) {
 		case l == b:
 			// Only the remote touched it: take its version, whether that
 			// means new content or a deletion.
-			takeRemote = append(takeRemote, path)
+			merge.takeRemote = append(merge.takeRemote, path)
 		case r == b:
 			// Only we touched it; nothing to do.
 		default:
-			conflicts = append(conflicts, path)
+			merge.conflicts = append(merge.conflicts, path)
 		}
 	}
+	sort.Strings(merge.conflicts)
+	return merge, nil
+}
 
-	if len(conflicts) > 0 {
-		sort.Strings(conflicts)
-		return MergeResult{Conflicts: conflicts}, nil
+// mergedFileMode is what any file this merge creates is written as —
+// one the remote added, or one of Commit's adds.
+//
+// 0600 rather than the mode git recorded: everything a vault merge
+// writes is either an entry's ciphertext or a file describing who can
+// read it, and none of it has any business being group- or
+// world-readable just because git normalizes blobs to 0644. It matches
+// what Vault.WriteEntry gives every entry gage writes directly, so how
+// an entry arrived stops deciding who can read its file.
+const mergedFileMode = 0o600
+
+// Commit applies this merge and records it as a real two-parent commit.
+//
+// choices answers every path Conflicts() named — LocalSide leaves this
+// device's version in place, RemoteSide replaces it with the fetched one
+// (including replacing it with a deletion). A missing answer is refused
+// rather than defaulted: silently keeping the local version is the
+// last-write-wins outcome the sync model exists to refuse, and it must
+// not be reachable by a caller forgetting a path.
+//
+// adds are brand-new files this merge should also create — how `keep
+// both` writes the losing version of an entry under a fresh id without
+// gage's git layer having to know what an entry is. They are written,
+// staged and rolled back with everything else, so a failure part-way
+// through leaves no orphan behind.
+func (m *PendingMerge) Commit(message string, choices map[string]MergeSide, adds map[string][]byte) (MergeResult, error) {
+	for _, path := range m.conflicts {
+		if _, answered := choices[path]; !answered {
+			return MergeResult{}, fmt.Errorf(
+				"gitrepo: refusing to merge with %s unanswered: every conflicting path needs a choice", path)
+		}
+	}
+	for path := range adds {
+		if _, taken := m.localFiles[path]; taken {
+			return MergeResult{}, fmt.Errorf("gitrepo: refusing to add %s: it already exists", path)
+		}
 	}
 
 	// applied grows *before* each write rather than after, so a path that
 	// failed halfway through being written is still rolled back.
-	applied := make([]string, 0, len(takeRemote))
-	for _, path := range takeRemote {
+	applied := make([]string, 0, len(m.takeRemote)+len(m.conflicts)+len(adds))
+	take := append([]string{}, m.takeRemote...)
+	for _, path := range m.conflicts {
+		if choices[path] == RemoteSide {
+			take = append(take, path)
+		}
+	}
+	for _, path := range take {
 		applied = append(applied, path)
-		if err := applyRemoteVersion(dir, remote, path); err != nil {
-			return MergeResult{}, rollback(repo, dir, local.Hash, applied, localFiles, err)
+		if err := applyRemoteVersion(m.dir, m.remote, path); err != nil {
+			return MergeResult{}, m.rollback(applied, err)
 		}
 	}
 
-	hash, err := commitMerge(repo, message, local.Hash, remote.Hash)
+	for _, path := range sortedAddPaths(adds) {
+		applied = append(applied, path)
+		if err := writeMergedFile(m.dir, path, adds[path]); err != nil {
+			return MergeResult{}, m.rollback(applied, err)
+		}
+	}
+
+	hash, err := commitMerge(m.repo, message, m.local.Hash, m.remote.Hash)
 	if err != nil {
-		return MergeResult{}, rollback(repo, dir, local.Hash, applied, localFiles, err)
+		return MergeResult{}, m.rollback(applied, err)
 	}
 	return MergeResult{Merged: true, Commit: hash}, nil
+}
+
+// sortedAddPaths orders new files deterministically, so two runs of the
+// same merge write in the same order on every platform.
+func sortedAddPaths(adds map[string][]byte) []string {
+	paths := make([]string, 0, len(adds))
+	for path := range adds {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// writeMergedFile creates one of Commit's adds.
+func writeMergedFile(dir, path string, content []byte) error {
+	full, err := safeJoin(dir, path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+		return fmt.Errorf("gitrepo: creating directory for %s: %w", path, err)
+	}
+	if err := os.WriteFile(full, content, mergedFileMode); err != nil {
+		return fmt.Errorf("gitrepo: writing %s: %w", path, err)
+	}
+	return nil
 }
 
 // rollback undoes a merge that failed partway through applying itself,
@@ -142,23 +326,23 @@ func MergeRemote(dir, message string) (MergeResult, error) {
 // Without this a failed merge leaves a tree that is neither the old state
 // nor the new one — and since every later sync operation now refuses over
 // a dirty tree, that state would wedge the vault until a human cleaned it
-// up by hand. Discarding is safe here and only here: MergeRemote verified
-// the tree was clean before writing anything, so everything being undone
-// is this merge's own work.
+// up by hand. Discarding is safe here and only here: PrepareMerge
+// verified the tree was clean before anything was written, so everything
+// being undone is this merge's own work.
 //
-// The hard reset restores tracked files; paths the merge *created* are
-// untracked and invisible to it, so they are removed by name first.
-func rollback(repo *git.Repository, dir string, local plumbing.Hash, applied []string,
-	localFiles map[string]blobVersion, cause error) error {
+// The hard reset restores tracked files; paths the merge *created* — a
+// file the remote added, or one of Commit's adds — are untracked and
+// invisible to it, so they are removed by name first.
+func (m *PendingMerge) rollback(applied []string, cause error) error {
 	fail := func(err error) error {
 		return fmt.Errorf("%w (and rolling the partial merge back failed: %v)", cause, err)
 	}
 
 	for _, path := range applied {
-		if _, tracked := localFiles[path]; tracked {
+		if _, tracked := m.localFiles[path]; tracked {
 			continue
 		}
-		full, err := safeJoin(dir, path)
+		full, err := safeJoin(m.dir, path)
 		if err != nil {
 			return fail(err)
 		}
@@ -167,11 +351,11 @@ func rollback(repo *git.Repository, dir string, local plumbing.Hash, applied []s
 		}
 	}
 
-	wt, err := repo.Worktree()
+	wt, err := m.repo.Worktree()
 	if err != nil {
 		return fail(err)
 	}
-	if err := wt.Reset(&git.ResetOptions{Commit: local, Mode: git.HardReset}); err != nil {
+	if err := wt.Reset(&git.ResetOptions{Commit: m.local.Hash, Mode: git.HardReset}); err != nil {
 		return fail(err)
 	}
 	return cause
@@ -271,13 +455,17 @@ func applyRemoteVersion(dir string, remote *object.Commit, path string) error {
 	}
 	defer func() { _ = reader.Close() }()
 
-	mode, err := file.Mode.ToOSFileMode()
-	if err != nil {
-		return fmt.Errorf("gitrepo: reading the mode of %s: %w", path, err)
-	}
+	// mergedFileMode rather than the mode git recorded, which for every
+	// blob it has ever stored here is 0644. It only bites on a file this
+	// merge *creates* — an overwrite keeps the mode the file already has,
+	// O_TRUNC not being a chmod — so before there was anything to create
+	// but a fast-forward, nothing noticed. A merge that brings in an
+	// entry this device has never seen is exactly that case, and an entry
+	// file gage wrote itself is 0600.
+	//
 	// #nosec G304 -- full is safeJoin's result, which has already been
 	// confined to dir.
-	out, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode.Perm())
+	out, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mergedFileMode)
 	if err != nil {
 		return fmt.Errorf("gitrepo: writing %s: %w", path, err)
 	}

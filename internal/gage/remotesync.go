@@ -113,6 +113,17 @@ type SyncReport struct {
 	Conflicts []string
 	// Ahead is how many local commits the remote lacks, as of the report.
 	Ahead int
+	// Resolved is how many conflicting entries a choice was applied to —
+	// M8b's interactive resolution. Zero for every automatic path.
+	Resolved int
+	// Skipped is how many conflicts were left unresolved on purpose. Any
+	// skip means nothing was applied and nothing was pushed: a partial
+	// resolution would turn the skipped entry's local version into a
+	// silent choice.
+	Skipped int
+	// Aborted is true when the human quit the resolution, which restores
+	// the pre-sync state entirely.
+	Aborted bool
 }
 
 // ConflictKind classifies this report's conflicts, with a recipient-file

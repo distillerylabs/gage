@@ -411,17 +411,7 @@ func (v *Vault) entryPath(id uuid.UUID) string {
 // fresh NewEntryID() for an insert, or an existing entry's own id to
 // rewrite it in place (an edit, or M9's --reencrypt).
 func (v *Vault) WriteEntry(id uuid.UUID, e Entry) error {
-	plaintext, err := MarshalEntry(e)
-	if err != nil {
-		return err
-	}
-
-	to, err := v.encryptRecipients()
-	if err != nil {
-		return err
-	}
-
-	ciphertext, err := Encrypt(plaintext, to...)
+	ciphertext, err := v.encryptEntry(e)
 	if err != nil {
 		return err
 	}
@@ -443,6 +433,44 @@ func (v *Vault) WriteEntry(id uuid.UUID, e Entry) error {
 		return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: writing entry %s: %w", id, err))
 	}
 	return nil
+}
+
+// encryptEntry marshals e and encrypts it to every recipient currently
+// listed in the vault's .age-recipients — WriteEntry without the writing.
+//
+// It is separate because M8b's `keep both` needs the ciphertext itself
+// rather than a file: the losing version of a conflicted entry is handed
+// to the git layer as content, so that creating it, staging it into the
+// merge commit and rolling it back if the merge fails are all one
+// operation instead of a write this package would have to remember to
+// undo.
+//
+// Nothing here stamps anything. The Entry that goes in is the Entry that
+// comes out, which is exactly what lets `keep both` preserve the losing
+// side's own created/updated/updated_by instead of restamping it as
+// written by this device, now — see the M8b plan.
+func (v *Vault) encryptEntry(e Entry) ([]byte, error) {
+	plaintext, err := MarshalEntry(e)
+	if err != nil {
+		return nil, err
+	}
+	to, err := v.encryptRecipients()
+	if err != nil {
+		return nil, err
+	}
+	return Encrypt(plaintext, to...)
+}
+
+// decryptEntry is ReadEntry's second half, over ciphertext a caller
+// already has in hand rather than a file: how resolution reads the two
+// sides of a conflict, which live in git objects and not in the working
+// tree.
+func decryptEntry(ciphertext []byte, ident *Identity) (Entry, error) {
+	plaintext, err := Decrypt(ciphertext, ident)
+	if err != nil {
+		return Entry{}, err
+	}
+	return UnmarshalEntry(plaintext)
 }
 
 // ReadEntry reads and decrypts entries/<id>.age with ident's private key

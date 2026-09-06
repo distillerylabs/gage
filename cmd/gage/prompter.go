@@ -64,6 +64,16 @@ type terminalPrompter struct {
 	// lineReader and useSessionReader.
 	secretFn func(prompt string) (string, error)
 	lineFn   func(prompt string) (string, error)
+
+	// interactive says whether there is a human at the other end of in.
+	// Only conflict resolution consults it: every other prompt here has a
+	// sensible non-interactive answer (a passphrase can come from a
+	// script, a confirmation defaults to no), while "which version of
+	// this secret do you want to keep" has none — see ResolveConflict.
+	//
+	// It is set from App.IsTerminal at construction rather than probed
+	// per call, so a test can drive both halves without a pty.
+	interactive bool
 }
 
 func newTerminalPrompter(in io.Reader, out io.Writer) *terminalPrompter {
@@ -220,6 +230,104 @@ func (p *terminalPrompter) Choose(list gage.CandidateList) (string, error) {
 	return "", exitcode.Newf(exitcode.Ambiguous,
 		"gage: no entry chosen after %d attempts", maxChooseAttempts)
 }
+
+// maxConflictAttempts bounds the re-ask loop for an answer that isn't
+// one of the five keys. Same shape and same reason as maxChooseAttempts,
+// but there is no default to fall back to when it runs out: gage refuses
+// rather than picking a side, which ends the sync with nothing applied.
+const maxConflictAttempts = 5
+
+// ResolveConflict renders the [l/r/b/s/q] menu from "Resolving an entry
+// conflict" and returns what the human chose. The EntryConflict arrives
+// as a value with both sides already decrypted; this is the CLI deciding
+// how to show it, the same split Choose follows.
+//
+// The two secret *values* are deliberately not printed. The choice is
+// made on provenance — who wrote each version, and when — which is what
+// the design doc's prompt shows, and which is all it takes to decide.
+// Printing both passwords onto a shared screen to answer a question
+// about which one to keep would be its own small disclosure, repeated
+// once per conflict.
+//
+// Without a human at the other end it refuses rather than choosing: see
+// the M8b plan's non-interactive decision.
+func (p *terminalPrompter) ResolveConflict(c gage.EntryConflict) (gage.Resolution, error) {
+	if !p.interactive {
+		return 0, exitcode.Wrap(exitcode.Conflict, gage.ErrNotInteractive)
+	}
+
+	writeOut(p.out, []string{
+		fmt.Sprintf("Entry conflicts: %q", conflictTitle(c)),
+		"",
+		"  local    " + conflictProvenance(c.Local),
+		"  remote   " + conflictProvenance(c.Remote),
+		"",
+		"  [l] keep local     [r] keep remote",
+		"  [b] keep both      [s] skip this entry     [q] abort sync",
+	})
+
+	for attempt := 1; attempt <= maxConflictAttempts; attempt++ {
+		answer, err := p.ask("Which? [l/r/b/s/q]: ")
+		if err != nil {
+			return 0, err
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "l":
+			return gage.KeepLocal, nil
+		case "r":
+			return gage.KeepRemote, nil
+		case "b":
+			return gage.KeepBoth, nil
+		case "s":
+			return gage.SkipConflict, nil
+		case "q":
+			return gage.AbortSync, nil
+		}
+		// No default and no guessing: an unrecognized keystroke is how a
+		// secret gets discarded by someone who meant to hit the key next
+		// to it.
+		_, _ = fmt.Fprintln(p.out, "gage: answer l, r, b, s or q.")
+	}
+	return 0, exitcode.Newf(exitcode.Conflict,
+		"gage: no version chosen after %d attempts", maxConflictAttempts)
+}
+
+// conflictTitle is what to call the entry being resolved: whichever side
+// still has one, since a delete/modify conflict has only the survivor to
+// name it by.
+func conflictTitle(c gage.EntryConflict) string {
+	if c.Local.Present {
+		return c.Local.Entry.Title
+	}
+	return c.Remote.Entry.Title
+}
+
+// conflictProvenance renders one side's line of the prompt — when it was
+// written and by which device, or that this side removed the entry
+// altogether, which is the only thing a delete/modify conflict has to
+// say about the side that deleted it.
+func conflictProvenance(side gage.ConflictSide) string {
+	if !side.Present {
+		return "deleted this entry"
+	}
+	return fmt.Sprintf("updated %s  by %s", conflictWhen(side.Entry.Updated), lsField(side.Entry.UpdatedBy))
+}
+
+// conflictWhen renders a timestamp the way the design doc's prompt shows
+// it: the day and the clock time, in UTC like every other date gage
+// prints (see lsDate), so two devices in different zones describe the
+// same edit the same way.
+func conflictWhen(t gage.Timestamp) string {
+	if t.IsZero() {
+		return lsMissing
+	}
+	return t.UTC().Format(conflictDateLayout)
+}
+
+// conflictDateLayout carries the clock time that lsDateLayout leaves
+// off: two edits to one entry are routinely made on the same day, and
+// the date alone would then distinguish nothing.
+const conflictDateLayout = "2006-01-02 15:04"
 
 // Warn prints a non-fatal advisory. It returns nothing, matching the
 // interface: the caller has already decided to continue, and a failed
