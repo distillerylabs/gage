@@ -179,7 +179,10 @@ func TestMvDecliningTheTrustCheckAbortsThroughTheCLI(t *testing.T) {
 	if res.Code != int(exitcode.Conflict) {
 		t.Errorf("exit code = %d, want %d (Conflict); stderr=%s", res.Code, exitcode.Conflict, res.Stderr)
 	}
-	dp := p.(*decliningPrompter)
+	dp, ok := p.(*decliningPrompter)
+	if !ok {
+		t.Fatalf("prompter is %T, want *decliningPrompter", p)
+	}
 	if len(dp.recipientChanges) != 1 {
 		t.Fatalf("recipient-change question asked %d times, want exactly 1", len(dp.recipientChanges))
 	}

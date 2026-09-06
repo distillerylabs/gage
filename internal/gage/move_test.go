@@ -188,11 +188,11 @@ func TestMoveGivesTheDestinationCopyFreshProvenance(t *testing.T) {
 		t.Fatalf("Move: %v", err)
 	}
 
-	if res.Entry.Created.Time.Before(before) {
+	if res.Entry.Created.Before(before) {
 		t.Errorf("destination Created = %s, want a fresh stamp at/after %s (not the source's %s)",
 			res.Entry.Created, before, originalCreated)
 	}
-	if res.Entry.Updated.Time.Before(before) {
+	if res.Entry.Updated.Before(before) {
 		t.Errorf("destination Updated = %s, want a fresh stamp at/after %s", res.Entry.Updated, before)
 	}
 	if res.Entry.UpdatedBy != "laptop-1" {
@@ -207,7 +207,7 @@ func TestMoveGivesTheDestinationCopyFreshProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Created.Time.Before(before) || got.UpdatedBy != "laptop-1" {
+	if got.Created.Before(before) || got.UpdatedBy != "laptop-1" {
 		t.Errorf("on-disk destination entry = %+v, want fresh provenance", got)
 	}
 }
