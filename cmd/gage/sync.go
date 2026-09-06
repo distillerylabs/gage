@@ -17,17 +17,11 @@ import (
 // Sync unlocks lazily (see "Sync model"): a fast-forward, and a merge
 // whose two sides touched different entries, decrypt nothing, so asking
 // for a passphrase up front would prompt for a key most syncs never use.
-// This is the one family of commands that deliberately doesn't go through
-// withUnlockedVault.
+// M9's identity and recipient-reading verbs need the same resolution for
+// a different reason — they never decrypt at all — so the mechanism
+// lives in vaultWithoutUnlocking and this is the sync-side name for it.
 func vaultForSync(app *App, use string) (*gage.Vault, error) {
-	if app.Session != nil {
-		return app.Session.VaultWithoutUnlocking(use)
-	}
-	name, entry, err := resolveVaultEntry(use)
-	if err != nil {
-		return nil, err
-	}
-	return &gage.Vault{Name: name, Path: entry.Path}, nil
+	return vaultWithoutUnlocking(app, use)
 }
 
 // newPullCommand builds `gage pull`: fetch and fast-forward, never merge.

@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/denmark/gage/internal/gage/gitrepo"
 	"github.com/denmark/gage/internal/gage/vaultlock"
 )
 
@@ -96,6 +98,72 @@ type Vault struct {
 	// the real go-git-backed syncer. Only this package's own tests set
 	// it — see RemoteSyncer for why that seam exists at all.
 	remoteSyncer RemoteSyncer
+
+	// onReencryptEntry, if set, is called after each entry has been
+	// re-encrypted into the working tree during --reencrypt, with the
+	// count written so far. Test-only; nil everywhere else.
+	//
+	// It exists because --reencrypt's central claim is about what an
+	// *interruption* leaves behind, and there is no honest way to
+	// interrupt a pass from outside it: a test panics from inside this
+	// hook to stop the run with no unwinding, or re-acquires the vault
+	// lock from it to prove the lock is still held at every point in the
+	// pass. Nothing on the reencrypt path may recover() — a recover
+	// would turn the simulated crash into ordinary cleanup, and the
+	// crash test would silently start proving something else.
+	onReencryptEntry func(done int)
 }
 
 // Unlock lives in unlock.go.
+
+// withVaultWrite is every mutating method's preamble: take the write
+// lock, discard an unexpectedly dirty working tree (warning through p
+// first), then run the write itself.
+//
+// The reset lives here rather than in each verb so that "no write ever
+// folds a previous write's leftovers into its own commit" is structural,
+// exactly as withWriteLock makes "a write holds the lock across its whole
+// sequence" structural. It runs *under* the lock, which is what keeps it
+// from racing another process's in-flight write — see the M9 plan's
+// "This runs under the vault lock".
+//
+// The sync paths deliberately do not go through this: a fast-forward or
+// a merge refuses over a dirty tree rather than discarding it (see
+// gitrepo.ErrDirtyWorkTree), because there the uncommitted work could be
+// something outside gage is mid-edit. Here the caller is gage itself,
+// about to commit, and a leftover can only have come from a gage write
+// that died.
+func (v *Vault) withVaultWrite(p Prompter, fn func() error) error {
+	return v.withWriteLock(func() error {
+		if err := v.resetDirtyWorkTree(p); err != nil {
+			return err
+		}
+		return fn()
+	})
+}
+
+// resetDirtyWorkTree discards uncommitted changes in the vault's working
+// tree and warns once, naming what it discarded. A clean tree is silent:
+// a warning on every ordinary write would train people to ignore the one
+// that matters.
+//
+// The warning is emitted whatever the cause. "Only an interrupted
+// --reencrypt could have done this" is likely but not provable, and the
+// M9 plan is explicit that the reset is automatic but never silent for
+// exactly that reason.
+//
+// The whole working tree is covered, not only entries/: a crash in the
+// narrow window after --reencrypt writes the recipient files but before
+// it commits dirties those two as well, and a reset that skipped them
+// would leave the half-migrated state this milestone exists to rule out.
+func (v *Vault) resetDirtyWorkTree(p Prompter) error {
+	discarded, err := gitrepo.ResetHard(v.Path)
+	if err != nil {
+		return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: %w", err))
+	}
+	if len(discarded) == 0 {
+		return nil
+	}
+	warn(p, "gage: discarded uncommitted changes left by an interrupted write: %s", strings.Join(discarded, ", "))
+	return nil
+}

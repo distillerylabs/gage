@@ -162,3 +162,14 @@ func (i *Identity) Close() error {
 	}
 	return nil
 }
+
+// frontend returns the Prompter this Identity was unlocked through — the
+// same one warnTo hands advisories to, named for the case where the
+// library asks a *question* rather than only reporting something.
+//
+// M9's `recipient remove` is the first of those: removing this device's
+// own key is legitimate but locks the device out, so it runs only behind
+// an explicit Confirm. Routing it through the Identity keeps the design
+// rule intact that human interaction rides the Identity rather than
+// growing a Prompter parameter on every mutating method.
+func (i *Identity) frontend() Prompter { return i.warnTo() }
