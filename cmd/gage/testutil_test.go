@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -33,6 +34,20 @@ type fakePrompter struct {
 	values       []string
 	valueCalls   int
 	valuePrompts []string
+
+	// warnTo is where warnings are echoed, in addition to being
+	// recorded. runCLIWithPrompterAndStdin points it at the run's stderr
+	// buffer, which is what the real terminalPrompter does with them
+	// (see its `out` field: prompts and warnings go to stderr so a
+	// redirected stdout carries only the secret).
+	//
+	// Without it the fake would be silently *less* than the real thing
+	// in the one direction that matters here: a library warning the user
+	// would certainly see — M9's "removing a recipient revokes future
+	// access only" — would be invisible to any CLI test that looks at
+	// stderr, and a command could stop emitting it with nothing going
+	// red.
+	warnTo io.Writer
 }
 
 func (f *fakePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, error) {
@@ -47,7 +62,13 @@ func (f *fakePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, erro
 
 func (f *fakePrompter) Confirm(prompt string) (bool, error)            { return true, nil }
 func (f *fakePrompter) Choose(list gage.CandidateList) (string, error) { return "", nil }
-func (f *fakePrompter) Warn(msg string)                                { f.warnings = append(f.warnings, msg) }
+
+func (f *fakePrompter) Warn(msg string) {
+	f.warnings = append(f.warnings, msg)
+	if f.warnTo != nil {
+		_, _ = fmt.Fprintln(f.warnTo, msg)
+	}
+}
 
 func (f *fakePrompter) Value(prompt string) (string, error) {
 	f.valuePrompts = append(f.valuePrompts, prompt)
@@ -98,6 +119,12 @@ func runCLIWithPrompter(t *testing.T, args []string, stdin string, isTerminal bo
 func runCLIWithPrompterAndStdin(t *testing.T, args []string, stdin io.Reader, isTerminal bool, p gage.Prompter) (cliResult, gage.Prompter) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
+	// The real prompter writes its warnings to stderr; a fake that only
+	// recorded them would hide from every CLI test whatever the library
+	// warns about.
+	if fp, ok := p.(*fakePrompter); ok {
+		fp.warnTo = &stderr
+	}
 	app := &App{
 		Out:        &stdout,
 		Err:        &stderr,

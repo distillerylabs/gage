@@ -411,7 +411,29 @@ func (v *Vault) entryPath(id uuid.UUID) string {
 // fresh NewEntryID() for an insert, or an existing entry's own id to
 // rewrite it in place (an edit, or M9's --reencrypt).
 func (v *Vault) WriteEntry(id uuid.UUID, e Entry) error {
-	ciphertext, err := v.encryptEntry(e)
+	to, err := v.encryptRecipients()
+	if err != nil {
+		return err
+	}
+	return v.writeEntryTo(id, e, to)
+}
+
+// writeEntryTo is WriteEntry against a recipient list handed in rather
+// than read off disk — what --reencrypt writes every entry through.
+//
+// It exists because the write order inside --reencrypt is load-bearing:
+// every entry is re-encrypted to the *new* recipient list while
+// .age-recipients still holds the old one, so that a crash partway
+// through leaves only entries/ dirty and never a recipient file naming a
+// key no entry is encrypted to. encryptRecipients() reads that file off
+// disk, so WriteEntry cannot be used for it. See "Order matters for
+// crash-safety" in the M9 plan.
+func (v *Vault) writeEntryTo(id uuid.UUID, e Entry, to []Recipient) error {
+	plaintext, err := MarshalEntry(e)
+	if err != nil {
+		return err
+	}
+	ciphertext, err := Encrypt(plaintext, to...)
 	if err != nil {
 		return err
 	}
@@ -543,7 +565,7 @@ func (v *Vault) EntryIDs() ([]uuid.UUID, error) {
 // (see withWriteLock). It returns the new entry's id.
 func (v *Vault) Insert(e Entry, force bool, ident *Identity) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := v.withWriteLock(func() error {
+	err := v.withVaultWrite(ident.warnTo(), func() error {
 		if !force {
 			exists, err := v.titleExists(e.Title, ident)
 			if err != nil {
@@ -577,7 +599,7 @@ func (v *Vault) Insert(e Entry, force bool, ident *Identity) (uuid.UUID, error) 
 // the removed entry's id.
 func (v *Vault) Remove(query string, ident *Identity) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := v.withWriteLock(func() error {
+	err := v.withVaultWrite(ident.warnTo(), func() error {
 		var err error
 		id, _, err = v.Resolve(query, ident)
 		if err != nil {

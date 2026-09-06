@@ -201,6 +201,42 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "identity add",
+		Short:        "Register a new identity for this device and print its public key",
+		Group:        GroupIdentity,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "identity list",
+		Short:        "List the identities this device holds for a vault",
+		Group:        GroupIdentity,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient add",
+		Short:        "Authorize a public key to read this vault",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient remove",
+		Short:        "Revoke a recipient and re-encrypt the vault without its key",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient list",
+		Short:        "List every device this vault is encrypted to",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient verify",
+		Short:        "Check .age-recipients and config.toml still agree",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
 		Name:         "sync",
 		Short:        "Pull, merge what can be merged, then push",
 		Group:        GroupSync,

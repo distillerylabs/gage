@@ -199,3 +199,23 @@ func newVaultSetDefaultCommand(app *App) *cobra.Command {
 		},
 	}
 }
+
+// vaultWithoutUnlocking resolves which vault a command targets and
+// returns it without asking for a passphrase — the counterpart to
+// withUnlockedVault for the commands that genuinely need no key.
+//
+// Sync uses it because it unlocks lazily; `identity add/list` and
+// `recipient list/verify` use it because they operate on plaintext
+// control-plane data and must never prompt at all. `recipient verify`'s
+// "needs no unlock, safe to run in CI" claim is exactly this: there is
+// no Identity in reach to unlock with.
+func vaultWithoutUnlocking(app *App, use string) (*gage.Vault, error) {
+	if app.Session != nil {
+		return app.Session.VaultWithoutUnlocking(use)
+	}
+	name, entry, err := resolveVaultEntry(use)
+	if err != nil {
+		return nil, err
+	}
+	return &gage.Vault{Name: name, Path: entry.Path}, nil
+}

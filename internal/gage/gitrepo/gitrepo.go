@@ -9,6 +9,7 @@ package gitrepo
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -270,4 +271,74 @@ func CommitCount(dir string) (int, error) {
 		return 0, fmt.Errorf("gitrepo: walking log: %w", err)
 	}
 	return count, nil
+}
+
+// ResetHard discards every uncommitted change in dir's working tree,
+// returning the vault-relative paths it discarded, sorted. A clean tree
+// discards nothing and returns an empty list.
+//
+// This is the git half of M9's dirty-tree precondition: gage commits
+// every write immediately, so a dirty vault means a previous write died
+// partway through — an interrupted `--reencrypt` above all — and the
+// leftover has to go before the next write can commit, or it would be
+// folded into that write's commit. See "Dirty working tree" in the M9
+// plan. The caller warns; this function only discards.
+//
+// Untracked files are removed explicitly rather than left to the hard
+// reset. The pinned go-git does remove them (see
+// TestResetHardDiscardsModifiedAndUntrackedFiles, which would still pass
+// without the loop below), but it does so as a side effect of how it
+// rebuilds the worktree from the index rather than as a documented
+// property — `git reset --hard` itself leaves untracked files alone, and
+// that is the behavior a reader expects this to have. The one shape that
+// matters here is an interrupted `insert`, which leaves an
+// entries/<uuid>.age that was never committed; discarding it explicitly
+// makes the outcome the same whatever go-git does next.
+func ResetHard(dir string) ([]string, error) {
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: opening %s: %w", dir, err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: opening worktree: %w", err)
+	}
+	status, err := wt.Status()
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: reading status: %w", err)
+	}
+
+	var discarded, untracked []string
+	for path, st := range status {
+		if st.Staging == git.Unmodified && st.Worktree == git.Unmodified {
+			continue
+		}
+		discarded = append(discarded, path)
+		if st.Staging == git.Untracked && st.Worktree == git.Untracked {
+			untracked = append(untracked, path)
+		}
+	}
+	if len(discarded) == 0 {
+		return nil, nil
+	}
+	sort.Strings(discarded)
+
+	for _, path := range untracked {
+		full, err := safeJoin(dir, path)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("gitrepo: discarding untracked %s: %w", path, err)
+		}
+	}
+
+	head, err := repo.Head()
+	if err != nil {
+		return nil, fmt.Errorf("gitrepo: reading HEAD: %w", err)
+	}
+	if err := wt.Reset(&git.ResetOptions{Commit: head.Hash(), Mode: git.HardReset}); err != nil {
+		return nil, fmt.Errorf("gitrepo: resetting %s to HEAD: %w", dir, err)
+	}
+	return discarded, nil
 }
