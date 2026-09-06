@@ -123,6 +123,14 @@ func (p *scriptedPrompter) Choose(list CandidateList) (string, error) {
 }
 
 func (p *scriptedPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+
+// ConfirmRecipientChange approves M10's trust-cache question, the same
+// way Confirm answers yes: none of the session tests are about it, and a
+// fake that blocked every write over a recipient change would fail them
+// for a reason none of them are asserting.
+func (p *scriptedPrompter) ConfirmRecipientChange(w RecipientChangeWarning) (bool, error) {
+	return true, nil
+}
 func (p *scriptedPrompter) Value(prompt string) (string, error) { return "", nil }
 func (p *scriptedPrompter) Warn(msg string)                     { p.warnings = append(p.warnings, msg) }
 

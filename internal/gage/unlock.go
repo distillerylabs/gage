@@ -84,7 +84,20 @@ func (v *Vault) Unlock(p Prompter) (Identity, error) {
 		return Identity{}, err
 	}
 
-	return v.newIdentity(device, ident, secret, p), nil
+	unlocked := v.newIdentity(device, ident, secret, p)
+
+	// The opportunistic, non-blocking half of M10's trust cache, and the
+	// first-use bootstrap that goes with it. It runs here, on the success
+	// path only, for three reasons: this is the hook both invocation
+	// modes share (a session's `use` and every one-shot command's
+	// implicit unlock), it is after syncOnUnlock so it sees the list that
+	// was just pulled rather than the one from before, and a *failed*
+	// unlock must never bootstrap an approval — a wrong passphrase is not
+	// a review. It never asks and never regenerates the cache; the
+	// blocking check before the next encrypt does both.
+	v.warnRecipientTrust(p)
+
+	return unlocked, nil
 }
 
 // decryptIdentityFile runs the passphrase exchange until the file opens,

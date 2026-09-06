@@ -27,6 +27,11 @@ type fakePrompter struct {
 	requests []gage.UnlockRequest
 	warnings []string
 
+	// recipientChanges records every M10 trust-cache question this
+	// prompter was asked, so a CLI test can assert the library handed the
+	// frontend a typed value rather than printing one itself.
+	recipientChanges []gage.RecipientChangeWarning
+
 	// values is answered in order, one per Value call, standing in for a
 	// human typing gage insert's value at a masked prompt. valuePrompts
 	// records what each call was asked, so a test can assert insert
@@ -60,7 +65,16 @@ func (f *fakePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, erro
 	return gage.UnlockResponse{Kind: gage.KindPassphrase, Passphrase: f.passphrases[i]}, nil
 }
 
-func (f *fakePrompter) Confirm(prompt string) (bool, error)            { return true, nil }
+func (f *fakePrompter) Confirm(prompt string) (bool, error) { return true, nil }
+
+// ConfirmRecipientChange approves M10's trust-cache question. The
+// interesting answers live in their own fakes: decliningPrompter
+// (trustcache_cli_test.go) says no, which is what proves --yes is doing
+// the work rather than the fake being agreeable.
+func (f *fakePrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
+	f.recipientChanges = append(f.recipientChanges, w)
+	return true, nil
+}
 func (f *fakePrompter) Choose(list gage.CandidateList) (string, error) { return "", nil }
 
 func (f *fakePrompter) Warn(msg string) {

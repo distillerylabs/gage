@@ -22,7 +22,7 @@ import (
 // that the automatic push after a write has a frontend to report an
 // unreachable remote or a divergence through.
 func (v *Vault) Update(id uuid.UUID, e Entry, ident *Identity) error {
-	return v.withVaultWrite(ident.warnTo(), func() error {
+	return v.withEncryptingWrite(ident, func() error {
 		if err := v.WriteEntry(id, e); err != nil {
 			return err
 		}
@@ -43,7 +43,7 @@ func (v *Vault) Update(id uuid.UUID, e Entry, ident *Identity) error {
 // changes nothing.
 func (v *Vault) Rename(query, newTitle string, force bool, ident *Identity) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := v.withVaultWrite(ident.warnTo(), func() error {
+	err := v.withEncryptingWrite(ident, func() error {
 		var e Entry
 		var err error
 		id, e, err = v.Resolve(query, ident)

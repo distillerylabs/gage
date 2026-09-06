@@ -59,107 +59,173 @@ the first would miss someone who edits only the second.
   same way `recipient verify` already renders them. This revises code M9
   shipped; it is recorded here rather than there because the reason for
   it is M10's premise, not M9's.
-  - **Open: how a diverged vault is repaired**, since the refusal
-    otherwise has no exit — and "refuse with no way forward" is worse
-    than either alternative. Both files are plaintext by design, so
-    hand-editing always works and may be the honest answer for a state
-    that is supposed to be unreachable. The alternative is an explicit
-    verb — `gage recipient verify --repair`, writing `.age-recipients`
-    from `config.toml` behind a confirmation naming every key it drops —
-    which performs the same overwrite, but as a deliberate, visible act
-    rather than a side effect of an unrelated `add`. Decide before
-    implementing the refusal, since the two ship together.
-- **What `--yes` does in the mismatched case.** `--yes` bypasses the
-  confirmation for scripting/CI. In the routine case that's clearly fine.
-  In the *mismatched* case — the actual tampering signature — does
-  `--yes` also proceed? Recommend: `--yes` proceeds but never regenerates
-  the cache on a mismatch, matching the interactive behavior. Needs
-  deciding because CI is exactly where nobody reads the warning.
+  - **How a diverged vault is repaired: `gage recipient verify
+    --repair`.** Resolved: ship the explicit verb alongside the refusal.
+    "Hand-edit the plaintext file" is not actually an exit, because M9's
+    `withVaultWrite` resets a dirty working tree before every write: an
+    edit to `.age-recipients` that the operator does not also commit is
+    silently discarded by their next `gage insert`, so the documented
+    escape hatch would be a thing gage itself undoes. `--repair` rewrites
+    `.age-recipients` from `config.toml`'s list under the vault lock,
+    behind a `Prompter.Confirm` naming every key it drops *and* every key
+    it adds, and commits the result as `gage: recipient repair`. Two
+    things it deliberately does not do: it does not regenerate the trust
+    cache — repair fixes the *inconsistency*, not the *recipient change*,
+    and the config diff still has to be reviewed at the next encrypt —
+    and it takes no `--reencrypt`, since rewriting a plaintext key list
+    says nothing about whether existing ciphertext should be rewritten;
+    that stays an explicit `recipient add`/`remove --reencrypt`
+    afterwards. A `Prompter` that answers no writes and commits nothing,
+    which includes every non-interactive one.
+- **What `--yes` does in the mismatched case.** Resolved: it proceeds and
+  never regenerates the cache — and that falls out structurally rather
+  than as a special case, because **`--yes` is not a library concept at
+  all**. The library asks through a new
+  `Prompter.ConfirmRecipientChange(RecipientChangeWarning) (bool, error)`
+  — typed value in, decision out, exactly as `Choose(CandidateList)`
+  already works — and `--yes` is `cmd/gage`'s prompter answering yes
+  without rendering the question, the same way "how many passphrase
+  attempts does a human get" is a `cmd/gage` policy (see M2's
+  `maxUnlockAttempts`). The two-outcome regeneration rule is decided
+  library-side off `VerifyRecipients`, so *who* answered cannot change
+  whether the cache is regenerated. Two consequences worth stating:
+  `--yes` is a persistent root flag, so it covers `insert`/`edit`/
+  `generate`/`rename` in CI and not only the design's `mv`/`cp`; and it
+  answers *only* `ConfirmRecipientChange`, never plain
+  `Prompter.Confirm`, so M9's "remove this device's own key?" stays a
+  real question in a scripted run.
+  - **Settled during implementation: `--yes` is refused inside a
+    session**, both when typed on a session line and on the way into one
+    (`gage --yes` with a terminal). It is a flag for runs with nobody to
+    show a diff to, and a session is the opposite; it would also not mean
+    what it looks like. A `--yes` on a session line never reaches the
+    check at all, because the blocking check asks through
+    `ident.frontend()` — the Prompter the *session* unlocked with — and
+    not through `app.Prompter`, which is what the flag wraps. And
+    `gage --yes` on the way in would wrap the Prompter the session then
+    holds for its whole life, silently approving every recipient change
+    until the session ended. Refusing beats either. `-m`/`--value-stdin`
+    are already refused in a session for the same shape of reason.
 - **Where the cache lives when a vault is renamed or re-cloned.**
-  `$GAGE_STATE/<vault>/known-config.toml` is keyed by local vault name.
-  Cloning the same remote under a different name gets a fresh cache and
-  no warning. Accept, or key by something more stable?
-- **Does `vault remove` delete the cache?** If not, re-adding a vault
-  silently inherits an old approval.
-- **First-use bootstrap.** The first time a device uses a vault there's
-  no cache, so there's nothing to warn about — the cache is written
-  silently. Confirm that's right (it is, but it means the very first
-  recipient list is trusted on faith).
+  Resolved: accept `$GAGE_STATE/<vault>/known-config.toml`, keyed by
+  local vault name. The cache is disposable device state by design ("not
+  something to carry to a new machine"), and a clone under a different
+  name is a first use, which is already trusted on faith by the bullet
+  below. The stabler keys are all worse: a remote URL doesn't exist for a
+  local-only vault and changes when a remote moves, and the initial
+  commit hash survives a rename but not a re-`init` — both buy a narrow
+  case at the cost of a key that can silently point at the wrong vault.
+- **Does `vault remove` delete the cache?** Resolved: yes — it removes
+  `$GAGE_STATE/<vault>/` along with the registration. Keeping it means a
+  re-add silently inherits an approval for a list nobody looked at in the
+  interval, which is the one thing this cache exists to prevent;
+  deleting it makes a re-add a first use, the documented weaker-but-
+  honest bootstrap. It also matches what `vault remove` already promises
+  — forget this vault locally, touch none of its own files — since the
+  trust cache is precisely local memory of that vault.
+- **First-use bootstrap.** Confirmed: silent, and on the first
+  *successful* use — a successful `Unlock`, a successful `sync`, or a
+  successful pre-encrypt check — never on a failed unlock, so a wrong
+  passphrase can't bootstrap an approval. The very first recipient list a
+  device sees is trusted on faith; that is inherent to a
+  trust-on-first-use record and is why the mechanism is a backstop rather
+  than the guarantee itself.
+- **A successful local `recipient add`/`remove` regenerates the cache.**
+  Resolved: yes, as its last step. The operator just reviewed that list
+  by typing the command; without this, `gage recipient add` would warn
+  them about their own change at their very next `insert`, which is the
+  fastest way to teach someone to ignore the warning. It is the "or
+  explicitly reviewed" half of the design's definition of the cache.
 
 ## Tests (write first)
 
-- [ ] After a device's first successful use of a vault, `known-config.toml`
+- [x] After a device's first successful use of a vault, `known-config.toml`
       is written to local state; a subsequent unreviewed recipient change
       triggers a diff warning before the next encrypt
-- [ ] The cache stores both halves — the verbatim `config.toml` copy and
+- [x] The cache stores both halves — the verbatim `config.toml` copy and
       the `.age-recipients` content hash
-- [ ] A change to `.age-recipients` alone, with `config.toml` untouched,
+- [x] A change to `.age-recipients` alone, with `config.toml` untouched,
       still triggers the warning — the case that exists specifically
       because diffing `config.toml` alone would miss it
-- [ ] The warning fires the same way for a one-shot `insert`/`edit`/
+- [x] The warning fires the same way for a one-shot `insert`/`edit`/
       `generate` as for a session-mode one — the cache check hooks the
       `Vault` methods that encrypt, not `Session.Use`, since one-shot mode
       never calls `Session.Use` at all
-- [ ] A non-blocking opportunistic warning fires on a plain `gage show`/
+- [x] A non-blocking opportunistic warning fires on a plain `gage show`/
       `ls` in one-shot mode when recipients have changed, even though
       neither command encrypts anything — the same unlock hook M8a's auto
       fetch+pull uses, not the mandatory pre-encrypt check
-- [ ] `gage sync` surfaces the opportunistic warning even when it resolves
+- [x] `gage sync` surfaces the opportunistic warning even when it resolves
       via a clean fast-forward with no conflicting entry — the case where
       sync never unlocks any identity at all, so the warning can't be
       riding along on a `Vault.Unlock` call
-- [ ] The blocking check *blocks*: declining the prompt aborts the write
+- [x] The blocking check *blocks*: declining the prompt aborts the write
       entirely, no commit is produced, and the cache stays at its old
       value so the same warning reappears next time
-- [ ] Confirming a *routine* recipient change (files agree) regenerates
+- [x] Confirming a *routine* recipient change (files agree) regenerates
       both halves of the cache and stops warning — one acknowledgment per
       actual change, not per command
-- [ ] Confirming a *mismatched* change (`.age-recipients` and
+- [x] Confirming a *mismatched* change (`.age-recipients` and
       `config.toml` disagree) does not silently clear the cache —
       `verify` keeps failing until the inconsistency is actually fixed
-- [ ] `--yes` bypasses the blocking prompt in the routine case, and
+- [x] `--yes` bypasses the blocking prompt in the routine case, and
       behaves per the decision above in the mismatched case
-- [ ] the recipient-change warning is a typed value returned by the
+- [x] the recipient-change warning is a typed value returned by the
       library (diff content, routine-vs-mismatched flag), not printed
       text — `cmd/gage` renders it as the `[y/N]` prompt shown in the
       design doc
-- [ ] The cache is written under `$GAGE_STATE`, never inside the vault,
+- [x] The cache is written under `$GAGE_STATE`, never inside the vault,
       and never committed — a `git status` after a cache regeneration is
       clean
-- [ ] `recipient add` and `recipient remove` against a vault whose
+- [x] `recipient add` and `recipient remove` against a vault whose
       `.age-recipients` and `config.toml` disagree are both refused,
       naming the specific differences, and leave both files
       byte-identical — the stray key is still there afterwards for
       `verify` to keep reporting, rather than having been rebuilt away
-- [ ] A refused recipient change commits nothing, pushes nothing, and
+- [x] A refused recipient change commits nothing, pushes nothing, and
       leaves the trust cache at its old value, so a mismatch cannot be
       laundered into an approved state by retrying the add
-- [ ] The refusal is asserted with `--reencrypt` as well as without it:
+- [x] The refusal is asserted with `--reencrypt` as well as without it:
       the rebuild that erases the evidence is in the shared tail both
       paths commit through, so covering only the plain add would leave
       the more destructive verb unguarded
+- [x] `recipient verify --repair` rewrites `.age-recipients` from
+      `config.toml`, commits it, and makes `verify` pass — and a
+      `Prompter` that declines writes and commits nothing
+- [x] `--repair` does *not* regenerate the trust cache: the next encrypt
+      still shows the config diff and still asks, since repair settled
+      the inconsistency and not the recipient change
+- [x] A successful local `recipient add`/`remove` regenerates the cache,
+      so the operator is not warned about their own change on the very
+      next write
+- [x] `vault remove` deletes `$GAGE_STATE/<vault>/`, so re-adding the
+      vault is a first use rather than an inherited approval
+- [x] `--yes` is refused in a session — on a session line and on the way
+      into one — rather than silently doing nothing or silently covering
+      the whole session (added during implementation; see the decision
+      above)
 
 ## Implementation
 
-- [ ] Trust cache storage: `$GAGE_STATE/<vault>/known-config.toml` (a
+- [x] Trust cache storage: `$GAGE_STATE/<vault>/known-config.toml` (a
       verbatim copy) plus the stored `.age-recipients` content hash,
       written through M0's atomic-write helper
-- [ ] Blocking pre-encrypt check on the `Vault` methods that encrypt
+- [x] Blocking pre-encrypt check on the `Vault` methods that encrypt
       (`insert`/`edit`/`generate`/`rename`, and M11's `mv`/`cp` against
       the destination vault)
-- [ ] Non-blocking opportunistic check wired into `Vault.Unlock` itself
+- [x] Non-blocking opportunistic check wired into `Vault.Unlock` itself
       (covering session `use` and every one-shot command's implicit
       unlock, mirroring M8a's fetch+pull hook) *and* into `sync` directly,
       since a clean fast-forward sync can complete without ever calling
       `Unlock`
-- [ ] Diff generation against the cached `config.toml` copy
-- [ ] The two-outcome resolution logic: routine changes regenerate both
+- [x] Diff generation against the cached `config.toml` copy
+- [x] The two-outcome resolution logic: routine changes regenerate both
       cache halves; mismatched ones record that the mismatch was seen
       without clearing the inconsistency
-- [ ] `RecipientChangeWarning` (or similar) structured type returned by
+- [x] `RecipientChangeWarning` (or similar) structured type returned by
       the library on a trust-cache mismatch; `cmd/gage` renders it as the
       terminal diff + `[y/N]` prompt
-- [ ] A `VerifyRecipients()` precondition on M9's `AddRecipient` and
+- [x] A `VerifyRecipients()` precondition on M9's `AddRecipient` and
       `RemoveRecipient`, refusing over a failing verify instead of
       rebuilding `.age-recipients` from `config.toml` — see the resolved
       decision above. It belongs inside `withVaultWrite`, under the vault
@@ -168,8 +234,23 @@ the first would miss someone who edits only the second.
       the re-encryption rather than beside the recipient-file write,
       since aborting after every entry has been rewritten would be its
       own half-migrated state
-- [ ] Whatever the open sub-decision above settles on for repairing a
-      diverged vault — the refusal and its exit ship together
+- [x] `Vault.RepairRecipients` + `gage recipient verify --repair`: the
+      refusal's exit, shipping with it — rewrite `.age-recipients` from
+      `config.toml` under the vault lock, behind a `Prompter.Confirm`
+      naming every key dropped and added, committed as
+      `gage: recipient repair`, and *without* regenerating the cache
+- [x] `Prompter.ConfirmRecipientChange(RecipientChangeWarning)` added to
+      the interface (alongside `Choose`, and for the same reason), with
+      `cmd/gage`'s terminal implementation rendering the diff + `[y/N]`;
+      the opportunistic, non-blocking checks go through the existing
+      `Warn` with the warning's one-line summary, as M8a's sync
+      advisories do
+- [x] A persistent root `--yes` flag answering `ConfirmRecipientChange`
+      (and nothing else) without asking, wrapped once in `NewRootCmd`'s
+      `PersistentPreRunE` and unwrapped when that execution ends
+- [x] Cache regeneration as the last step of a successful `AddRecipient`/
+      `RemoveRecipient`, and `$GAGE_STATE/<vault>/` deleted by
+      `vault remove`
 
 ## Definition of done
 

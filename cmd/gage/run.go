@@ -31,6 +31,11 @@ func runApp(app *App, args []string) int {
 	root := NewRootCmd(app)
 	root.SetArgs(args)
 
+	// --yes wraps app.Prompter from the root's PersistentPreRunE, since
+	// that is the first point the flag has been parsed. This is the
+	// other half of that: the wrap lasts exactly one execution.
+	defer scopeAssumeYes(app)()
+
 	err := root.Execute()
 	if err == nil {
 		return int(exitcode.Success)

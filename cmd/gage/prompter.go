@@ -191,6 +191,65 @@ func (p *terminalPrompter) Confirm(prompt string) (bool, error) {
 	}
 }
 
+// ConfirmRecipientChange renders M10's trust-cache warning as the
+// terminal diff + [y/N] prompt from "Local trust cache", and returns
+// whether the human approved the recipient list it describes.
+//
+// The library never prints any of this: it hands over a
+// RecipientChangeWarning — the diff, the verification result, which
+// recipients moved — and this is the CLI deciding what that looks like,
+// exactly as Choose renders a CandidateList. The two cases are rendered
+// differently on purpose. A routine change (both recipient files agree)
+// gets the diff and a confirmation; a mismatched one gets its own, more
+// severe line naming the keys the two files disagree about, because that
+// is the tampering signature the cache exists to surface and it must not
+// read like an ordinary "someone added a device."
+//
+// Like every other Confirm here, a bare Enter means no.
+func (p *terminalPrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
+	_, _ = fmt.Fprintf(p.out, "\u26a0 Recipients for %q changed since you last encrypted here:\n\n", w.Vault)
+	if w.Diff != "" {
+		_, _ = fmt.Fprintln(p.out, w.Diff)
+	}
+
+	if w.Mismatched() {
+		_, _ = fmt.Fprintln(p.out, "gage: .age-recipients and .gage/config.toml DISAGREE "+
+			"(gage recipient verify fails):")
+		for _, k := range w.Verification.OnlyInRecipientsFile {
+			_, _ = fmt.Fprintf(p.out, "  %s is in .age-recipients but not in .gage/config.toml\n", k)
+		}
+		for _, k := range w.Verification.OnlyInConfig {
+			_, _ = fmt.Fprintf(p.out, "  %s is in .gage/config.toml but not in .age-recipients\n", k)
+		}
+		// Said before the question, because it changes what answering
+		// yes means: it lets this write through, and nothing else. The
+		// vault stays flagged until the two files actually agree.
+		_, _ = fmt.Fprintln(p.out, "gage: confirming proceeds with this write; it does not clear the mismatch.")
+	} else {
+		_, _ = fmt.Fprintln(p.out, "gage: .age-recipients matches .gage/config.toml. (gage recipient verify passes)")
+	}
+
+	return p.Confirm(fmt.Sprintf("%s. Proceed and trust this recipient list?",
+		recipientChangeCount(w)))
+}
+
+// recipientChangeCount is the design doc's "1 recipient added." line.
+func recipientChangeCount(w gage.RecipientChangeWarning) string {
+	switch {
+	case len(w.Added) > 0 && len(w.Removed) > 0:
+		return fmt.Sprintf("%d recipient(s) added, %d removed", len(w.Added), len(w.Removed))
+	case len(w.Added) > 0:
+		return fmt.Sprintf("%d %s added", len(w.Added), plural(len(w.Added), "recipient", "recipients"))
+	case len(w.Removed) > 0:
+		return fmt.Sprintf("%d %s removed", len(w.Removed), plural(len(w.Removed), "recipient", "recipients"))
+	default:
+		// No config change at all — the .age-recipients-only edit, which
+		// is exactly the case with nothing to count and everything to
+		// worry about.
+		return "The recipient list changed"
+	}
+}
+
 // maxChooseAttempts bounds the re-ask loop for a mistyped candidate
 // number. Same shape as the passphrase retry policy, and here for the
 // same reason: the library hands over a candidate list and has no

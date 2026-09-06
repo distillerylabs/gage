@@ -26,6 +26,9 @@ func (p *noChoicePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, 
 	return gage.UnlockResponse{Kind: gage.KindPassphrase, Passphrase: testPassphrase}, nil
 }
 func (p *noChoicePrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (p *noChoicePrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
+	return true, nil
+}
 func (p *noChoicePrompter) Choose(list gage.CandidateList) (string, error) {
 	p.t.Helper()
 	p.t.Error("Prompter.Choose was called; one-shot mode must fail with the candidate list, never prompt")

@@ -142,6 +142,33 @@ func (v *Vault) withVaultWrite(p Prompter, fn func() error) error {
 	})
 }
 
+// withEncryptingWrite is withVaultWrite for the methods that produce
+// ciphertext: the same lock and dirty-tree reset, plus M10's blocking
+// trust-cache check, run before fn writes anything.
+//
+// The check sits here rather than in each verb so that "no entry is ever
+// encrypted to a recipient list this device never reviewed" is
+// structural, the same way withVaultWrite makes the reset structural.
+// Ordering is the point of it: the confirmation runs under the vault
+// lock and before the first byte is written, so a declined answer leaves
+// nothing to undo — nothing written, nothing committed, and the cache
+// exactly where it was.
+//
+// Vault.Remove deliberately does not go through this. Deleting an entry
+// encrypts nothing, so there is no list to approve, and asking anyway
+// would make the prompt a tax on every write rather than a question
+// about the one thing it is asking about. M11's mv/cp reuse this against
+// the *destination* vault, which is the one whose recipients the moved
+// entry gets encrypted to.
+func (v *Vault) withEncryptingWrite(ident *Identity, fn func() error) error {
+	return v.withVaultWrite(ident.warnTo(), func() error {
+		if err := v.confirmRecipientTrust(ident.frontend()); err != nil {
+			return err
+		}
+		return fn()
+	})
+}
+
 // resetDirtyWorkTree discards uncommitted changes in the vault's working
 // tree and warns once, naming what it discarded. A clean tree is silent:
 // a warning on every ordinary write would train people to ignore the one

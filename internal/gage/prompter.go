@@ -92,10 +92,27 @@ type Prompter interface {
 	// nothing "wrong" to retry.
 	Value(prompt string) (string, error)
 
-	// Confirm asks a yes/no question — e.g. the recipient-change warning
-	// in "Local trust cache". A false answer means the caller should
-	// abort whatever it was about to do.
+	// Confirm asks a yes/no question — e.g. M9's "remove this device's
+	// own key?". A false answer means the caller should abort whatever
+	// it was about to do.
 	Confirm(prompt string) (bool, error)
+
+	// ConfirmRecipientChange asks whether to encrypt to a recipient list
+	// that has changed since this device last confirmed one — the
+	// blocking half of "Local trust cache".
+	//
+	// It is its own method rather than a Confirm with a formatted string
+	// for the same reason Choose is: what the frontend needs is the
+	// change itself — the diff, whether the two recipient-defining files
+	// still agree, which recipients moved — and a library that pre-
+	// rendered that into a sentence would have decided how a GUI shows
+	// it. It is also what lets cmd/gage's --yes answer this question and
+	// only this one, leaving Confirm's genuinely different questions
+	// real in a scripted run.
+	//
+	// A false answer aborts the write with nothing committed and the
+	// cache untouched, so the same question is asked again next time.
+	ConfirmRecipientChange(w RecipientChangeWarning) (bool, error)
 
 	// Choose asks which of a CandidateList's entries the caller meant —
 	// the session-mode side of an ambiguous query (see "Addressing

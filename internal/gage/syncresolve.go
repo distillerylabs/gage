@@ -122,6 +122,17 @@ func (v *Vault) syncResolving(ctx context.Context, r ConflictResolver) (SyncRepo
 		return pulled, err
 	}
 
+	// M10's opportunistic check needs its own hook here, not only on
+	// Vault.Unlock: a clean fast-forward decrypts nothing and never
+	// unlocks an identity at all, so a recipient change pulled in by one
+	// would otherwise arrive completely silently. It runs after the pull
+	// for the same reason the unlock hook runs after syncOnUnlock — the
+	// list worth warning about is the one that just landed.
+	//
+	// Vault.Sync is deliberately left alone: it takes no Prompter, and
+	// `gage sync` goes through SyncResolving.
+	v.warnRecipientTrust(r.Prompter)
+
 	report, err := v.push(ctx)
 	report.Pulled = report.Pulled || pulled.Pulled
 	report.Diverged = report.Diverged || pulled.Diverged

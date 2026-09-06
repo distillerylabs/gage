@@ -177,15 +177,29 @@ func newRecipientListCommand(app *App) *cobra.Command {
 // structural rather than a promise: the vault is resolved without
 // unlocking and the library call it makes takes no Prompter.
 func newRecipientVerifyCommand(app *App) *cobra.Command {
-	var useFlag string
+	var (
+		useFlag    string
+		repairFlag bool
+	)
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: commandShort("recipient verify"),
-		Args:  cobra.NoArgs,
+		Long: commandShort("recipient verify") + ".\n\n" +
+			"--repair rewrites .age-recipients from .gage/config.toml's list and commits it,\n" +
+			"after naming every key it drops and every key it adds. It is the exit from the\n" +
+			"divergence `recipient add`/`remove` refuse to run over. It does not clear the\n" +
+			"trust cache — repairing the split between the two files says nothing about\n" +
+			"whether the recipient list itself is one you approve, so the next write still\n" +
+			"shows you the change — and it takes no --reencrypt, since rewriting a plaintext\n" +
+			"key list says nothing about whether existing ciphertext should be rewritten.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := vaultWithoutUnlocking(app, useFlag)
 			if err != nil {
 				return err
+			}
+			if repairFlag {
+				return runRecipientRepair(app, v)
 			}
 			got, err := v.VerifyRecipients()
 			if err != nil {
@@ -215,5 +229,38 @@ func newRecipientVerifyCommand(app *App) *cobra.Command {
 		},
 	}
 	addUseFlag(cmd, &useFlag)
+	cmd.Flags().BoolVar(&repairFlag, "repair", false,
+		"rewrite .age-recipients from .gage/config.toml and commit it, after confirming what that drops")
 	return cmd
+}
+
+// runRecipientRepair is `recipient verify --repair`: the exit the
+// refusal in `recipient add`/`remove` ships with.
+//
+// It says what it dropped rather than only that it succeeded. The keys
+// it removes could read everything written while they were listed, so
+// "repaired" on its own would be the least useful true thing gage could
+// print here.
+func runRecipientRepair(app *App, v *gage.Vault) error {
+	repair, err := v.RepairRecipients(app.Prompter)
+	if err != nil {
+		return err
+	}
+	if repair.Commit == "" {
+		writeOut(app.Out, []string{fmt.Sprintf(
+			"gage: %q's recipient files are already in sync; nothing to repair", v.Name)})
+		return nil
+	}
+
+	lines := make([]string, 0, len(repair.Dropped)+len(repair.Added)+1)
+	for _, k := range repair.Dropped {
+		lines = append(lines, fmt.Sprintf("gage: dropped %s from .age-recipients", k))
+	}
+	for _, k := range repair.Added {
+		lines = append(lines, fmt.Sprintf("gage: added %s to .age-recipients", k))
+	}
+	lines = append(lines, fmt.Sprintf("gage: rewrote .age-recipients from .gage/config.toml; committed locally as %s",
+		shortHash(repair.Commit)))
+	writeOut(app.Out, lines)
+	return nil
 }

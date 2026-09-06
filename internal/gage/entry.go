@@ -565,7 +565,7 @@ func (v *Vault) EntryIDs() ([]uuid.UUID, error) {
 // (see withWriteLock). It returns the new entry's id.
 func (v *Vault) Insert(e Entry, force bool, ident *Identity) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := v.withVaultWrite(ident.warnTo(), func() error {
+	err := v.withEncryptingWrite(ident, func() error {
 		if !force {
 			exists, err := v.titleExists(e.Title, ident)
 			if err != nil {
