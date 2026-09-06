@@ -29,11 +29,26 @@ type Revision struct {
 
 // Log returns the commits in which path changed, newest first.
 //
-// It walks HEAD's ancestry and keeps a commit whenever the blob at path
-// differs from what the previous (i.e. parent-side) commit had — which
-// is the same "commits touching this file" set `git log -- <path>`
-// reports, computed here rather than shelled out, per the design doc's
-// no-git-binary rule.
+// It walks HEAD's ancestry and keeps a commit whose blob at path differs
+// from that of *every* one of its parents — the same "commits touching
+// this file" set `git log -- <path>` reports, computed here rather than
+// shelled out, per the design doc's no-git-binary rule.
+//
+// Comparing against real parents, rather than against the previous
+// commit in the walk, is what makes this correct once a vault has ever
+// synced. The walk flattens a branching history into a list, so the
+// commit printed before another one is frequently not its parent at all
+// — it is the tip of the other side of a merge. Diffing those neighbours
+// reports every commit on each side as having changed a path only the
+// other side touched, and reports a path as *deleted* by any commit that
+// merely predates its creation on the other branch. Both are entries
+// this vault never had, in a log whose whole job is to say truthfully
+// when a secret changed.
+//
+// A merge is therefore uninteresting for a path whenever it matches any
+// parent: it carried that side's version through rather than changing
+// anything. Only a merge that resolved a real conflict — a blob equal to
+// neither side — is a change of its own, which is exactly what it is.
 //
 // A path that has never existed yields no revisions and no error: an
 // entry with no history is a normal state (it was inserted and the
@@ -54,60 +69,88 @@ func Log(dir, path string) ([]Revision, error) {
 		return nil, fmt.Errorf("gitrepo: reading HEAD: %w", err)
 	}
 
-	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
+	// Committer-time order, which is git log's own default. The walk no
+	// longer depends on adjacency for correctness — each commit is
+	// judged against its parents — so ordering is purely presentational,
+	// and this is the order a human reading a log expects.
+	iter, err := repo.Log(&git.LogOptions{From: head.Hash(), Order: git.LogOrderCommitterTime})
 	if err != nil {
 		return nil, fmt.Errorf("gitrepo: walking history: %w", err)
 	}
 	defer iter.Close()
 
-	var (
-		out  []Revision
-		prev []byte
-		have bool
-	)
-	// go-git walks newest-first; the comparison wants each commit
-	// against its parent, so the list is built newest-first and the
-	// "previous" content is the *older* one. Collect every commit's
-	// content first, then diff adjacent pairs.
-	type snapshot struct {
-		commit  *object.Commit
-		content []byte
-		present bool
-	}
-	var snaps []snapshot
-	err = iter.ForEach(func(c *object.Commit) error {
+	// blobAt is called for every commit and again for it as somebody's
+	// parent, so results are memoised per commit. A merge-heavy vault
+	// would otherwise re-read the same tree once per child.
+	cache := map[plumbing.Hash]blob{}
+	at := func(c *object.Commit) (blob, error) {
+		if b, ok := cache[c.Hash]; ok {
+			return b, nil
+		}
 		content, present, err := blobAt(c, path)
+		if err != nil {
+			return blob{}, err
+		}
+		b := blob{content: content, present: present}
+		cache[c.Hash] = b
+		return b, nil
+	}
+
+	var out []Revision
+	err = iter.ForEach(func(c *object.Commit) error {
+		mine, err := at(c)
 		if err != nil {
 			return err
 		}
-		snaps = append(snaps, snapshot{commit: c, content: content, present: present})
+		// A root commit has nothing to differ from, so it is a change
+		// exactly when the path is there at all.
+		changed := mine.present
+		for i := 0; i < c.NumParents(); i++ {
+			p, err := c.Parent(i)
+			if err != nil {
+				return err
+			}
+			theirs, err := at(p)
+			if err != nil {
+				return err
+			}
+			if mine.equal(theirs) {
+				// Unchanged on at least one line of descent, so this
+				// commit did not touch the path.
+				changed = false
+				break
+			}
+			changed = true
+		}
+		if changed {
+			out = append(out, Revision{
+				Hash:    c.Hash.String(),
+				When:    c.Author.When,
+				Message: c.Message,
+				Content: mine.content,
+			})
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gitrepo: reading %s across history: %w", path, err)
 	}
-
-	// Walk oldest-first so "changed relative to the previous commit" is
-	// a forward comparison, then reverse at the end.
-	for i := len(snaps) - 1; i >= 0; i-- {
-		s := snaps[i]
-		changed := s.present != have || (s.present && !bytes.Equal(s.content, prev))
-		if changed {
-			out = append(out, Revision{
-				Hash:    s.commit.Hash.String(),
-				When:    s.commit.Author.When,
-				Message: s.commit.Message,
-				Content: s.content,
-			})
-		}
-		prev, have = s.content, s.present
-	}
-
-	// Reverse into newest-first, the order a log is read in.
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
 	return out, nil
+}
+
+// blob is path's state in one commit: its bytes, and whether it was
+// there at all. The two are kept together because "absent" and "empty"
+// are different answers and comparing only the bytes would merge them.
+type blob struct {
+	content []byte
+	present bool
+}
+
+func (b blob) equal(other blob) bool {
+	if b.present != other.present {
+		return false
+	}
+	return !b.present || bytes.Equal(b.content, other.content)
 }
 
 // blobAt returns the content of path in c's tree, and whether it exists

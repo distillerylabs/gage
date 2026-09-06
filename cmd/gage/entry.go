@@ -547,6 +547,8 @@ func newGenerateCommand(app *App) *cobra.Command {
 		forceFlag       bool
 		lengthFlag      int
 		noSymbolsFlag   bool
+		clipFlag        bool
+		qrFlag          bool
 	)
 	cmd := &cobra.Command{
 		Use:   "generate <title>",
@@ -554,6 +556,12 @@ func newGenerateCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			title := args[0]
+			// Asked before anything is generated or written: the answer
+			// cannot change, and failing after the commit would leave a
+			// new secret in the vault behind an error message.
+			if err := checkSecretOutput(clipFlag, qrFlag); err != nil {
+				return err
+			}
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
 				value, err := gage.GenerateValue(gage.GenerateOptions{
 					Length:    lengthFlag,
@@ -578,6 +586,18 @@ func newGenerateCommand(app *App) *cobra.Command {
 				}
 				noteIndexEntry(app, v, id, e)
 				writeOut(app.Out, []string{fmt.Sprintf("gage: generated %q (%s)", title, id)})
+
+				// Only when a destination was asked for. Plain `generate`
+				// deliberately prints the confirmation and not the value:
+				// a fresh secret nobody has read yet is the last thing
+				// that should land in a scrollback by default (principle
+				// 6). -c and -q are how it gets out without doing that,
+				// which is why the command reference gives generate both.
+				// The confirmation goes first so a one-shot -c has said
+				// what it did before it blocks for the clipboard timeout.
+				if clipFlag || qrFlag {
+					return emitSecret(app, value, clipFlag, qrFlag)
+				}
 				return nil
 			})
 		},
@@ -593,6 +613,10 @@ func newGenerateCommand(app *App) *cobra.Command {
 		fmt.Sprintf("length of the generated value (default %d, minimum %d)",
 			gage.GenerateDefaultLength, gage.GenerateMinLength))
 	cmd.Flags().BoolVar(&noSymbolsFlag, "no-symbols", false, "draw from letters and digits only")
+	cmd.Flags().BoolVarP(&clipFlag, "clip", "c", false,
+		"copy the generated value to the clipboard, and clear it after a timeout")
+	cmd.Flags().BoolVarP(&qrFlag, "qr", "q", false,
+		"render the generated value as a QR code")
 	return cmd
 }
 

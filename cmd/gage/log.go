@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -102,7 +103,11 @@ func resolveHistoricalQuery(app *App, v *gage.Vault, query string, ident *gage.I
 // a multi-entry log — which opaque entry it belongs to. Never a title.
 func writeLog(app *App, v *gage.Vault, ids []uuid.UUID) error {
 	multi := len(ids) > 1
-	var lines []string
+	type row struct {
+		when time.Time
+		line string
+	}
+	var rows []row
 	for _, id := range ids {
 		entries, err := v.Log(id)
 		if err != nil {
@@ -116,27 +121,32 @@ func writeLog(app *App, v *gage.Vault, ids []uuid.UUID) error {
 			if le.Deleted {
 				line += "  (deleted)"
 			}
-			lines = append(lines, line)
+			rows = append(rows, row{when: le.When, line: line})
 		}
 	}
-	if len(lines) == 0 {
+	if len(rows) == 0 {
 		writeOut(app.Err, []string{"gage: no commit history for that entry yet."})
 		return nil
 	}
 	// Newest first across the whole set, so a vault-wide log reads as
 	// one timeline rather than as entries concatenated.
-	sortLogLinesNewestFirst(lines)
+	//
+	// Sorted on the timestamps themselves rather than on the rendered
+	// lines. The rendered form carries a UTC offset, so a vault whose
+	// history spans a daylight-saving change has two offsets in it, and
+	// ordering those strings would sort by wall-clock time — putting an
+	// hour of commits from either side of the change in the wrong order,
+	// on the one day a human is most likely to be reading a log to work
+	// out what happened when. Ties keep their existing relative order so
+	// commits sharing a second stay grouped by entry.
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].when.After(rows[j].when) })
+
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		lines = append(lines, r.line)
+	}
 	writeOut(app.Out, lines)
 	return nil
-}
-
-// sortLogLinesNewestFirst orders rendered lines by their leading
-// timestamp. The format is fixed-width and lexicographically ordered for
-// a given offset, and every line carries it as its prefix, so sorting
-// the strings is the same thing as sorting the times — without carrying
-// a parallel slice of them around to keep in step.
-func sortLogLinesNewestFirst(lines []string) {
-	sort.Sort(sort.Reverse(sort.StringSlice(lines)))
 }
 
 // newHistoryCommand builds `gage history --decrypt <query>`.

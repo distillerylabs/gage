@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,7 +282,9 @@ func TestEnvPrompterAnswersOnceThenRefuses(t *testing.T) {
 // unrecoverable — and nobody would find out until the next unlock.
 func TestGagePassphraseIsIgnoredForANewIdentity(t *testing.T) {
 	inner := &fakePrompter{passphrases: []string{testPassphrase}}
-	p := &envPrompter{Prompter: inner, passphrase: "from-env"}
+	// create is where a PurposeCreate request is passed through to; on a
+	// terminal that is the ordinary prompter. See scriptPrompter.
+	p := &envPrompter{Prompter: inner, create: inner, passphrase: "from-env"}
 
 	got, err := p.Unlock(gage.UnlockRequest{Purpose: gage.PurposeCreate, Vault: "personal", Attempt: 1})
 	if err != nil {
@@ -451,5 +454,113 @@ func unsetPassphraseEnv(t *testing.T) {
 	t.Setenv(envPassphraseVar, "")
 	if err := os.Unsetenv(envPassphraseVar); err != nil {
 		t.Fatalf("unsetting %s: %v", envPassphraseVar, err)
+	}
+}
+
+// runStdinScriptWithRealPrompter mirrors run.go: one reader is both the
+// command stream and the prompter's input. Every other helper here
+// injects a fakePrompter, which answers without reading anything — so
+// only this shape can show what a prompt actually does to a script.
+func runStdinScriptWithRealPrompter(t *testing.T, lines ...string) cliResult {
+	t.Helper()
+
+	var stdout, stderr bytes.Buffer
+	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
+	app := &App{
+		Out: &stdout, Err: &stderr, In: in,
+		IsTerminal: func() bool { return false },
+	}
+	app.Prompter = newTerminalPrompter(in, &stderr)
+
+	code := runApp(app, []string{"--stdin"})
+	return cliResult{Stdout: stdout.String(), Stderr: stderr.String(), Code: code}
+}
+
+// TestStdinRefusesToCreateAnIdentityWithNoHuman.
+//
+// GAGE_PASSPHRASE deliberately doesn't answer for a new identity, but
+// under --stdin the human it defers to doesn't exist: the ordinary
+// prompter's stdin *is* the command stream. Falling through to it made
+// `identity add` print "Choose a passphrase:" into the output and then
+// read the script — reporting the EOF as a failed read, or, once the
+// script outgrew the scanner's read-ahead, silently taking a command
+// line as the passphrase for a new device key.
+//
+// The refusal must be explicit, must name the reason, and must not
+// consume the command stream.
+func TestStdinRefusesToCreateAnIdentityWithNoHuman(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	t.Setenv(envPassphraseVar, testPassphrase)
+
+	res := runStdinScriptWithRealPrompter(t,
+		"use personal",
+		"identity add --device other-box",
+	)
+
+	// LockedOrAuth, the same code as the unlock-side refusal: both mean
+	// there was nowhere to get a passphrase from.
+	if res.Code != int(exitcode.LockedOrAuth) {
+		t.Errorf("exit code = %d, want %d (LockedOrAuth)", res.Code, exitcode.LockedOrAuth)
+	}
+	if !strings.Contains(res.Stderr, "human") {
+		t.Errorf("refusal does not say a human is needed: %q", res.Stderr)
+	}
+	// Never the half-asked question, and never an EOF dressed up as a
+	// failed read.
+	if strings.Contains(res.Stdout+res.Stderr, "Choose a passphrase") {
+		t.Errorf("a passphrase prompt was rendered with nobody to answer it: %q", res.Stderr)
+	}
+	if strings.Contains(res.Stderr, "reading input") {
+		t.Errorf("the unanswerable read still happened: %q", res.Stderr)
+	}
+}
+
+// TestStdinIdentityAddDoesNotEatTheCommandStream is the other half of
+// the same failure: whatever happens, the lines after `identity add`
+// are commands, not passphrase answers.
+func TestStdinIdentityAddDoesNotEatTheCommandStream(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	insertEntry(t, "personal", "GitHub", "hunter2")
+	t.Setenv(envPassphraseVar, testPassphrase)
+
+	res := runStdinScriptWithRealPrompter(t,
+		"use personal",
+		"identity add --device other-box",
+		"show GitHub",
+	)
+
+	// The run stops at the refused line (a script aborts on the first
+	// failure), so `show` never runs — but it must fail as a *refusal*,
+	// with the following line untouched rather than swallowed as an
+	// answer.
+	if strings.Contains(res.Stdout, "hunter2") {
+		t.Errorf("the script continued past a failed command:\n%s", res.Stdout)
+	}
+	if strings.Contains(res.Stderr, "show GitHub") &&
+		strings.Contains(res.Stderr, "unknown command") {
+		t.Errorf("a command line was consumed as passphrase input: %q", res.Stderr)
+	}
+}
+
+// TestScriptOnATerminalStillCreatesIdentitiesInteractively: the refusal
+// is scoped to "there is no human", not to scripts. `--script FILE`
+// leaves stdin free, so a human running one can still answer.
+func TestScriptOnATerminalStillCreatesIdentitiesInteractively(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	t.Setenv(envPassphraseVar, testPassphrase)
+
+	counter := &countingPrompter{Prompter: &fakePrompter{passphrases: []string{testPassphrase}}}
+	res, _ := runCLIWithPrompter(t,
+		[]string{"--script", writeScript(t, "use personal", "identity add --device other-box")},
+		"", true, counter)
+
+	if res.Code != 0 {
+		t.Fatalf("--script on a terminal could not create an identity: %s", res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "other-box") {
+		t.Errorf("the identity was not registered:\n%s", res.Stdout)
 	}
 }

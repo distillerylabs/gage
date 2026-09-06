@@ -220,6 +220,11 @@ func NewRootCmd(app *App) *cobra.Command {
 func (app *App) clipboard() *clipboardKeeper {
 	if app.keeper == nil {
 		app.keeper = newClipboardKeeper(app.Clipboard, app.ClipboardTimer)
+		// A session's clear fires on a timer, long after the command
+		// that copied has returned, so there is nobody left to hand an
+		// error to — it goes to stderr the way the session's own exit
+		// path reports the same failure.
+		app.keeper.report = func(err error) { writeError(app.Err, err) }
 	}
 	return app.keeper
 }

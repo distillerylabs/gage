@@ -8,6 +8,25 @@ import (
 	"rsc.io/qr"
 )
 
+// qrArtLines picks the rendered code out of a command's stdout.
+//
+// `show -q` writes nothing but the art, but `generate -q` prints its
+// "generated ..." confirmation first — the confirmation names the entry,
+// not the value, so it is not plaintext and belongs there. Selecting the
+// lines built only from the four block glyphs keeps the decoder pointed
+// at the symbol either way, and would still fail loudly if a value ever
+// leaked onto a line of its own.
+func qrArtLines(art string) []string {
+	var out []string
+	for _, line := range strings.Split(strings.TrimRight(art, "\n"), "\n") {
+		if line == "" || strings.TrimLeft(line, string([]rune{qrBoth, qrTop, qrBottom, qrNeither})) != "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
 // decodeRenderedQR reverses renderQR: it turns the half-block terminal
 // art back into the module grid that produced it, quiet zone stripped.
 //
@@ -21,7 +40,7 @@ import (
 func decodeRenderedQR(t *testing.T, art string) [][]bool {
 	t.Helper()
 
-	lines := strings.Split(strings.TrimRight(art, "\n"), "\n")
+	lines := qrArtLines(art)
 	if len(lines) == 0 {
 		t.Fatal("no QR output to decode")
 	}
