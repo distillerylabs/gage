@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,27 @@ func runFakeEditor(mode, path string) int {
 				os.Getenv("GAGE_TEST_FAKE_EDITOR_FIELD_KEY"): os.Getenv("GAGE_TEST_FAKE_EDITOR_FIELD_VALUE"),
 			}
 		})
+	case "set-value-and-fields":
+		// Like set-value-and-field but for more than one key, so a test
+		// can build the "structured note" the design doc's --field --qr
+		// requirement is about: a value plus several fields, only one of
+		// which may be encoded. Spelled k=v;k=v because a fake editor
+		// invoked through the environment has nowhere richer to read
+		// from.
+		return fakeEditField(path, func(e *gage.Entry) {
+			e.Value = os.Getenv("GAGE_TEST_FAKE_EDITOR_VALUE")
+			e.Fields = map[string]string{}
+			for _, pair := range strings.Split(os.Getenv("GAGE_TEST_FAKE_EDITOR_FIELDS"), ";") {
+				if pair == "" {
+					continue
+				}
+				k, v, ok := strings.Cut(pair, "=")
+				if !ok {
+					continue
+				}
+				e.Fields[k] = v
+			}
+		})
 	case "tamper-stamps":
 		// Rewrites the fields gage itself owns — updated_by, created,
 		// updated — to values gage must overrule (updated_by/updated) or
@@ -126,4 +148,23 @@ func fakeEditField(path string, fn func(e *gage.Entry)) int {
 		return 1
 	}
 	return 0
+}
+
+// insertEntryWithFields creates an entry carrying both a value and a set
+// of fields — insert -e is the only mode that can set fields at creation
+// time (see "Notes on insert"), so it goes through the fake editor.
+func insertEntryWithFields(t *testing.T, title, value string, fields map[string]string) {
+	t.Helper()
+
+	pairs := make([]string, 0, len(fields))
+	for k, v := range fields {
+		pairs = append(pairs, k+"="+v)
+	}
+	setFakeEditor(t, "set-value-and-fields", map[string]string{
+		"GAGE_TEST_FAKE_EDITOR_VALUE":  value,
+		"GAGE_TEST_FAKE_EDITOR_FIELDS": strings.Join(pairs, ";"),
+	})
+	if res := runCLI(t, []string{"insert", title, "-e"}, ""); res.Code != 0 {
+		t.Fatalf("insert -e %q failed: %s", title, res.Stderr)
+	}
 }

@@ -56,6 +56,30 @@ type App struct {
 	// Prompter. Nothing else consults it.
 	AssumeYes bool
 
+	// ScriptFile and ScriptStdin are the two spellings of
+	// non-interactive session mode: read this session's command lines
+	// from a file, or from stdin. They live on App because dispatchRoot
+	// consults them, and because the passphrase policy a scripted run
+	// gets (see scriptPrompter) depends on which of the two it is.
+	ScriptFile  string
+	ScriptStdin bool
+
+	// Clipboard, ClipboardTimer and ClipboardWait are --clip's three
+	// seams, and they exist for the same reason Locker and RemoteSyncer
+	// do: the behavior under test is a copy, a timeout and a clear, none
+	// of which a test can drive against a real system clipboard — a CI
+	// runner may not have one at all, and a developer's must not be
+	// clobbered by `go test`. nil means the real thing in each case.
+	Clipboard      clipboardPort
+	ClipboardTimer newClipboardTimer
+	ClipboardWait  func(time.Duration)
+
+	// keeper is the lazily-built clipboardKeeper. It lives on App rather
+	// than being made where it's used because a session's exit path has
+	// to be able to clear a copy some earlier command made — see
+	// App.clipboard and runSession's deferred clear.
+	keeper *clipboardKeeper
+
 	// Session is non-nil only while the REPL is running. It's what makes
 	// every entry command work unchanged in both modes: the handlers all
 	// go through withUnlockedVault, which unlocks and closes per command
@@ -90,6 +114,16 @@ func NewRootCmd(app *App) *cobra.Command {
 	root.PersistentFlags().BoolVar(&app.AssumeYes, "yes", false,
 		"answer the recipient-change confirmation with yes, without showing it (for scripts and CI)")
 
+	// --script/--stdin are persistent so Cobra accepts them before the
+	// root's own RunE, but they are only ever meaningful on bare `gage`:
+	// they select a whole session's input, not one command's. A command
+	// given alongside them is rejected below rather than silently
+	// winning.
+	root.PersistentFlags().StringVar(&app.ScriptFile, "script", "",
+		"run session commands from a file instead of a prompt")
+	root.PersistentFlags().BoolVar(&app.ScriptStdin, "stdin", false,
+		"run session commands read from stdin instead of a prompt")
+
 	// The wrap happens once, here, after flag parsing and before any
 	// handler runs — rather than at each point a handler hands a
 	// Prompter to the library, which would be the same decision written
@@ -106,11 +140,24 @@ func NewRootCmd(app *App) *cobra.Command {
 	// so. `-m`/--value-stdin are refused in a session for the same
 	// shape of reason.
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if err := checkScriptFlags(app, cmd, root); err != nil {
+			return err
+		}
 		if !app.AssumeYes {
 			return nil
 		}
 		// cmd == root is bare `gage`, which dispatches to a session on a
 		// terminal; app.Session != nil is a line typed inside one.
+		//
+		// A *non-interactive* session is the exception, and it is the
+		// case --yes exists for: `gage --script deploy.gage --yes` in CI
+		// has no human to show a recipient diff to, which is the whole
+		// premise of the flag. What the rule below actually excludes is
+		// a session with somebody sitting at it.
+		if scriptMode(app) {
+			app.Prompter = withAssumeYes(app.Prompter)
+			return nil
+		}
 		if app.Session != nil || cmd == root {
 			return exitcode.New(exitcode.Usage,
 				"gage: --yes is for scripted, one-shot runs and isn't available in a session; "+
@@ -147,6 +194,8 @@ func NewRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newSyncCommand(app))
 	root.AddCommand(newPullCommand(app))
 	root.AddCommand(newPushCommand(app))
+	root.AddCommand(newLogCommand(app))
+	root.AddCommand(newHistoryCommand(app))
 	root.AddCommand(newInsertCommand(app))
 	root.AddCommand(newShowCommand(app))
 	root.AddCommand(newCatCommand(app))
@@ -163,4 +212,14 @@ func NewRootCmd(app *App) *cobra.Command {
 	installHelp(app, root)
 
 	return root
+}
+
+// clipboard returns this run's clipboardKeeper, building it on first
+// use. One per App, so the pending-clear record a `show -c` leaves is
+// the same one a session's exit path consults.
+func (app *App) clipboard() *clipboardKeeper {
+	if app.keeper == nil {
+		app.keeper = newClipboardKeeper(app.Clipboard, app.ClipboardTimer)
+	}
+	return app.keeper
 }

@@ -34,12 +34,27 @@ const (
 	lockedGlyph   = "🔒"
 )
 
+// defaultClipboardTimeout is how long `show -c` leaves a secret on the
+// clipboard before clearing it.
+//
+// 45 seconds is pass's long-standing default (PASSWORD_STORE_CLIP_TIME),
+// so it is the number people coming from that tool already have a feel
+// for: long enough to switch windows and paste, short enough that a
+// forgotten copy doesn't sit there for the rest of the afternoon.
+const defaultClipboardTimeout = 45 * time.Second
+
+// minClipboardTimeout is the shortest configurable clipboard timeout.
+// Below a second the clear races the paste it exists to allow, so a
+// value under it is a config error rather than a very brisk setting.
+const minClipboardTimeout = time.Second
+
 // shellSettings is [shell] from global config, resolved: defaults filled
-// in, the timeout parsed, the history path expanded.
+// in, the timeouts parsed, the history path expanded.
 type shellSettings struct {
-	prompt      string
-	idleTimeout time.Duration
-	historyFile string
+	prompt           string
+	idleTimeout      time.Duration
+	historyFile      string
+	clipboardTimeout time.Duration
 }
 
 // resolveShellSettings turns the raw [shell] table into settings the
@@ -47,7 +62,11 @@ type shellSettings struct {
 // silently-ignored field: a typo'd "10min" that quietly meant "never
 // re-lock" would weaken exactly the protection the setting exists for.
 func resolveShellSettings(sh config.Shell) (shellSettings, error) {
-	s := shellSettings{prompt: defaultPromptTemplate, idleTimeout: defaultIdleTimeout}
+	s := shellSettings{
+		prompt:           defaultPromptTemplate,
+		idleTimeout:      defaultIdleTimeout,
+		clipboardTimeout: defaultClipboardTimeout,
+	}
 
 	if sh.Prompt != "" {
 		s.prompt = sh.Prompt
@@ -64,6 +83,25 @@ func resolveShellSettings(sh config.Shell) (shellSettings, error) {
 				"gage: [shell].idle_timeout %q is negative; use \"0\" to disable the idle re-lock", sh.IdleTimeout)
 		}
 		s.idleTimeout = d
+	}
+
+	// Rejected rather than clamped, and with no "0 disables it"
+	// spelling: a clipboard timeout that silently didn't fire, or one
+	// rounded up from a value the human chose, would weaken the one
+	// guarantee -c makes. Turning the auto-clear off is a decision M12
+	// deliberately left un-takeable for now — adding it later is
+	// additive, removing it would not be.
+	if sh.ClipboardTimeout != "" {
+		d, err := time.ParseDuration(sh.ClipboardTimeout)
+		if err != nil {
+			return shellSettings{}, exitcode.Newf(exitcode.Usage,
+				"gage: [shell].clipboard_timeout %q is not a duration (e.g. \"45s\"): %v", sh.ClipboardTimeout, err)
+		}
+		if d < minClipboardTimeout {
+			return shellSettings{}, exitcode.Newf(exitcode.Usage,
+				"gage: [shell].clipboard_timeout %q is below the %s minimum", sh.ClipboardTimeout, minClipboardTimeout)
+		}
+		s.clipboardTimeout = d
 	}
 
 	path, err := resolveHistoryPath(sh.HistoryFile)
@@ -203,4 +241,21 @@ func vaultIsDirty(name string) bool {
 		return false
 	}
 	return !clean
+}
+
+// clipboardTimeout resolves [shell].clipboard_timeout for a one-shot
+// command. A session already has the whole shellSettings in hand; a
+// one-shot `gage show -c` doesn't, and reading the file it would have
+// read anyway is cheaper than threading settings through every command
+// that will never look at them.
+func clipboardTimeout() (time.Duration, error) {
+	g, err := readGlobalConfig()
+	if err != nil {
+		return 0, exitcode.Wrap(exitcode.Internal, err)
+	}
+	settings, err := resolveShellSettings(g.Shell)
+	if err != nil {
+		return 0, err
+	}
+	return settings.clipboardTimeout, nil
 }

@@ -132,6 +132,16 @@ func runCLIWithPrompter(t *testing.T, args []string, stdin string, isTerminal bo
 // reader that records — or refuses — being read from.
 func runCLIWithPrompterAndStdin(t *testing.T, args []string, stdin io.Reader, isTerminal bool, p gage.Prompter) (cliResult, gage.Prompter) {
 	t.Helper()
+	return runCLIWithApp(t, args, stdin, isTerminal, p, nil)
+}
+
+// runCLIWithApp is the widest form: a hook that sees the assembled App
+// just before it runs, for the seams that live there rather than on the
+// Prompter — the clipboard port, its timer, and the one-shot clipboard
+// wait. Everything else routes through here so there is still one place
+// an invocation is built.
+func runCLIWithApp(t *testing.T, args []string, stdin io.Reader, isTerminal bool, p gage.Prompter, customize func(*App)) (cliResult, gage.Prompter) {
+	t.Helper()
 	var stdout, stderr bytes.Buffer
 	// The real prompter writes its warnings to stderr; a fake that only
 	// recorded them would hide from every CLI test whatever the library
@@ -146,6 +156,9 @@ func runCLIWithPrompterAndStdin(t *testing.T, args []string, stdin io.Reader, is
 		Build:      BuildInfo{Version: "v1.2.3", Commit: "abcdef1"},
 		IsTerminal: func() bool { return isTerminal },
 		Prompter:   p,
+	}
+	if customize != nil {
+		customize(app)
 	}
 	code := runApp(app, args)
 	return cliResult{Stdout: stdout.String(), Stderr: stderr.String(), Code: code}, p

@@ -9,19 +9,78 @@ import (
 	"github.com/denmark/gage/internal/gage/exitcode"
 )
 
-// generateDefaultLength is gage generate's value length until M12 adds
-// -l. generateAlphabet is its character set until M12 adds --no-symbols:
-// upper/lower letters, digits, and a set of symbols unlikely to need
-// escaping wherever the value ends up pasted.
-const generateDefaultLength = 24
+// GenerateDefaultLength is gage generate's value length when -l isn't
+// given. Exported so `generate --help` can state the default without
+// cmd/gage carrying a second copy of the number to drift from.
+const GenerateDefaultLength = 24
 
-const generateAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*-_=+"
+// GenerateMinLength is the shortest value `generate -l` will produce.
+//
+// The floor exists because -l is the one knob on this command that can
+// make its output worse, and silently obliging `-l 4` would hand back
+// something the tool's whole purpose is to prevent. Eight is the point
+// below which even a full-alphabet draw stops being meaningfully more
+// than a delay: 8 characters of the 74-character alphabet is ~49 bits,
+// and every length below it is within reach of an offline attack that
+// 12 or 24 is not. It is a refusal rather than a clamp — silently
+// rounding 4 up to 8 would tell the human they got what they asked for.
+const GenerateMinLength = 8
 
-// GenerateValue returns a fresh secret drawn from crypto/rand:
-// generateDefaultLength characters from generateAlphabet. This is the one
-// shape `gage generate` produces until M12's -l/--no-symbols land.
-func GenerateValue() (string, error) {
-	return randomString(rand.Reader, generateDefaultLength, generateAlphabet)
+// generateLetters/generateDigits/generateSymbols compose the two
+// alphabets. The symbol set is deliberately narrow: characters unlikely
+// to need escaping wherever the value ends up pasted — a shell, a URL, a
+// CSV — rather than every punctuation mark ASCII has.
+const (
+	generateLetters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	generateDigits  = "0123456789"
+	generateSymbols = "!@#$%^&*-_=+"
+)
+
+const (
+	generateAlphabet         = generateLetters + generateDigits + generateSymbols
+	generateAlphabetNoSymbol = generateLetters + generateDigits
+)
+
+// GenerateOptions is what `gage generate`'s -l/--no-symbols become by
+// the time they reach the library: a value, not two more parameters on
+// every call, so a third knob is additive rather than a signature
+// change reaching every caller.
+type GenerateOptions struct {
+	// Length is the number of characters to draw. Zero means "not
+	// specified" and takes GenerateDefaultLength — the flag's unset
+	// state has to be distinguishable from a request, and "generate zero
+	// characters" is not a thing any caller wants.
+	Length int
+
+	// NoSymbols restricts the draw to letters and digits, for the
+	// systems that still reject punctuation in a password.
+	NoSymbols bool
+}
+
+// alphabet picks the character set opts asks for.
+func (o GenerateOptions) alphabet() string {
+	if o.NoSymbols {
+		return generateAlphabetNoSymbol
+	}
+	return generateAlphabet
+}
+
+// length resolves the requested length, filling in the default.
+func (o GenerateOptions) length() int {
+	if o.Length == 0 {
+		return GenerateDefaultLength
+	}
+	return o.Length
+}
+
+// GenerateValue returns a fresh secret drawn from crypto/rand, shaped by
+// opts. A length below GenerateMinLength is refused rather than obliged.
+func GenerateValue(opts GenerateOptions) (string, error) {
+	if opts.Length != 0 && opts.Length < GenerateMinLength {
+		return "", exitcode.Newf(exitcode.Usage,
+			"gage: generate: length %d is too short; the minimum is %d", opts.Length, GenerateMinLength)
+	}
+	return randomString(rand.Reader, opts.length(), opts.alphabet())
 }
 
 // randomString is GenerateValue's pure core: the randomness source and

@@ -89,3 +89,92 @@ func TestShowUnknownQueryFailsNotFound(t *testing.T) {
 		t.Errorf("exit code = %d, want %d (NotFound)", res.Code, exitcode.NotFound)
 	}
 }
+
+// TestShowFieldExtractsNamedField: --field NAME prints one entry from
+// `fields` instead of the value, and nothing else.
+func TestShowFieldExtractsNamedField(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	insertEntryWithFields(t, "Proton", "the-password", map[string]string{
+		"username":  "me@example.com",
+		"totp_seed": "JBSWY3DPEHPK3PXP",
+	})
+
+	for name, want := range map[string]string{
+		"username":  "me@example.com",
+		"totp_seed": "JBSWY3DPEHPK3PXP",
+	} {
+		res := runCLI(t, []string{"show", "Proton", "--field", name}, "")
+		if res.Code != 0 {
+			t.Fatalf("show --field %s failed: %s", name, res.Stderr)
+		}
+		if got := strings.TrimRight(res.Stdout, "\n"); got != want {
+			t.Errorf("show --field %s = %q, want %q", name, got, want)
+		}
+		if strings.Contains(res.Stdout, "the-password") {
+			t.Errorf("show --field %s leaked the primary value", name)
+		}
+	}
+}
+
+// TestShowUnknownFieldFailsClearly: an unknown --field name is NotFound,
+// names the fields the entry does have, and prints no value at all —
+// the human can't see inside the entry to check the spelling themselves.
+func TestShowUnknownFieldFailsClearly(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	insertEntryWithFields(t, "Proton", "the-password", map[string]string{
+		"username": "me@example.com",
+	})
+
+	res := runCLI(t, []string{"show", "Proton", "--field", "passwrod"}, "")
+	if res.Code != int(exitcode.NotFound) {
+		t.Errorf("exit code = %d, want %d (NotFound)", res.Code, exitcode.NotFound)
+	}
+	if !strings.Contains(res.Stderr, "passwrod") || !strings.Contains(res.Stderr, "username") {
+		t.Errorf("stderr should name both the missing field and the available ones: %q", res.Stderr)
+	}
+	if strings.Contains(res.Stdout, "the-password") || strings.Contains(res.Stderr, "the-password") {
+		t.Error("a failed --field lookup leaked the entry's value")
+	}
+	if strings.TrimSpace(res.Stdout) != "" {
+		t.Errorf("a failed --field lookup wrote %q to stdout", res.Stdout)
+	}
+}
+
+// TestShowFieldOnEntryWithNoFields: the message says the entry has none
+// at all, rather than listing an empty set.
+func TestShowFieldOnEntryWithNoFields(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	if res, _ := runCLIWithValue(t, []string{"insert", "GitHub"}, "hunter2"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+
+	res := runCLI(t, []string{"show", "GitHub", "--field", "username"}, "")
+	if res.Code != int(exitcode.NotFound) {
+		t.Errorf("exit code = %d, want %d (NotFound)", res.Code, exitcode.NotFound)
+	}
+	if !strings.Contains(res.Stderr, "no fields") {
+		t.Errorf("stderr should say the entry has no fields: %q", res.Stderr)
+	}
+}
+
+// TestShowClipCopiesTheNamedFieldNotTheValue: --field composes with -c
+// the same way it composes with -q — it chooses which value, and the
+// output flag chooses where it goes.
+func TestShowClipCopiesTheNamedFieldNotTheValue(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	insertEntryWithFields(t, "Proton", "the-password", map[string]string{
+		"username": "me@example.com",
+	})
+
+	run := runCLIWithClipboard(t, []string{"show", "Proton", "--field", "username", "-c"})
+	if run.Code != 0 {
+		t.Fatalf("show --field -c failed: %s", run.Stderr)
+	}
+	if len(run.cb.writes) == 0 || run.cb.writes[0] != "me@example.com" {
+		t.Errorf("clipboard writes = %q, want the field value first", run.cb.writes)
+	}
+}

@@ -255,6 +255,22 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		// Usage is left empty here, per this table's own rule: it exists
+		// for the session-only meta-verbs whose Cobra commands are
+		// generated from the registry, and a command with a real Cobra
+		// definition carries its own use line. See CommandInfo.Usage.
+		Name:         "log",
+		Short:        "Show an entry's commit history — timestamps only, nothing decrypted",
+		Group:        GroupSync,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "history",
+		Short:        "Decrypt every past revision of one entry (surfaces old secret values)",
+		Group:        GroupSync,
+		Availability: AvailBoth,
+	},
+	{
 		Name:         "git set-remote",
 		Short:        "Set or change a vault's git remote (origin)",
 		Group:        GroupGit,

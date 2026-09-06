@@ -38,7 +38,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | M9 | [Identity & recipient management](m9-recipients.md) | `[ ]` | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
 | M10 | [Local trust cache](m10-trust-cache.md) | `[ ]` | Sonnet* | `known-config.toml`, recipient-change detection |
 | M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[ ]` | Sonnet | `mv`/`cp --to-vault` |
-| M12 | [Polish / output modes](m12-polish.md) | `[ ]` | Sonnet | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
+| M12 | [Polish / output modes](m12-polish.md) | `[x]` | Sonnet | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
 
 **Model column.** `⚑` marks a milestone worth an Opus review pass over
 its *tests* before moving on, even where Sonnet wrote them. `*` marks a
@@ -134,7 +134,7 @@ the milestone that introduces it.
 | [FiloSottile/age](https://github.com/FiloSottile/age) | All encryption/decryption; the format `.age-recipients` interop depends on | M2 |
 | [google/uuid](https://github.com/google/uuid) | Entry filenames (`entries/<uuid>.age`), RFC 4122 UUIDv4 | M3 |
 | [atotto/clipboard](https://github.com/atotto/clipboard) | `-c`/`--clip` | M12 |
-| [mdp/qrterminal](https://github.com/mdp/qrterminal) | `-q`/`--qr`, terminal block art | M12 |
+| [rsc.io/qr](https://pkg.go.dev/rsc.io/qr) | `-q`/`--qr` — QR *encoding* only; the half-block terminal art is gage's own (`cmd/gage/qrcode.go`) | M12 |
 
 **The one runtime binary dependency** is `atotto/clipboard` on
 macOS/Linux, which shells out to `pbcopy`/`xclip`/`xsel` (it uses native

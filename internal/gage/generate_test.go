@@ -3,10 +3,13 @@ package gage
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/denmark/gage/internal/gage/exitcode"
 )
 
 // TestRandomStringDrawIsStructural substitutes a fully deterministic
@@ -73,12 +76,12 @@ func TestRandomStringPropagatesReaderFailure(t *testing.T) {
 // TestGenerateValueLengthAndAlphabet exercises the real crypto/rand path
 // GenerateValue uses in production.
 func TestGenerateValueLengthAndAlphabet(t *testing.T) {
-	got, err := GenerateValue()
+	got, err := GenerateValue(GenerateOptions{})
 	if err != nil {
 		t.Fatalf("GenerateValue: %v", err)
 	}
-	if len(got) != generateDefaultLength {
-		t.Errorf("length = %d, want %d", len(got), generateDefaultLength)
+	if len(got) != GenerateDefaultLength {
+		t.Errorf("length = %d, want %d", len(got), GenerateDefaultLength)
 	}
 	for _, r := range got {
 		if !strings.ContainsRune(generateAlphabet, r) {
@@ -91,11 +94,11 @@ func TestGenerateValueLengthAndAlphabet(t *testing.T) {
 // statistical randomness test): two real calls should essentially never
 // produce the same 24-character value.
 func TestGenerateValueDiffersAcrossCalls(t *testing.T) {
-	a, err := GenerateValue()
+	a, err := GenerateValue(GenerateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := GenerateValue()
+	b, err := GenerateValue(GenerateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,3 +145,92 @@ func TestGenerateDrawsFromCryptoRandNotMathRand(t *testing.T) {
 }
 
 var _ io.Reader = errReader{} // errReader must satisfy io.Reader for randomString's signature
+
+// TestGenerateValueHonoursLength: -l LENGTH reaches the draw. Checked
+// across the whole accepted range rather than at one point, since the
+// length is the only thing standing between `generate` and a weak
+// secret.
+func TestGenerateValueHonoursLength(t *testing.T) {
+	for _, n := range []int{GenerateMinLength, 12, 24, 64, 200} {
+		got, err := GenerateValue(GenerateOptions{Length: n})
+		if err != nil {
+			t.Fatalf("GenerateValue(length %d): %v", n, err)
+		}
+		if len(got) != n {
+			t.Errorf("GenerateValue(length %d) produced %d characters", n, len(got))
+		}
+	}
+}
+
+// TestGenerateValueZeroLengthUsesTheDefault: a zero Length means "not
+// specified", not "zero characters" — the flag's unset state has to be
+// distinguishable from a request, and a zero-length secret is exactly
+// what must never be produced.
+func TestGenerateValueZeroLengthUsesTheDefault(t *testing.T) {
+	got, err := GenerateValue(GenerateOptions{})
+	if err != nil {
+		t.Fatalf("GenerateValue: %v", err)
+	}
+	if len(got) != GenerateDefaultLength {
+		t.Errorf("GenerateValue with no length = %d characters, want the default %d", len(got), GenerateDefaultLength)
+	}
+}
+
+// TestGenerateValueNoSymbolsExcludesSymbols: --no-symbols restricts the
+// alphabet to letters and digits, for the systems that reject
+// punctuation in a password.
+//
+// Drawn repeatedly rather than once: a single 24-character draw from the
+// full alphabet omits symbols by chance often enough that a one-shot
+// check would pass against a --no-symbols flag that did nothing at all.
+func TestGenerateValueNoSymbolsExcludesSymbols(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		got, err := GenerateValue(GenerateOptions{NoSymbols: true})
+		if err != nil {
+			t.Fatalf("GenerateValue: %v", err)
+		}
+		for _, r := range got {
+			isAlnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+			if !isAlnum {
+				t.Fatalf("--no-symbols value %q contains non-alphanumeric %q", got, r)
+			}
+		}
+	}
+}
+
+// TestGenerateValueStillDrawsSymbolsByDefault is the other half of the
+// test above: it fails if the alphabet lost its symbols outright rather
+// than only under --no-symbols. 50 draws of 24 characters from a
+// 74-character alphabet with 14 symbols miss symbols entirely only with
+// probability (60/74)^1200, so a flake here is not a real possibility.
+func TestGenerateValueStillDrawsSymbolsByDefault(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		got, err := GenerateValue(GenerateOptions{})
+		if err != nil {
+			t.Fatalf("GenerateValue: %v", err)
+		}
+		if strings.ContainsAny(got, generateSymbols) {
+			return
+		}
+	}
+	t.Error("50 default generate draws contained no symbol at all; the default alphabet has lost them")
+}
+
+// TestGenerateValueRejectsTooShortLength: `generate -l 4` must fail
+// rather than produce a trivially weak secret. The floor is a usage
+// error — the human asked for something gage won't do — not an internal
+// one.
+func TestGenerateValueRejectsTooShortLength(t *testing.T) {
+	for _, n := range []int{-5, 1, GenerateMinLength - 1} {
+		_, err := GenerateValue(GenerateOptions{Length: n})
+		if err == nil {
+			t.Fatalf("GenerateValue(length %d) succeeded, want a rejection", n)
+		}
+		if got := exitcode.CodeOf(err); got != exitcode.Usage {
+			t.Errorf("GenerateValue(length %d) exit code = %v, want %v", n, got, exitcode.Usage)
+		}
+		if !strings.Contains(err.Error(), fmt.Sprint(GenerateMinLength)) {
+			t.Errorf("rejection %q does not say what the minimum is (%d)", err, GenerateMinLength)
+		}
+	}
+}
