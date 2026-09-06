@@ -120,6 +120,20 @@ secrets.
 - [x] A delete/modify conflict (one side removed the entry, the other
       edited it) is presented with the surviving version shown, and
       resolving it either way produces a consistent tree
+- [x] Answering one conflict and skipping another applies **neither** —
+      a merge commit carrying only the answered one would mark the
+      remote's history as incorporated with the skipped entry still at
+      its local version, which is `skip` silently becoming `keep local`
+- [x] Two conflicts take their own answers, land in *one* merge commit,
+      and its message names both (the plural branch of the count)
+- [x] A `Prompter` that fails mid-resolution — a closed terminal — is not
+      an answer: the error reaches the caller and nothing is applied
+- [x] `keep both` on a delete/modify conflict keeps the survivor rather
+      than destroying the one remaining copy; the local deletion stands
+      at the original id and the survivor returns under a fresh one
+- [x] Entry files a merge *creates* are 0600 — both `keep both`'s new
+      entry and the one a delete/modify resolved as `keep remote`
+      restores — since git records every blob it stores as 0644
 
 **History**
 
@@ -152,6 +166,29 @@ secrets.
       menu — it routes to M10's trust-cache confirmation instead
       (asserted here as "doesn't reach the entry resolver"; M10 owns the
       positive case)
+- [x] A conflict on a file that is neither an entry nor a
+      recipient-defining one (a vault is an ordinary git repository) is
+      refused, naming the path — and refused *before* the unlock, since
+      nothing is going to be decrypted with the key it would ask for
+
+**The gitrepo merge seam**
+
+- [x] `PrepareMerge` decides and writes nothing: HEAD, the working tree
+      and cleanliness are all unchanged, and a caller that never commits
+      leaves no trace — which is what makes `abort` free
+- [x] `PendingMerge.Content` reads both sides out of the git objects
+      (the remote's version is never on disk), and reports an absent
+      side rather than an error — the delete/modify case
+- [x] `Commit` refuses an unanswered conflict rather than defaulting to
+      the local side, which would be last-write-wins reachable by a
+      caller forgetting a path
+- [x] `Commit` applies either choice, creates the `adds` it is given as
+      part of the merge commit, and refuses an add that would overwrite
+- [x] A `Commit` that fails partway rolls back **both** halves: the file
+      it created, removed by name, and the tracked file it overwrote,
+      restored by the hard reset
+- [x] `MergeRemote` and `PrepareMerge` agree about what conflicts, so
+      M8a's automatic path and this one cannot drift
 
 **Non-interactive**
 
@@ -233,6 +270,22 @@ secrets.
       delete/modify resolved as `keep remote` does. An entry file gage
       writes itself is 0600, and how an entry arrived should not decide
       who can read its file
+- [x] **A conflict with nothing to decrypt no longer unlocks.** The lazy
+      unlock ran before the loop that turns each conflicting path into an
+      entry id, so a conflict on a file that isn't an entry — a `README`
+      two devices both edited — asked for a passphrase and *then*
+      refused, using the key for nothing. Every path is now checked
+      first, which also puts the clearer error in front of the human
+      before the prompt rather than after it
+- [x] **Rollback finishes.** A failed merge removes the untracked files
+      it created and then hard-resets the tracked ones it overwrote; a
+      failure in the first half returned early, skipping the second. The
+      path that made it fail is routinely one that was never written —
+      the write that failed is why the rollback is running — and one
+      under a non-directory can't even be statted. It now skips paths
+      that aren't there, always reaches the reset, and reports a genuine
+      removal failure afterwards: leaving a tracked file at the remote's
+      version to avoid one untracked leftover is the worse trade
 - [x] **A fresh timeout for the post-resolution push.** `RemoteOpTimeout`
       bounds gage's *network* work, and the questions sit in the middle
       of it — a deadline generous for a fetch is meaningless against a

@@ -301,8 +301,14 @@ func TestSyncWithoutATerminalRefusesRatherThanChoosing(t *testing.T) {
 
 // TestYesDoesNotResolveConflicts: `--yes` means exactly one thing — the
 // trust-cache confirmation — and must never quietly grow into "pick a
-// side for me". Whether the flag is rejected outright or accepted and
-// ignored here, what it must not do is resolve.
+// side for me".
+//
+// Today `sync` has no `--yes` at all: M10 introduces it, and this fails
+// on the unknown flag, which the first assertion pins so the test's
+// current meaning isn't mistaken for more than it is. What it is really
+// here for is the day M10 adds the flag — from then on the same run
+// reaches a real conflict, and the assertions below are what stop it
+// being answered on the human's behalf.
 func TestYesDoesNotResolveConflicts(t *testing.T) {
 	isolateXDG(t)
 	vaultPath, _ := conflictingVault(t)
@@ -315,6 +321,12 @@ func TestYesDoesNotResolveConflicts(t *testing.T) {
 	res := runCLI(t, []string{"sync", "--yes"}, "")
 	if res.Code == 0 {
 		t.Fatalf("`sync --yes` succeeded on a conflicting divergence; --yes must not resolve conflicts. stdout=%s", res.Stdout)
+	}
+	// Either shape is acceptable; a *third* one — the flag being accepted
+	// and quietly resolving — is what this test exists to catch.
+	if !strings.Contains(res.Stderr, "unknown flag") && res.Code != int(exitcode.Conflict) {
+		t.Errorf("`sync --yes` failed with code %d (%q); want either the unknown flag or the conflict refusal",
+			res.Code, res.Stderr)
 	}
 
 	after, err := gitrepo.HeadHash(vaultPath)

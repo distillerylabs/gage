@@ -333,11 +333,20 @@ func writeMergedFile(dir, path string, content []byte) error {
 // The hard reset restores tracked files; paths the merge *created* — a
 // file the remote added, or one of Commit's adds — are untracked and
 // invisible to it, so they are removed by name first.
+//
+// The reset runs whichever way those removals went. `applied` names
+// every path the merge *started* writing, so it routinely contains one
+// that was never created — the write that failed is why we are here —
+// and a path whose write failed because its parent isn't a directory
+// can't even be statted without an error. Letting either abandon the
+// rollback would trade one untracked leftover for every tracked file the
+// merge had already overwritten, which is the more damaging half.
 func (m *PendingMerge) rollback(applied []string, cause error) error {
 	fail := func(err error) error {
 		return fmt.Errorf("%w (and rolling the partial merge back failed: %v)", cause, err)
 	}
 
+	var removeErr error
 	for _, path := range applied {
 		if _, tracked := m.localFiles[path]; tracked {
 			continue
@@ -346,8 +355,15 @@ func (m *PendingMerge) rollback(applied []string, cause error) error {
 		if err != nil {
 			return fail(err)
 		}
-		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
-			return fail(err)
+		// Lstat first: a path that isn't there has nothing to roll back,
+		// however it reports its absence — ENOENT for the write that
+		// never happened, ENOTDIR for one under a path that turned out
+		// to be a file.
+		if _, err := os.Lstat(full); err != nil {
+			continue
+		}
+		if err := os.Remove(full); err != nil && removeErr == nil {
+			removeErr = err
 		}
 	}
 
@@ -357,6 +373,9 @@ func (m *PendingMerge) rollback(applied []string, cause error) error {
 	}
 	if err := wt.Reset(&git.ResetOptions{Commit: m.local.Hash, Mode: git.HardReset}); err != nil {
 		return fail(err)
+	}
+	if removeErr != nil {
+		return fail(removeErr)
 	}
 	return cause
 }

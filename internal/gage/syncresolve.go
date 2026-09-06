@@ -171,6 +171,18 @@ func (v *Vault) resolveConflicts(ctx context.Context, r ConflictResolver, report
 	}
 	conflicts := merge.Conflicts()
 
+	// Every path is checked for being an entry before anything is
+	// unlocked. A conflict on something that isn't an entry has no
+	// [l/r/b] answer and is refused either way — asking for a passphrase
+	// first would be asking for a key that is then never used to decrypt
+	// anything, which is exactly what the lazy unlock exists to avoid.
+	ids := make([]uuid.UUID, len(conflicts))
+	for i, path := range conflicts {
+		if ids[i], err = entryIDFromPath(path); err != nil {
+			return report, err
+		}
+	}
+
 	// The lazy unlock, at the one point plaintext is genuinely needed: a
 	// session hands back its cached Identity here and nobody is
 	// re-prompted, and one-shot mode asks for a passphrase now rather
@@ -182,8 +194,8 @@ func (v *Vault) resolveConflicts(ctx context.Context, r ConflictResolver, report
 
 	choices := make(map[string]gitrepo.MergeSide, len(conflicts))
 	adds := make(map[string][]byte)
-	for _, path := range conflicts {
-		c, err := v.conflictAt(merge, path, ident)
+	for i, path := range conflicts {
+		c, err := v.conflictAt(merge, ids[i], path, ident)
 		if err != nil {
 			return report, err
 		}
@@ -306,12 +318,8 @@ func (v *Vault) applyResolution(ctx context.Context, merge *gitrepo.PendingMerge
 // remote's version was never written to disk (a conflicted merge writes
 // nothing), and reading the local one from the tree instead would be a
 // second source of truth for what "local" means.
-func (v *Vault) conflictAt(merge *gitrepo.PendingMerge, path string, ident *Identity) (EntryConflict, error) {
-	id, err := entryIDFromPath(path)
-	if err != nil {
-		return EntryConflict{}, err
-	}
-
+func (v *Vault) conflictAt(merge *gitrepo.PendingMerge, id uuid.UUID, path string,
+	ident *Identity) (EntryConflict, error) {
 	local, err := conflictSide(merge, gitrepo.LocalSide, path, ident)
 	if err != nil {
 		return EntryConflict{}, err

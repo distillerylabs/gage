@@ -439,6 +439,33 @@ human-paced resolution.
 
 ---
 
+### `[ ]` Q-KEEPBOTH-DELMOD — Should `keep both` degenerate to `keep remote`/`keep local` on a delete/modify conflict? {#q-keepboth-delmod}
+
+**Blocks:** nothing; M8b shipped with the behavior below and a test
+pinning it, so this is a refinement question, not something stuck.
+
+On a delete/modify conflict — one side removed the entry, the other
+edited it — there is only one surviving version, yet `keep both` still
+allocates it a **fresh UUID** rather than restoring it at the entry's
+original id the way `keep remote` (or `keep local`, if the deletion was
+remote) would. The two options end up applying the same content and
+differing only in which UUID it lands under, because there is nothing
+for the losing side to contribute when it deleted rather than edited.
+
+That may be harmless — the entry is still exactly one entry either way,
+just addressed by a new id — but it's also a UUID change as a side
+effect of a choice that reads, from the `[l/r/b/s/q]` prompt, as "keep
+both versions," when there is only one. Worth deciding whether `keep
+both` should special-case an absent side and behave like the
+corresponding `keep remote`/`keep local` (preserving the original id),
+or whether relocating the id is an acceptable — maybe even irrelevant —
+cost of not special-casing it. Current behavior (fresh id) is pinned by
+`TestKeepBothOnADeleteModifyConflictKeepsTheSurvivor` in
+`internal/gage/syncresolve_test.go`, which would need updating if this
+is answered the other way.
+
+---
+
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}
 
 **Blocks:** nothing; needed before a first public release.
