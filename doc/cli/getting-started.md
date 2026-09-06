@@ -1,0 +1,90 @@
+# Getting started
+
+## Building/installing
+
+```
+make build       # builds ./cmd/gage -> ./gage
+```
+
+See the top-level [README](../../README.md) for build requirements. This
+guide assumes a `gage` binary on your `PATH`.
+
+## Create your first vault
+
+```
+$ gage init personal
+```
+
+This creates a new vault named `personal`, generates a decryption identity
+for the current device (defaulting to the passphrase method — you'll be
+prompted to set one), and registers the vault in your global config as the
+current default. By default the vault's files live under `$GAGE_DATA/vaults/personal`
+(see [Configuration](configuration.md) for exactly where that is on your OS) —
+pass `--dir PATH` to put it somewhere else.
+
+The vault starts with no remote. If you want it to sync to a git host later,
+see [Git remotes and authentication](git-and-auth.md) — or create it with a
+remote up front:
+
+```
+$ gage init personal --remote https://github.com/you/personal-vault.git
+```
+
+## Store a secret
+
+```
+$ gage insert github-token
+Enter value: ****************
+```
+
+`insert` prompts for the entry's value, masked like a passphrase. You can
+also pipe a value in or open an editor instead — see [Entries](entries.md).
+
+## Read it back
+
+```
+$ gage show github-token
+ghp_xxxxxxxxxxxxxxxxxxxx
+```
+
+`show` with no flags prints just the entry's `value` — nothing else — so it
+composes cleanly with pipes and paste. Add `-c` to copy it to the clipboard
+instead (auto-clearing after a short timeout) or `-q` to render it as a
+scannable terminal QR code.
+
+## List what's in the vault
+
+```
+$ gage ls
+TITLE          ID        CREATED      UPDATED      UPDATED BY
+github-token   4b9d7710  2026-09-01   2026-09-01   laptop-1
+```
+
+## A faster way to work: session mode
+
+Every command above unlocked the vault, did one thing, and dropped the key
+from memory — fine for one-off lookups, but wasteful if you're doing several
+things in a row. Run `gage` with no arguments to start an interactive session
+instead:
+
+```
+$ gage
+gage> use personal
+Enter passphrase: ****
+[personal🔓] gage> insert wifi-password
+Enter value: ****
+[personal🔓] gage> show wifi-password
+correcthorsebatterystaple
+[personal🔓] gage> exit
+$
+```
+
+Inside a session you unlock a vault once and run as many commands against it
+as you like, with no unlock cost. See [Session mode and scripting](session-mode.md)
+for the full picture, including non-interactive automation.
+
+## Next steps
+
+- Give another device (or another person) access: [Identities and recipients](identities-and-recipients.md).
+- Set up a remote so your vault syncs between machines: [Git remotes and authentication](git-and-auth.md).
+- Learn the full entry format (descriptions, structured fields, generated passwords): [Entries](entries.md).

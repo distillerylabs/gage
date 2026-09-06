@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`gage` (`git` + `age`) is a git-backed, age-encrypted secret & notes manager, written in Go. Full design rationale lives in [doc/00_gage-cli/tdds/gage-cli-design.md](doc/00_gage-cli/tdds/gage-cli-design.md); the build plan (milestones, dependency graph, cross-milestone contracts) lives in [doc/00_gage-cli/plans/index.md](doc/00_gage-cli/plans/index.md) with one file per milestone alongside it. Read the relevant section of the design doc before changing behavior it documents — most non-obvious decisions in this codebase (why a field lives where it does, why a check exists) are explained there, not in code comments.
+`gage` (`git` + `age`) is a git-backed, age-encrypted secret & notes manager, written in Go. Full design rationale lives in [doc/implementation/00_gage-cli/tdds/gage-cli-design.md](doc/implementation/00_gage-cli/tdds/gage-cli-design.md); the build plan (milestones, dependency graph, cross-milestone contracts) lives in [doc/implementation/00_gage-cli/plans/index.md](doc/implementation/00_gage-cli/plans/index.md) with one file per milestone alongside it. Read the relevant section of the design doc before changing behavior it documents — most non-obvious decisions in this codebase (why a field lives where it does, why a check exists) are explained there, not in code comments.
 
 ## Commands
 
@@ -26,9 +26,9 @@ CI (`.github/workflows/ci.yml`) runs build/test/lint natively on Linux, macOS, a
 
 **Before considering any change done:** `make lint` (gofmt check + golangci-lint) and `make test` must both be clean, `go vet ./...` is a fast intermediate check while iterating. Don't leave this for CI to catch — CI's only job is cross-platform confirmation (Linux/macOS/Windows), not first-pass discovery.
 
-**Write tests first, at task granularity.** Write a task's tests before its implementation, then implement to green, then move to the next task — don't write the whole implementation and backfill tests after, and don't try to author a whole milestone's test suite upfront against APIs that don't exist yet. This is the project's actual convention (see "Test conventions" in [doc/00_gage-cli/plans/index.md](doc/00_gage-cli/plans/index.md)), not a generic suggestion.
+**Write tests first, at task granularity.** Write a task's tests before its implementation, then implement to green, then move to the next task — don't write the whole implementation and backfill tests after, and don't try to author a whole milestone's test suite upfront against APIs that don't exist yet. This is the project's actual convention (see "Test conventions" in [doc/implementation/00_gage-cli/plans/index.md](doc/implementation/00_gage-cli/plans/index.md)), not a generic suggestion.
 
-**If you're working from a milestone plan doc** (`doc/00_gage-cli/plans/m*.md`):
+**If you're working from a milestone plan doc** (`doc/implementation/00_gage-cli/plans/m*.md`):
 - Resolve any open "Decisions to make first" in the doc itself — get them reviewed — before writing any code for that milestone. A decision settled in the doc is durable across sessions; one made implicitly in code has to be re-derived by whoever reads it next.
 - The doc's test list is the definition of done, not a nice-to-have checked loosely at the end. A milestone isn't done until every item in that list is green (on all three CI platforms, unless the doc says otherwise). When judging whether a milestone is complete, check the actual list in the doc — the failure mode to watch for is quiet scope narrowing: most of the list implemented and reported as done.
 - If context runs low mid-milestone, write a `*-sessionhandoff.md` in the same plans directory for a reader with zero conversation history, rather than pushing through with degraded context.
