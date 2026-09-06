@@ -5,7 +5,7 @@ package gage
 // This device's record of the recipient list it last confirmed for each
 // vault, and the checks that consult it: a blocking one before anything
 // is encrypted, and an opportunistic one on unlock and on sync. See
-// doc/00_gage-cli/plans/m10-trust-cache.md and the design doc's "Trust
+// doc/implementation/00_gage-cli/plans/m10-trust-cache.md and the design doc's "Trust
 // boundaries" / "Local trust cache".
 
 import (
