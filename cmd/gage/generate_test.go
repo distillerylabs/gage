@@ -152,3 +152,72 @@ func TestGenerateRejectsAnUnreasonablySmallLength(t *testing.T) {
 		t.Errorf("a rejected generate still created the entry:\n%s", ls.Stdout)
 	}
 }
+
+// TestGenerateClipCopiesTheValueAndPrintsNone is why `generate` carries
+// -c at all. Plain `generate` prints a confirmation and never the value,
+// so without a destination flag the only way to get a freshly generated
+// password out is `gage show` — which puts it in the scrollback, exactly
+// what principle 6 is about. -c is the spelling that doesn't.
+func TestGenerateClipCopiesTheValueAndPrintsNone(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	run := runCLIWithClipboard(t, []string{"generate", "GitHub", "-c"})
+	if run.Code != 0 {
+		t.Fatalf("generate -c failed: %s", run.Stderr)
+	}
+
+	stored := catEntry(t, "GitHub")
+	if len(run.cb.writes) == 0 || run.cb.writes[0] != stored.Value {
+		t.Fatalf("clipboard writes = %q, want the generated value first", run.cb.writes)
+	}
+	if strings.Contains(run.Stdout, stored.Value) {
+		t.Errorf("generate -c printed the generated value to stdout:\n%s", run.Stdout)
+	}
+	// The confirmation still lands, and before the blocking wait.
+	if !strings.Contains(run.Stdout, "generated") {
+		t.Errorf("generate -c printed no confirmation:\n%s", run.Stdout)
+	}
+	if !run.waited {
+		t.Error("one-shot generate -c did not block for the clipboard timeout")
+	}
+	// And it was cleared on the way out, like any other one-shot copy.
+	if got := run.cb.get(); got != "" {
+		t.Errorf("clipboard = %q after generate -c returned, want it cleared", got)
+	}
+}
+
+// TestGenerateQREncodesTheValueWithoutPrintingIt is the same contract
+// for -q.
+func TestGenerateQRRendersWithoutPrintingTheValue(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	res := runCLI(t, []string{"generate", "GitHub", "-q"}, "")
+	if res.Code != 0 {
+		t.Fatalf("generate -q failed: %s", res.Stderr)
+	}
+	stored := catEntry(t, "GitHub")
+	if strings.Contains(res.Stdout, stored.Value) {
+		t.Errorf("generate -q printed the value alongside the code:\n%s", res.Stdout)
+	}
+	if !gridsEqual(decodeRenderedQR(t, res.Stdout), referenceGrid(t, stored.Value)) {
+		t.Error("generate -q did not encode the value it stored")
+	}
+}
+
+// TestGenerateClipAndQRAreMutuallyExclusive: refused before anything is
+// generated or committed, so the vault is untouched.
+func TestGenerateClipAndQRAreMutuallyExclusive(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	res := runCLI(t, []string{"generate", "Both", "-c", "-q"}, "")
+	if res.Code != int(exitcode.Usage) {
+		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
+	}
+	ls := runCLI(t, []string{"ls"}, "")
+	if strings.Contains(ls.Stdout, "Both") {
+		t.Errorf("a rejected generate still created the entry:\n%s", ls.Stdout)
+	}
+}

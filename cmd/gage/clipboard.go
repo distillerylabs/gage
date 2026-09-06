@@ -64,6 +64,14 @@ type clipboardKeeper struct {
 	cb    clipboardPort
 	timer newClipboardTimer
 
+	// report is where a *scheduled* clear's failure goes. Every other
+	// caller of clear gets the error returned to it and decides; a timer
+	// firing has no caller to return to, and "your secret is still on
+	// the clipboard" is the one thing here a human most needs telling.
+	// Left nil by the tests that drive a keeper directly and read the
+	// returned error themselves.
+	report func(error)
+
 	mu        sync.Mutex
 	pending   bool
 	digest    [sha256.Size]byte
@@ -110,7 +118,11 @@ func (k *clipboardKeeper) scheduleClear(d time.Duration) {
 	if !k.pending {
 		return
 	}
-	k.scheduled = k.timer(d, func() { _ = k.clear() })
+	k.scheduled = k.timer(d, func() {
+		if err := k.clear(); err != nil && k.report != nil {
+			k.report(err)
+		}
+	})
 }
 
 // clear wipes the clipboard, but only if it still holds what gage put

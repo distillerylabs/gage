@@ -557,3 +557,66 @@ func TestSecondCopySupersedesTheFirstsPendingClear(t *testing.T) {
 		t.Errorf("clipboard = %q after clearing the second copy", got)
 	}
 }
+
+// TestScheduledClearReportsItsFailure: a timer firing has no caller to
+// return an error to, so a clear that fails there has to say so itself.
+// Silence would leave the human believing a secret had been wiped off
+// the clipboard 45 seconds ago when it is still sitting on it — the one
+// outcome `-c` exists to rule out.
+func TestScheduledClearReportsItsFailure(t *testing.T) {
+	cb, ft := &fakeClipboard{}, &fakeTimer{}
+	k := newClipboardKeeper(cb, ft.schedule)
+
+	var reported []error
+	k.report = func(err error) { reported = append(reported, err) }
+
+	if err := k.copy("hunter2"); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	k.scheduleClear(defaultClipboardTimeout)
+
+	// The clipboard goes away between the copy and the timeout — a
+	// display that went with it, or a helper binary that is no longer
+	// there.
+	cb.mu.Lock()
+	cb.writeErr = errors.New("clipboard unavailable")
+	cb.mu.Unlock()
+
+	ft.fire(t)
+
+	if len(reported) != 1 {
+		t.Fatalf("scheduled clear reported %d errors, want 1: %v", len(reported), reported)
+	}
+	if !strings.Contains(reported[0].Error(), "clearing the clipboard") {
+		t.Errorf("reported error does not say the clear failed: %v", reported[0])
+	}
+	// And the value really is still there, which is why it had to be
+	// reported rather than assumed gone.
+	if got := cb.get(); got != "hunter2" {
+		t.Errorf("clipboard = %q, want the value still present after a failed clear", got)
+	}
+}
+
+// TestSessionScheduledClearFailureReachesStderr is the wiring half: the
+// App-owned keeper routes that report to the human, not to nowhere.
+func TestSessionScheduledClearFailureReachesStderr(t *testing.T) {
+	var stderr bytes.Buffer
+	cb, ft := &fakeClipboard{}, &fakeTimer{}
+	app := &App{Err: &stderr, Clipboard: cb, ClipboardTimer: ft.schedule}
+
+	k := app.clipboard()
+	if err := k.copy("hunter2"); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	k.scheduleClear(defaultClipboardTimeout)
+
+	cb.mu.Lock()
+	cb.writeErr = errors.New("clipboard unavailable")
+	cb.mu.Unlock()
+
+	ft.fire(t)
+
+	if !strings.Contains(stderr.String(), "clipboard") {
+		t.Errorf("a failed scheduled clear said nothing to the human: %q", stderr.String())
+	}
+}

@@ -17,13 +17,8 @@ import (
 // asking for them (principle 6: "plaintext should be surprising to
 // produce").
 func emitSecret(app *App, value string, clip, qr bool) error {
-	if clip && qr {
-		// Refused rather than doing both. They are two answers to the
-		// same question — where does this value go instead of the
-		// terminal — and a run that did both would block for the
-		// clipboard timeout with a QR code on screen, which is neither
-		// thing anyone asked for. Allowing it later is additive.
-		return exitcode.New(exitcode.Usage, "gage: -c/--clip and -q/--qr are mutually exclusive")
+	if err := checkSecretOutput(clip, qr); err != nil {
+		return err
 	}
 	switch {
 	case qr:
@@ -36,6 +31,25 @@ func emitSecret(app *App, value string, clip, qr bool) error {
 		}
 		return nil
 	}
+}
+
+// checkSecretOutput rejects asking for two destinations at once.
+//
+// Refused rather than doing both. They are two answers to the same
+// question — where does this value go instead of the terminal — and a
+// run that did both would block for the clipboard timeout with a QR code
+// on screen, which is neither thing anyone asked for. Allowing it later
+// is additive.
+//
+// It is separate from emitSecret so `generate` can ask before it writes
+// anything: emitSecret runs after the entry is already inserted and
+// committed, and a usage error at that point would leave a new secret in
+// the vault behind a message saying the command failed.
+func checkSecretOutput(clip, qr bool) error {
+	if clip && qr {
+		return exitcode.New(exitcode.Usage, "gage: -c/--clip and -q/--qr are mutually exclusive")
+	}
+	return nil
 }
 
 // copySecret is `-c`: put the value on the clipboard and make sure it
