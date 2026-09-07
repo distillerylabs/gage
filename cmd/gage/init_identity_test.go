@@ -136,12 +136,15 @@ func wrappedIdentityFiles(t *testing.T, root string) []string {
 	return found
 }
 
-// TestInitTwiceOnOneDeviceDoesNotDestroyTheFirstIdentity: `init` is
-// already refused for an already-registered name, but the identity file
-// is keyed on vault+device and lives outside global config, so the
-// stronger guarantee is that the wrapped key is never overwritten. Losing
-// it is a recovery problem by design; silently causing that is not.
-func TestInitTwiceOnOneDeviceDoesNotDestroyTheFirstIdentity(t *testing.T) {
+// TestInitTwiceOnOneDeviceReusesRatherThanDestroysTheFirstIdentity:
+// `init` is already refused for an already-registered name, but the
+// identity file is keyed on vault+device and lives outside global
+// config, so the stronger guarantee is that the wrapped key is never
+// overwritten. Losing it is a recovery problem by design; silently
+// causing that is not — but the file's mere existence, with the correct
+// passphrase behind it, is not a reason to fail either (see #39):
+// CreateIdentity reuses it instead.
+func TestInitTwiceOnOneDeviceReusesRatherThanDestroysTheFirstIdentity(t *testing.T) {
 	isolateXDG(t)
 
 	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1"}, ""); res.Code != 0 {
@@ -152,6 +155,7 @@ func TestInitTwiceOnOneDeviceDoesNotDestroyTheFirstIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pubkey := readVaultConfigForTest(t, "personal").Recipients[0].Pubkey
 
 	// A different vault name, so the already-registered check doesn't
 	// short-circuit — but the same vault directory name for identities
@@ -162,11 +166,11 @@ func TestInitTwiceOnOneDeviceDoesNotDestroyTheFirstIdentity(t *testing.T) {
 		t.Fatalf("vault remove failed: %s", res.Stderr)
 	}
 	res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--dir", filepath.Join(t.TempDir(), "again")}, "")
-	if res.Code == 0 {
-		t.Fatal("expected init to refuse to overwrite this device's existing identity file")
+	if res.Code != 0 {
+		t.Fatalf("expected init to reuse the existing identity file, got exit %d: %s", res.Code, res.Stderr)
 	}
-	if res.Code != int(exitcode.Conflict) {
-		t.Errorf("exit code = %d, want %d (Conflict)", res.Code, exitcode.Conflict)
+	if !strings.Contains(res.Stderr, "reusing the existing local identity file") {
+		t.Errorf("stderr = %q, want it to say the identity file was reused", res.Stderr)
 	}
 
 	after, err := os.ReadFile(path) // #nosec G304 -- test fixture path
@@ -175,6 +179,9 @@ func TestInitTwiceOnOneDeviceDoesNotDestroyTheFirstIdentity(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Error("the existing identity file was overwritten")
+	}
+	if got := readVaultConfigForTest(t, "personal").Recipients[0].Pubkey; got != pubkey {
+		t.Errorf("public key = %q, want the original %q", got, pubkey)
 	}
 }
 

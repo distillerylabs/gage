@@ -121,13 +121,25 @@ func runInit(app *App, opt initOptions) error {
 		path = filepath.Join(vaultsDir, opt.name)
 	}
 
+	// Checked before CreateIdentity so the rollback below knows whether a
+	// failure further down would be destroying something this call made
+	// or something that was already here — see there for why that
+	// distinction matters.
+	identityExisted, err := gage.HasIdentity(opt.name, device)
+	if err != nil {
+		return exitcode.Wrap(exitcode.Internal, err)
+	}
+
 	// The identity comes first, and with it the passphrase prompt. Every
 	// later step can fail on something already knowable (a non-empty
 	// target directory, a bad recipient), so asking a human to type a
 	// passphrase twice and only then reporting one of those would be the
-	// wrong order to fail in. CreateIdentity also refuses to overwrite an
-	// existing identity file, which is the one collision `gage init`
-	// could otherwise turn into an unrecoverable key loss.
+	// wrong order to fail in. If an identity file already sits at this
+	// vault/device path — typically surviving a `vault remove` that
+	// couldn't prove it was safe to delete (see removeOrphanedIdentity) —
+	// CreateIdentity reuses it instead of failing, which is also what
+	// makes retrying the same `init` after fixing an unrelated problem an
+	// ordinary retry rather than a permanent conflict.
 	pubkey, err := gage.CreateIdentity(opt.name, device, app.Prompter)
 	if err != nil {
 		return err
@@ -149,14 +161,20 @@ func runInit(app *App, opt initOptions) error {
 		Remote:     opt.remote,
 	}
 	if _, err := gage.Create(spec); err != nil {
-		// Nothing references this key yet — Create wrote no vault at all —
-		// so the identity generated a moment ago is an orphan. Left in
-		// place it would block every retry, because CreateIdentity
-		// refuses to overwrite an existing identity file. Rolling it back
-		// is what makes "fix the problem and run init again" work.
-		if rmErr := gage.RemoveIdentity(opt.name, device); rmErr != nil {
-			return exitcode.Newf(exitcode.Internal,
-				"gage: %v (and rolling back the generated identity failed: %v)", err, rmErr)
+		// Only roll back an identity file this call actually generated.
+		// One that already existed came from somewhere else — possibly
+		// still needed there — and CreateIdentity only reused it; deleting
+		// it here would destroy access this failed init never granted and
+		// has no way to restore. A freshly generated one, by contrast, is
+		// referenced by nothing yet (Create wrote no vault at all), so
+		// leaving it in place would just have `gage init` reuse it — with
+		// its just-chosen passphrase — on the very next retry, rather than
+		// letting that retry start clean.
+		if !identityExisted {
+			if rmErr := gage.RemoveIdentity(opt.name, device); rmErr != nil {
+				return exitcode.Newf(exitcode.Internal,
+					"gage: %v (and rolling back the generated identity failed: %v)", err, rmErr)
+			}
 		}
 		return err
 	}

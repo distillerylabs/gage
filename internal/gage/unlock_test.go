@@ -639,11 +639,13 @@ func TestCreateIdentityFileIsPassphraseWrappedAndSoleRecipient(t *testing.T) {
 	}
 }
 
-// TestCreateIdentityRefusesToOverwrite: overwriting an identity file
-// destroys the only copy of a private key. Losing one is a recovery
-// problem by design; manufacturing that situation silently is not
-// something gage should do.
-func TestCreateIdentityRefusesToOverwrite(t *testing.T) {
+// TestCreateIdentityReusesAnExistingFile is issue #39's other half:
+// CreateIdentity never overwrites an identity file that's already there
+// (that would destroy the only copy of a private key with no way to get
+// it back), but a second call with the *correct* passphrase reuses it
+// and returns its original public key rather than treating the file's
+// mere existence as an error.
+func TestCreateIdentityReusesAnExistingFile(t *testing.T) {
 	isolateXDG(t)
 
 	first, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}})
@@ -651,18 +653,20 @@ func TestCreateIdentityRefusesToOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &fakePrompter{passphrases: []string{"a different passphrase"}}
-	if _, err := CreateIdentity("personal", "laptop-1", p); err == nil {
-		t.Fatal("expected CreateIdentity to refuse an existing identity file")
-	} else if !errors.Is(err, ErrIdentityExists) {
-		t.Errorf("error = %v, want it to wrap ErrIdentityExists", err)
+	p := &fakePrompter{passphrases: []string{testPassphrase}}
+	second, err := CreateIdentity("personal", "laptop-1", p)
+	if err != nil {
+		t.Fatalf("CreateIdentity should reuse an existing identity file, got: %v", err)
 	}
-	if len(p.requests) != 0 {
-		t.Error("CreateIdentity prompted for a passphrase before checking whether it could write at all")
+	if second != first {
+		t.Errorf("public key = %q, want the original %q", second, first)
+	}
+	if len(p.warnings) == 0 {
+		t.Error("expected a warning that the identity file was reused rather than generated")
 	}
 
-	// And the original file is untouched: it still opens with the
-	// original passphrase and yields the original key.
+	// The file itself is untouched: it still opens with the original
+	// passphrase and yields the original key.
 	registerVault(t, "personal", "laptop-1", MethodPassphrase)
 	v := &Vault{Name: "personal"}
 	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
@@ -672,6 +676,25 @@ func TestCreateIdentityRefusesToOverwrite(t *testing.T) {
 	defer func() { _ = id.Close() }()
 	if id.Recipient() != first {
 		t.Errorf("public key = %q, want the original %q", id.Recipient(), first)
+	}
+}
+
+// TestCreateIdentityReuseRejectsWrongPassphrase: reuse goes through the
+// same passphrase exchange as an ordinary unlock, so a wrong passphrase
+// is reported as such rather than silently minting a new keypair over —
+// or apparently succeeding against — a file it never actually opened.
+func TestCreateIdentityReuseRejectsWrongPassphrase(t *testing.T) {
+	isolateXDG(t)
+
+	if _, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &fakePrompter{passphrases: []string{"a different passphrase"}}
+	if _, err := CreateIdentity("personal", "laptop-1", p); err == nil {
+		t.Fatal("expected CreateIdentity to reject the wrong passphrase for an existing file")
+	} else if !errors.Is(err, ErrWrongPassphrase) {
+		t.Errorf("error = %v, want it to wrap ErrWrongPassphrase", err)
 	}
 }
 
