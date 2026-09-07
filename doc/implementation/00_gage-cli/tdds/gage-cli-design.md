@@ -1168,6 +1168,17 @@ giving up far more than the problem required.
 - **An expired token fails legibly.** PATs expire; when one does, `gage`
   says so and names `gage auth login`, rather than surfacing a bare 403
   from the transport layer.
+- **`gage init --remote` solicits a token inline rather than sending you
+  to `gage auth login` separately.** If the remote's host is an HTTP(S)
+  one with no token stored yet, `init` asks for it at the same masked
+  prompt `auth login` uses, before it attempts to publish — otherwise a
+  fresh private remote would take three commands instead of one: `init`
+  (failing for lack of a token), `auth login`, then a manual `push` to
+  finish what `init` was asked to do. Leaving the prompt blank falls back
+  to the anonymous attempt exactly as before; not every remote needs a
+  token, and `init` has no way to know which case it's in without asking.
+  A local path or an SSH remote is never prompted at all — neither one
+  authenticates with a stored token in the first place.
 - **SSH remotes still work when they're simple.** If a remote is
   SSH-spelled and ssh-agent has a usable key, `gage` will use it. What
   it won't do is interpret `~/.ssh/config` to figure out what the remote
@@ -1360,7 +1371,12 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
     a future second type is additive to the CLI rather than introducing
     the flag for the first time. --remote is git-type-specific — a vault
     can be created local-only and gain a remote later via `gage git
-    set-remote` (see "Git-specific commands" below).
+    set-remote` (see "Git-specific commands" below). Given --remote, init
+    publishes the vault's first commit immediately; if the remote's host
+    needs a token and none is stored yet, init asks for one at the same
+    prompt `gage auth login` uses before it tries to publish (see "Remote
+    authentication" above) — leaving that prompt blank tries the push
+    anonymously, same as if --remote had pointed at a public repository.
 
 gage clone <remote-url> [--name NAME] [--dir PATH]
 
@@ -1604,7 +1620,12 @@ current vault's `origin`.
 
 `--remote` on `init` is optional — a vault can start local-only (no sync
 until you're ready) and gain a remote later, e.g. after creating an empty
-repo on GitHub. `gage git set-remote` is the command for that: it sets
+repo on GitHub. Giving it at `init` time publishes right away and, if the
+host needs a token gage doesn't have yet, prompts for one in the same
+breath (see "Remote authentication" above) — `set-remote` never pushes
+and so never prompts for one either; it only repoints `origin`, and the
+next sync is what actually needs a token. `gage git set-remote` is the
+command for that: it sets
 `origin` on the actual git repo (equivalent to `git remote add/set-url
 origin <url>`) *and* updates `vaults.<name>.git.origin` in the global
 config in the same step, so the two never drift apart. Doing this through

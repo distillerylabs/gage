@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/devicename"
 	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/denmark/gage/internal/gage/remoteauth"
 	"github.com/denmark/gage/internal/gage/syncerr"
 )
 
@@ -43,7 +45,11 @@ func newInitCommand(app *App) *cobra.Command {
 			"The wrapped key is stored outside the vault and is never committed or synced.\n\n" +
 			"--recipient is additive: each one is written alongside this device's own key,\n" +
 			"which is how a recovery key gets into a vault from the start. A vault that\n" +
-			"depends on exactly one identity file surviving forever has no recovery story.",
+			"depends on exactly one identity file surviving forever has no recovery story.\n\n" +
+			"--remote publishes the new vault immediately. If its host needs a token and\n" +
+			"none is stored yet, init asks for one on the spot (leave blank to skip and\n" +
+			"try anonymously) — the same prompt as `gage auth login`, so a private repo\n" +
+			"doesn't need a separate auth login round trip before the first push succeeds.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(app, initOptions{
@@ -219,6 +225,10 @@ func runInit(app *App, opt initOptions) error {
 // local-durability half of the sync model. Being unable to publish is a
 // thing to report, never a reason to throw away a vault that exists.
 func publishNewVault(app *App, name, path, remote string) error {
+	if err := ensureRemoteToken(app, remote); err != nil {
+		return err
+	}
+
 	ctx, cancel := syncContext()
 	defer cancel()
 
@@ -239,6 +249,51 @@ func publishNewVault(app *App, name, path, remote string) error {
 	}
 
 	writeOut(app.Out, []string{fmt.Sprintf("gage: published %q to %s", name, remote)})
+	return nil
+}
+
+// ensureRemoteToken solicits a token for remote's host, once, before
+// gage attempts to publish a freshly created vault to it.
+//
+// Without this, `gage init --remote` against a private HTTPS host with
+// no token yet would publish anonymously, fail with `gage auth login`'s
+// name buried in publishNewVault's own error, and require a second
+// command (auth login) plus a third (push) to finish what init was
+// asked to do in one. Soliciting the token here — the same prompt `gage
+// auth login` uses — collapses that back to one command.
+//
+// A blank answer skips storing anything and lets init try the push
+// anonymously, same as before: not every remote needs a token (a public
+// repository, one already reachable by ssh-agent), and init has no way
+// to know which case it's in without asking. ensureRemoteToken itself
+// only asks for hosts TokenHost says are token candidates at all — a
+// local path or an SSH remote is never prompted for one.
+func ensureRemoteToken(app *App, remote string) error {
+	host, err := remoteauth.TokenHost(remote)
+	if err != nil {
+		return err
+	}
+	if host == "" {
+		return nil
+	}
+	if _, err := remoteauth.Load(host); err == nil {
+		return nil
+	} else if !errors.Is(err, remoteauth.ErrNoToken) {
+		return err
+	}
+
+	token, err := app.Prompter.Value(fmt.Sprintf("Token for %s (leave blank to skip): ", host))
+	if err != nil {
+		return exitcode.Wrap(exitcode.LockedOrAuth, err)
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil
+	}
+	if err := remoteauth.Store(host, token); err != nil {
+		return err
+	}
+
+	writeOut(app.Out, []string{fmt.Sprintf("gage: stored a token for %s", host)})
 	return nil
 }
 

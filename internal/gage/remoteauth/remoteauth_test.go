@@ -164,6 +164,37 @@ func TestHostReadsBothRemoteSpellings(t *testing.T) {
 	}
 }
 
+// TestTokenHostOnlyNamesHTTPHosts proves TokenHost agrees with what
+// Method would actually do for each protocol: a token is only ever a
+// candidate for an HTTP(S) remote. A local path has no host, and an SSH
+// remote authenticates through ssh-agent per Q-GIT-AUTH, so neither
+// should be reported as something worth prompting for a token over —
+// this is what `gage init --remote` uses to decide whether to solicit
+// one before it has stored or loaded anything.
+func TestTokenHostOnlyNamesHTTPHosts(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://github.com/me/vault.git", "github.com"},
+		{"http://git.example.internal:8080/me/vault.git", "git.example.internal"},
+		{"git@github.com:me/vault.git", ""},
+		{"ssh://git@git.example.internal/me/vault.git", ""},
+		{"/tmp/remote.git", ""},
+	}
+
+	for _, tc := range tests {
+		got, err := TokenHost(tc.url)
+		if err != nil {
+			t.Errorf("TokenHost(%s): %v", tc.url, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("TokenHost(%s) = %q, want %q", tc.url, got, tc.want)
+		}
+	}
+}
+
 // TestSSHRemoteNeedingSSHConfigFailsWithTheRealReason covers the design
 // doc's own example remote. go-git never reads ~/.ssh/config, so a remote
 // that only an alias could resolve has to say that rather than fail as a
