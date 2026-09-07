@@ -106,6 +106,15 @@ linters:
         linters:
           - forbidigo
 
+      # scripts/ holds standalone dev-only tools (e.g. resetlocalstate)
+      # that are never imported by internal/gage or shipped in the gage
+      # binary — they're a second, `make`-invoked frontend in the same
+      # sense cmd/gage is, so the same purity carve-out applies.
+      - path: ^scripts/
+        text: 'internal/gage must not'
+        linters:
+          - forbidigo
+
       # Test files are exempt from the purity rule by the same rule's own
       # terms ("outside _test.go files"): a library test legitimately
       # drives a fake terminal, vaultlock's subprocess harness has to read
