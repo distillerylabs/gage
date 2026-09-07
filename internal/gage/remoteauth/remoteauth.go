@@ -277,6 +277,25 @@ func isSSHConfigAlias(host string) bool {
 	return host != "" && !strings.Contains(host, ".")
 }
 
+// TokenHost reports the host a remote would authenticate a token to, or
+// "" if the remote isn't a token candidate at all: a local path (no host
+// to hold a token) or an SSH remote (best-effort ssh-agent, per
+// Q-GIT-AUTH — a token has no role there). It mirrors Method's protocol
+// dispatch without loading or storing anything, so a caller can decide
+// whether to solicit a token *before* attempting a connection, e.g.
+// `gage init --remote` prompting once up front instead of failing and
+// pointing at `gage auth login` for a retry.
+func TokenHost(remoteURL string) (string, error) {
+	ep, err := transport.NewEndpoint(remoteURL)
+	if err != nil {
+		return "", exitcode.Newf(exitcode.Usage, "gage: cannot parse remote %q: %v", remoteURL, err)
+	}
+	if ep.Protocol == "file" || ep.Protocol == "ssh" {
+		return "", nil
+	}
+	return ep.Host, nil
+}
+
 // AuthHint is the sentence gage appends when a remote refuses access, so
 // an expired or absent token names the host and the command that fixes it
 // rather than surfacing a bare 403.

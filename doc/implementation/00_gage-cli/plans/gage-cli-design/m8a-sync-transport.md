@@ -228,6 +228,19 @@ needs a server.
       path was taken, not the outcome
 - [x] No token value appears in any error message, log line, or the
       session history file
+- [x] `gage init --remote` against an HTTP(S) host with no token stored
+      solicits one at the same prompt `gage auth login` uses, before
+      attempting the publish, and stores what it's given — asserted
+      through the recording transport, checking both the prompt text and
+      that the token presented to the push is the one just typed
+- [x] Leaving that prompt blank does not store anything and falls back to
+      the pre-existing anonymous push, rather than being treated as a
+      usage error (unlike `gage auth login`'s own blank-token refusal —
+      `init` doesn't know whether this remote needs a token at all)
+- [x] `gage init --remote` against a host with a token already stored
+      does not prompt a second time
+- [x] `gage init --remote` against a local path or an SSH remote never
+      prompts for a token — neither authenticates with one
 
 **Local state a sync has to respect**
 
@@ -304,6 +317,17 @@ needs a server.
       no `go-github`, no device flow, no shipped client ID. `gage init
       --remote URL` against a repository that doesn't exist fails with a
       message saying to create it, rather than creating it for you
+- [x] `gage init --remote` solicits a token inline instead of requiring a
+      separate `gage auth login` round trip: `remoteauth.TokenHost`
+      (additive alongside `Host`/`Method`) tells `cmd/gage` whether a
+      remote is a token candidate at all — "" for a local path or an SSH
+      remote, the same protocol dispatch `Method` already makes — and
+      `init`'s new `ensureRemoteToken` uses it to check `remoteauth.Load`
+      before publishing, prompting with `Prompter.Value` (the same call
+      `auth login` makes) only when the host has no token yet. A blank
+      answer is not an error here, unlike in `auth login` itself — it
+      falls back to the pre-existing anonymous push, since `init` has no
+      way to know in advance whether the remote actually needs one
 - [x] `gittest` package extended with a second-clone helper: clone a
       `NewBareRemote` repo into a second temp dir, commit there, push
       back — a throwaway stand-in for "another device," used to produce

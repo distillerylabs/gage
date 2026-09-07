@@ -149,7 +149,10 @@ go-git reads none of `~/.ssh/config`, credential helpers, or
 transport rather than to any particular host. Tokens live at
 `$GAGE_STATE/tokens/<host>` (`0600`) and are managed by `gage auth
 login/status/logout`. SSH remotes are best-effort via ssh-agent and fail
-with a clear message when they depend on a host alias.
+with a clear message when they depend on a host alias. `gage init
+--remote` solicits a token inline, at the same prompt, when the remote's
+host needs one and none is stored yet — so a fresh private HTTPS remote
+doesn't need a separate `gage auth login` before its first push succeeds.
 
 **There are no host-specific code paths and no host-specific
 dependencies.** No OAuth device flow, no shipped client ID, no
