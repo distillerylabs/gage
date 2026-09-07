@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/agekey"
 	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/exitcode"
@@ -712,6 +713,97 @@ func TestVaultRemoveDropsRegistrationButLeavesFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
 		t.Errorf("underlying git repo should still exist: %v", err)
+	}
+}
+
+// TestVaultRemoveDeletesAnOrphanedIdentityFile is issue #39: once this
+// device is no longer among the vault's own recipients, its local
+// identity file has nothing left it's needed for, so `vault remove`
+// prunes it rather than leaving a stale file that blocks a later `gage
+// init`/`identity add` reusing this vault name.
+func TestVaultRemoveDeletesAnOrphanedIdentityFile(t *testing.T) {
+	isolateXDG(t)
+	initVaultForTest(t, "personal", "--device", "laptop-1")
+	key := newRecipientKey(t)
+	if res := runCLI(t, []string{"recipient", "add", key, "--device", "phone-1"}, ""); res.Code != 0 {
+		t.Fatalf("recipient add: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+	// Drop laptop-1's own recipiency, leaving phone-1 as the vault's sole
+	// recipient — laptop-1's identity file is now provably orphaned.
+	if res := runCLI(t, []string{"recipient", "remove", "laptop-1", "--reencrypt"}, ""); res.Code != 0 {
+		t.Fatalf("recipient remove: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+
+	idPath, err := gage.IdentityFilePath("personal", "laptop-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(idPath); err != nil {
+		t.Fatalf("identity file should exist before vault remove: %v", err)
+	}
+
+	res := runCLI(t, []string{"vault", "remove", "personal"}, "")
+	if res.Code != 0 {
+		t.Fatalf("vault remove failed: %s", res.Stderr)
+	}
+	if _, err := os.Stat(idPath); !os.IsNotExist(err) {
+		t.Errorf("identity file still present after vault remove: err=%v", err)
+	}
+}
+
+// TestVaultRemoveKeepsIdentityFileStillListedAsRecipient is the safety
+// half of #39: if the vault's recipient list still names this device,
+// deleting its identity file would destroy the only copy of the private
+// key it needs to read that vault's ciphertext, so `vault remove` leaves
+// it and explains why on stderr instead.
+func TestVaultRemoveKeepsIdentityFileStillListedAsRecipient(t *testing.T) {
+	isolateXDG(t)
+	initVaultForTest(t, "personal", "--device", "laptop-1", "--recipient", testRecipient1)
+
+	idPath, err := gage.IdentityFilePath("personal", "laptop-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"vault", "remove", "personal"}, "")
+	if res.Code != 0 {
+		t.Fatalf("vault remove failed: %s", res.Stderr)
+	}
+	if _, err := os.Stat(idPath); err != nil {
+		t.Errorf("identity file should have been kept: %v", err)
+	}
+	if !strings.Contains(res.Stderr, "still listed as a recipient") {
+		t.Errorf("stderr = %q, want a warning that the device is still a recipient", res.Stderr)
+	}
+}
+
+// TestVaultRemoveKeepsIdentityFileWhenRecipientsUnreadable covers the
+// other unsafe case: the vault's own directory is gone (or otherwise
+// unreadable), so `vault remove` cannot confirm the device has been
+// dropped as a recipient. Guessing wrong here is irreversible, so it
+// keeps the identity file and says why rather than assuming it's safe.
+func TestVaultRemoveKeepsIdentityFileWhenRecipientsUnreadable(t *testing.T) {
+	isolateXDG(t)
+	path := initVaultForTest(t, "personal", "--device", "laptop-1")
+
+	idPath, err := gage.IdentityFilePath("personal", "laptop-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"vault", "remove", "personal"}, "")
+	if res.Code != 0 {
+		t.Fatalf("vault remove failed: %s", res.Stderr)
+	}
+	if _, err := os.Stat(idPath); err != nil {
+		t.Errorf("identity file should have been kept: %v", err)
+	}
+	if !strings.Contains(res.Stderr, "could not confirm") {
+		t.Errorf("stderr = %q, want a warning that recipients could not be checked", res.Stderr)
 	}
 }
 

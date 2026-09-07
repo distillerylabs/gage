@@ -183,16 +183,20 @@ func CreateIdentity(vault, device string, p Prompter) (string, error) {
 // RemoveIdentity deletes this device's wrapped identity file for a vault,
 // and reports success if there was nothing there to delete.
 //
-// This exists for exactly one caller: rolling back a `gage init` that
-// generated an identity and then failed before anything referenced its
-// public key. Without it, a failed init leaves an orphan that
-// CreateIdentity's own overwrite refusal then blocks forever — a retry
-// after fixing whatever went wrong would be permanently stuck.
+// It has two callers, both of which are expected to have already
+// established that the device holds no access this would take away:
+// rolling back a `gage init` that generated an identity and then failed
+// before anything referenced its public key (without this, a failed init
+// leaves an orphan that CreateIdentity's own overwrite refusal then
+// blocks forever — a retry after fixing whatever went wrong would be
+// permanently stuck), and `vault remove` pruning an identity file for a
+// device the vault's own recipient list no longer names.
 //
-// It is deliberately narrow and deliberately not offered to users as a
-// command: deleting an identity file that a vault *does* list as a
-// recipient loses access to that vault's existing ciphertext, and the
-// answer there is registering a fresh identity, not deleting the old one.
+// It is deliberately narrow: deleting an identity file that a vault
+// *does* still list as a recipient loses access to that vault's existing
+// ciphertext, and the answer there is registering a fresh identity, not
+// deleting the old one. Callers must check that first — this function
+// does not.
 func RemoveIdentity(vault, device string) error {
 	path, err := IdentityFilePath(vault, device)
 	if err != nil {

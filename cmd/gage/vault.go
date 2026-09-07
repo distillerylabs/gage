@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/denmark/gage/internal/gage"
+	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
 	"github.com/denmark/gage/internal/gage/vaultconfig"
@@ -159,7 +160,8 @@ func newVaultRemoveCommand(app *App) *cobra.Command {
 			if err != nil {
 				return exitcode.Wrap(exitcode.Internal, err)
 			}
-			if _, ok := g.Vaults[name]; !ok {
+			entry, ok := g.Vaults[name]
+			if !ok {
 				return exitcode.Newf(exitcode.NotFound, "gage: no such vault %q", name)
 			}
 
@@ -181,8 +183,57 @@ func newVaultRemoveCommand(app *App) *cobra.Command {
 			// first use — the documented weaker-but-honest bootstrap.
 			// It touches nothing inside the vault, which is what `vault
 			// remove` already promises.
-			return gage.RemoveTrustCache(name)
+			if err := gage.RemoveTrustCache(name); err != nil {
+				return exitcode.Wrap(exitcode.Internal, err)
+			}
+
+			removeOrphanedIdentity(app, name, entry)
+			return nil
 		},
+	}
+}
+
+// removeOrphanedIdentity deletes this device's local identity file for a
+// just-removed vault when it's provably safe to: the vault's own
+// recipient list, read fresh from the store still sitting on disk, no
+// longer names this device. A device missing from that list has nothing
+// left the identity file could be needed for.
+//
+// It deliberately does not delete on any other outcome. The identity file
+// is the only copy of a private key with no way to get it back (see
+// ErrIdentityExists) — if the device is still a listed recipient, or the
+// recipient list can't even be read (moved or deleted store, remote-only,
+// filesystem trouble), guessing wrong would silently strand access to
+// that vault's ciphertext forever. `vault remove` only ever forgets local
+// registration; it never touches the store, so those cases are left for
+// the human to resolve and are reported rather than acted on.
+func removeOrphanedIdentity(app *App, name string, entry config.VaultEntry) {
+	if entry.Device == "" {
+		return
+	}
+	has, err := gage.HasIdentity(name, entry.Device)
+	if err != nil || !has {
+		return
+	}
+
+	v := &gage.Vault{Name: name, Path: entry.Path}
+	recipients, err := v.Recipients()
+	if err != nil {
+		writeOut(app.Err, []string{fmt.Sprintf(
+			"gage: kept the local identity file for %q — could not confirm %s is no longer a recipient (%v). Remove $GAGE_DATA/identities/%s/%s.age yourself once you're sure it's safe.",
+			name, entry.Device, err, name, entry.Device)})
+		return
+	}
+	for _, r := range recipients {
+		if r.Device == entry.Device {
+			writeOut(app.Err, []string{fmt.Sprintf(
+				"gage: kept the local identity file for %q — %s is still listed as a recipient there. Remove it as a recipient first (from another device, with --reencrypt) if you want the local identity file gone too.",
+				name, entry.Device)})
+			return
+		}
+	}
+	if err := gage.RemoveIdentity(name, entry.Device); err != nil {
+		writeOut(app.Err, []string{fmt.Sprintf("gage: could not remove the local identity file for %q: %v", name, err)})
 	}
 }
 
