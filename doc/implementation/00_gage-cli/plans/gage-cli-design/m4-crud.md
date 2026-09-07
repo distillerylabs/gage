@@ -71,69 +71,69 @@ round trip exists for it to share.
 
 ## Tests (write first)
 
-- [ ] `gage insert` followed by `gage cat` round-trips the value through
+- [x] `gage insert` followed by `gage cat` round-trips the value through
       the actual CLI (not just the library)
-- [ ] `gage insert --value-stdin` reads the value from stdin (one
+- [x] `gage insert --value-stdin` reads the value from stdin (one
       trailing newline trimmed) and round-trips through `cat` identically
       to the default prompt path
-- [ ] `gage insert -m` captures multiple lines from the terminal until
+- [x] `gage insert -m` captures multiple lines from the terminal until
       EOF and round-trips through `cat` byte-for-byte (PTY-driven)
-- [ ] With none of `-m`/`--value-stdin` given, `gage insert` prompts once
+- [x] With none of `-m`/`--value-stdin` given, `gage insert` prompts once
       for `value` via the library's `Prompter` (a fake in tests) rather
       than reading stdin directly
-- [ ] Passing more than one of `-m`/`--value-stdin` is rejected with a
+- [x] Passing more than one of `-m`/`--value-stdin` is rejected with a
       usage error before any prompt or read happens
-- [ ] `gage insert --description TEXT` stores the description, and `cat`
+- [x] `gage insert --description TEXT` stores the description, and `cat`
       shows it
-- [ ] `gage insert` produces exactly one new git commit
-- [ ] The commit message is exactly the entry's UUID — no verb prefix,
+- [x] `gage insert` produces exactly one new git commit
+- [x] The commit message is exactly the entry's UUID — no verb prefix,
       title, or other plaintext metadata
-- [ ] Every commit's author is the fixed `gage <gage@localhost>` identity,
+- [x] Every commit's author is the fixed `gage <gage@localhost>` identity,
       never the user's git config, regardless of who runs the command
-- [ ] `gage insert` sets `created`, `updated`, and `updated_by`;
+- [x] `gage insert` sets `created`, `updated`, and `updated_by`;
       `updated_by` matches the device name recorded in M2
-- [ ] `gage ls` lists the inserted entry's title alongside a partial UUID
-- [ ] `gage ls` on an empty vault succeeds with no output and exit 0 —
+- [x] `gage ls` lists the inserted entry's title alongside a partial UUID
+- [x] `gage ls` on an empty vault succeeds with no output and exit 0 —
       not an error
-- [ ] `gage rm` deletes the file under `entries/` and commits the deletion; a
+- [x] `gage rm` deletes the file under `entries/` and commits the deletion; a
       subsequent `cat`/`ls` no longer shows the entry
-- [ ] `gage cat` on an unknown title/UUID fails with a clear error and the
+- [x] `gage cat` on an unknown title/UUID fails with a clear error and the
       not-found exit code from M0's taxonomy
-- [ ] Inserting a duplicate title without `-f|--force` is rejected;
+- [x] Inserting a duplicate title without `-f|--force` is rejected;
       `-f|--force` allows it
-- [ ] With two vaults registered in global config, `gage insert --use
+- [x] With two vaults registered in global config, `gage insert --use
       <other>` / `gage cat --use <other>` write to and read from that named
       vault specifically, not the default one
-- [ ] With two vaults registered, an entry command given with no `--use`
+- [x] With two vaults registered, an entry command given with no `--use`
       flag operates against `current` from global config, not the other
       registered vault — the one-shot counterpart to `vault set-default`
-- [ ] `--use <unregistered-name>` fails with a clear error before
+- [x] `--use <unregistered-name>` fails with a clear error before
       prompting for a passphrase
-- [ ] A write holds the vault lock across the whole read-modify-commit
+- [x] A write holds the vault lock across the whole read-modify-commit
       sequence: a second process attempting a concurrent write observes
       contention rather than interleaving, and neither commit is lost
-- [ ] A read-only command (`cat`/`ls`) does not block on a lock held by
+- [x] A read-only command (`cat`/`ls`) does not block on a lock held by
       another read-only command
-- [ ] The one-shot handler calls `Identity.Close()` on every exit path,
+- [x] The one-shot handler calls `Identity.Close()` on every exit path,
       including when the CRUD method returns an error
 
 ## Implementation
 
-- [ ] `gage insert`: masked `Prompter` prompt (default), `--value-stdin`
+- [x] `gage insert`: masked `Prompter` prompt (default), `--value-stdin`
       (read + trim), or `-m|--multiline` (terminal capture until EOF) for
       the value; mutually exclusive, validated before any I/O happens.
       `--description TEXT`, `-f|--force`
-- [ ] One-shot `-u|--use NAME` flag, resolved on every entry command
+- [x] One-shot `-u|--use NAME` flag, resolved on every entry command
       against global config's registered vaults; omitted, it falls back to
       `current` — same resolution `vault set-default` (M1) writes into
-- [ ] `gage cat` (exact UUID/title only)
-- [ ] `gage rm`
-- [ ] `gage ls`, printing each title with its partial UUID
-- [ ] Commit-per-write (go-git worktree add + commit) with the UUID-only
+- [x] `gage cat` (exact UUID/title only)
+- [x] `gage rm`
+- [x] `gage ls`, printing each title with its partial UUID
+- [x] Commit-per-write (go-git worktree add + commit) with the UUID-only
       message and fixed `gage <gage@localhost>` author decided above
-- [ ] Vault lock acquisition around every write, using M0's `vaultlock`;
+- [x] Vault lock acquisition around every write, using M0's `vaultlock`;
       released on every exit path
-- [ ] One-shot command handler in `cmd/gage`: `Unlock` → CRUD method →
+- [x] One-shot command handler in `cmd/gage`: `Unlock` → CRUD method →
       `Identity.Close()`, with `Close` guaranteed on error paths
 
 ## Definition of done

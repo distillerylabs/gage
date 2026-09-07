@@ -44,44 +44,44 @@ left here is serialization and file placement.
 
 ## Tests (write first)
 
-- [ ] Entry struct marshals to the exact expected YAML shape
+- [x] Entry struct marshals to the exact expected YAML shape
       (`title`/`description`/`created`/`updated`/`updated_by`/`value`/`fields`)
       and unmarshals back to an identical struct
-- [ ] Field order in the marshaled YAML is stable and matches the design
+- [x] Field order in the marshaled YAML is stable and matches the design
       doc's example — the file is shown to a human in M5's `$EDITOR` flow
-- [ ] Timestamps round-trip through marshal/unmarshal without drift or
+- [x] Timestamps round-trip through marshal/unmarshal without drift or
       precision loss
-- [ ] An entry with an empty `description` and empty `fields` round-trips
+- [x] An entry with an empty `description` and empty `fields` round-trips
       without those keys becoming `null` or vanishing inconsistently
-- [ ] Unknown/extra YAML keys behave per the decision above (preserved or
+- [x] Unknown/extra YAML keys behave per the decision above (preserved or
       rejected — not silently dropped)
-- [ ] A `value` containing YAML-hostile content (leading `-`, embedded
+- [x] A `value` containing YAML-hostile content (leading `-`, embedded
       newlines, a literal `:`, trailing whitespace, non-ASCII) round-trips
       byte-for-byte
-- [ ] Encrypt → decrypt round-trip through `entries/<uuid>.age` recovers a
+- [x] Encrypt → decrypt round-trip through `entries/<uuid>.age` recovers a
       byte-identical entry
-- [ ] An entry written to a vault with N recipients is independently
+- [x] An entry written to a vault with N recipients is independently
       decryptable by each recipient's identity
-- [ ] Decrypting an entry with a non-recipient identity fails with the
+- [x] Decrypting an entry with a non-recipient identity fails with the
       typed error from M2, surfaced at the entry layer rather than
       swallowed
-- [ ] Generated filenames are valid UUIDv4 and unique across repeated
+- [x] Generated filenames are valid UUIDv4 and unique across repeated
       calls (no collisions in a large-N generation test)
-- [ ] Entry files are written `0600`, and `entries/` is `0700`
-- [ ] An entry file is written atomically — an interrupted write leaves
+- [x] Entry files are written `0600`, and `entries/` is `0700`
+- [x] An entry file is written atomically — an interrupted write leaves
       either the previous ciphertext or nothing, never a truncated
       `.age` file
 
 ## Implementation
 
-- [ ] Entry struct + YAML (de)serialization, per the decisions above
-- [ ] UUIDv4 filename generation
-- [ ] Encrypt entry to `entries/<uuid>.age` — marshal, encrypt via M2's
+- [x] Entry struct + YAML (de)serialization, per the decisions above
+- [x] UUIDv4 filename generation
+- [x] Encrypt entry to `entries/<uuid>.age` — marshal, encrypt via M2's
       wrapper against the vault's parsed `.age-recipients`, write
       atomically at `0600`
-- [ ] Decrypt entry from `entries/<uuid>.age` — read, decrypt via M2's
+- [x] Decrypt entry from `entries/<uuid>.age` — read, decrypt via M2's
       wrapper with the caller's `Identity`, unmarshal
-- [ ] Enumerate entries in a vault (list the UUID files) — needed by M4's
+- [x] Enumerate entries in a vault (list the UUID files) — needed by M4's
       `ls` and M7's index build; no decryption at this layer
 
 ## Definition of done
