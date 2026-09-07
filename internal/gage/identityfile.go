@@ -89,13 +89,6 @@ func SetScryptWorkFactorForTests(n int) (restore func()) {
 	return func() { scryptWorkFactor = old }
 }
 
-// ErrIdentityExists is CreateIdentity refusing to overwrite an identity
-// file that already exists. Overwriting one would destroy the only copy
-// of a private key with no way to get it back — the design is explicit
-// that losing an identity file is a recovery problem, and silently
-// manufacturing that situation is not something gage should do.
-var ErrIdentityExists = errors.New("gage: an identity file for this device and vault already exists")
-
 // ErrCorruptIdentityFile is an identity file that decrypted but doesn't
 // contain a usable private key, or that isn't an intact age file at all.
 // Distinct from a wrong passphrase, which is a user error rather than a
@@ -121,11 +114,25 @@ var ErrUnsupportedMethod = errors.New("gage: unsupported identity method")
 // identity file.
 const identityFileSecretPrefix = "AGE-SECRET-KEY-1"
 
-// CreateIdentity generates this device's identity for a vault: a fresh
-// X25519 keypair whose private half is wrapped with a passphrase obtained
-// through p and written to $GAGE_DATA/identities/<vault>/<device>.age
-// (directory 0700, file 0600). It returns the public half, the only part
-// that ever leaves this machine.
+// CreateIdentity is a get-or-create for this device's identity in a
+// vault: if a wrapped identity file already sits at
+// $GAGE_DATA/identities/<vault>/<device>.age, it opens that one and
+// returns its existing public key; otherwise it generates a fresh
+// X25519 keypair, wraps its private half with a passphrase obtained
+// through p, and writes it to that path (directory 0700, file 0600).
+// Either way it returns the public half, the only part that ever leaves
+// this machine.
+//
+// Reuse, not overwrite: the file is the only copy of a private key with
+// no way to get it back, so regenerating over it would silently destroy
+// access nothing else could restore. Reuse is also the behavior that
+// makes re-running `gage init` under a name whose identity file survived
+// a `vault remove` (see cmd/gage's removeOrphanedIdentity) work instead
+// of dead-ending on a conflict, and lets `gage identity add` re-register
+// a device whose local file is already sitting there. It costs nothing a
+// fresh keypair wouldn't also have needed: the file opens with its own
+// passphrase exactly like any other unlock, wrong-passphrase retries
+// included.
 //
 // The wrapped file has exactly one recipient by construction — age
 // refuses to combine a scrypt recipient with any other, and Encrypt
@@ -138,8 +145,11 @@ func CreateIdentity(vault, device string, p Prompter) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(path); err == nil {
-		return "", exitcode.Wrap(exitcode.Conflict, fmt.Errorf("%w: %s", ErrIdentityExists, path))
+	// #nosec G304 -- path comes from IdentityFilePath, which validates
+	// both components against the traversal rule (Q-DEVICE-NAME) before
+	// constructing anything.
+	if wrapped, err := os.ReadFile(path); err == nil {
+		return reuseIdentity(vault, device, wrapped, p)
 	} else if !os.IsNotExist(err) {
 		return "", exitcode.Wrap(exitcode.Internal, err)
 	}
@@ -180,6 +190,28 @@ func CreateIdentity(vault, device string, p Prompter) (string, error) {
 	return ident.Recipient().String(), nil
 }
 
+// reuseIdentity opens an identity file CreateIdentity found already on
+// disk and returns its public key, changing nothing. It goes through the
+// same passphrase exchange and wrong-passphrase retry loop as an
+// ordinary unlock (PurposeUnlock, via decryptIdentityFile) rather than
+// PurposeCreate's "choose and confirm a new one" — this passphrase isn't
+// new, it already belongs to the file being opened.
+func reuseIdentity(vault, device string, wrapped []byte, p Prompter) (string, error) {
+	plaintext, err := decryptIdentityFile(vault, device, wrapped, p)
+	if err != nil {
+		return "", err
+	}
+	ident, secret, err := parseIdentityFile(plaintext)
+	zero(plaintext)
+	if err != nil {
+		return "", err
+	}
+	zero(secret)
+
+	p.Warn(fmt.Sprintf("gage: reusing the existing local identity file for %q (device %s) rather than generating a new one", vault, device))
+	return ident.Recipient().String(), nil
+}
+
 // RemoveIdentity deletes this device's wrapped identity file for a vault,
 // and reports success if there was nothing there to delete.
 //
@@ -187,10 +219,11 @@ func CreateIdentity(vault, device string, p Prompter) (string, error) {
 // established that the device holds no access this would take away:
 // rolling back a `gage init` that generated an identity and then failed
 // before anything referenced its public key (without this, a failed init
-// leaves an orphan that CreateIdentity's own overwrite refusal then
-// blocks forever — a retry after fixing whatever went wrong would be
-// permanently stuck), and `vault remove` pruning an identity file for a
-// device the vault's own recipient list no longer names.
+// leaves an orphan that CreateIdentity would then silently reuse on the
+// next attempt — prompting for a passphrase from an attempt that never
+// finished, rather than letting a retry start clean), and `vault remove`
+// pruning an identity file for a device the vault's own recipient list no
+// longer names.
 //
 // It is deliberately narrow: deleting an identity file that a vault
 // *does* still list as a recipient loses access to that vault's existing

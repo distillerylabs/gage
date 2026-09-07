@@ -807,6 +807,43 @@ func TestVaultRemoveKeepsIdentityFileWhenRecipientsUnreadable(t *testing.T) {
 	}
 }
 
+// TestReinitAfterVaultRemoveReusesTheKeptIdentity is the exact scenario
+// reported in #39: `vault remove` on a vault whose store is gone leaves
+// the identity file behind (it can't confirm deleting it is safe), and
+// re-running `gage init` under the same name used to dead-end on
+// ErrIdentityExists instead of picking the leftover file back up.
+func TestReinitAfterVaultRemoveReusesTheKeptIdentity(t *testing.T) {
+	isolateXDG(t)
+	path := initVaultForTest(t, "vault-test-newinit", "--device", "laptop-1")
+
+	idPath, err := gage.IdentityFilePath("vault-test-newinit", "laptop-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if res := runCLI(t, []string{"vault", "remove", "vault-test-newinit"}, ""); res.Code != 0 {
+		t.Fatalf("vault remove failed: %s", res.Stderr)
+	}
+	if _, err := os.Stat(idPath); err != nil {
+		t.Fatalf("identity file should have survived vault remove: %v", err)
+	}
+
+	res := runCLI(t, []string{"init", "vault-test-newinit", "--device", "laptop-1"}, "")
+	if res.Code != 0 {
+		t.Fatalf("re-init should reuse the kept identity file, not fail: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "reusing the existing local identity file") {
+		t.Errorf("stderr = %q, want it to say the identity file was reused", res.Stderr)
+	}
+
+	g := readGlobalConfigForTest(t)
+	if _, ok := g.Vaults["vault-test-newinit"]; !ok {
+		t.Error("vault-test-newinit should be registered again after re-init")
+	}
+}
+
 func TestVaultSetDefaultUpdatesCurrent(t *testing.T) {
 	isolateXDG(t)
 	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {

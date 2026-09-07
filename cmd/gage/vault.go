@@ -200,13 +200,13 @@ func newVaultRemoveCommand(app *App) *cobra.Command {
 // left the identity file could be needed for.
 //
 // It deliberately does not delete on any other outcome. The identity file
-// is the only copy of a private key with no way to get it back (see
-// ErrIdentityExists) — if the device is still a listed recipient, or the
-// recipient list can't even be read (moved or deleted store, remote-only,
-// filesystem trouble), guessing wrong would silently strand access to
-// that vault's ciphertext forever. `vault remove` only ever forgets local
-// registration; it never touches the store, so those cases are left for
-// the human to resolve and are reported rather than acted on.
+// is the only copy of a private key with no way to get it back — if the
+// device is still a listed recipient, or the recipient list can't even be
+// read (moved or deleted store, remote-only, filesystem trouble),
+// guessing wrong would silently strand access to that vault's ciphertext
+// forever. `vault remove` only ever forgets local registration; it never
+// touches the store, so those cases are left for the human to resolve
+// and are reported rather than acted on.
 func removeOrphanedIdentity(app *App, name string, entry config.VaultEntry) {
 	if entry.Device == "" {
 		return
