@@ -988,8 +988,10 @@ sequence, and released on every exit path including error paths:
   released by the OS if a process is killed, so there's no stale lock
   file to clean up by hand — the same property that makes "process
   lifetime is the boundary" work for key material.
-- **`--reencrypt` holds it for its whole run** (see "Recipient / access
-  management"), which on a large vault can be a while. That's the right
+- **A re-encryption pass holds it for its whole run** — `recipient add`,
+  which always re-encrypts, and `recipient remove --reencrypt` alike
+  (see "Recipient / access management") — which on a large vault can be
+  a while. That's the right
   trade: the operation's all-or-nothing guarantee is worth more than
   letting an unrelated write slip in beside it.
 - **Cross-vault `mv`/`cp` take two locks**, one per vault, acquired in a
@@ -1441,19 +1443,28 @@ gage identity list [--use NAME]
 ### Recipient / access management
 
 ```
-gage recipient add <pubkey-or-name> [--use NAME] [--reencrypt]
+gage recipient add <pubkey-or-name> [--use NAME]
 gage recipient remove <pubkey-or-name> [--use NAME] --reencrypt
 gage recipient list [--use NAME]
 gage recipient verify [--use NAME]
 
-    Adding a recipient only affects future encryptions unless --reencrypt
-    is passed, which decrypts and re-writes every entry in the vault so the
-    new recipient can read history too. Removing a recipient REQUIRES
-    --reencrypt (gage refuses to silently leave old ciphertext readable by
-    a removed party) and prints a clear warning that this revokes future
-    access only — anything already read can't be unread.
+    Adding a recipient ALWAYS decrypts and re-writes every entry in the
+    vault, so the new recipient can read everything in it — there is no
+    flag, and no way, to add a recipient who can read only part of a
+    vault. See "Why adding a recipient always re-encrypts" below.
+    Removing a recipient REQUIRES --reencrypt (gage refuses to silently
+    leave old ciphertext readable by a removed party) and prints a clear
+    warning that this revokes future access only — anything already read
+    can't be unread.
 
-    --reencrypt is all-or-nothing: every entry is re-encrypted in the
+    Because adding grants access to the whole vault, it can only be done
+    by someone who already has access to the whole vault. An actor who
+    cannot decrypt every entry is refused before the vault lock is taken
+    and before any confirmation is shown, with an error naming how many
+    entries it cannot read — never a bare decryption failure on an
+    opaque entry UUID partway through a write.
+
+    Re-encryption is all-or-nothing: every entry is re-encrypted in the
     working tree first, and the recipient-list files
     (.age-recipients/config.toml) and every touched entry land in exactly
     one commit together — nothing commits until all of it succeeds. If
@@ -1482,6 +1493,51 @@ gage recipient verify [--use NAME]
     cache runs automatically before every encrypt (see "Local trust
     cache") — `verify` just exposes it as something you can run any time.
 ```
+
+#### Why adding a recipient always re-encrypts
+
+An earlier version of this design made re-encryption opt-in on `add`, so
+a recipient could be admitted for future writes only. That produced a
+recipient who could read entries written after their admission but not
+before — and that state is wrong in three compounding ways.
+
+**It contradicts principle 1.** "A vault is the unit of trust. Each
+vault has its own set of recipients, and that list — nothing
+finer-grained — is who can read it." A partially-readable recipient *is*
+the finer-grained tier that principle rules out. The answer this design
+gives to "these people should see less" is a second vault and
+`mv --to-vault` (see "Why no per-directory sharing"), not a
+half-admitted recipient of one vault. Partial access was never a tier
+anyone chose; it was `age` baking recipients into each file at
+encryption time, leaking into the user-facing model.
+
+**It is undiagnosable from the interface.** The new device runs `ls`,
+sees every entry, and gets decryption failures on what looks like an
+arbitrary subset. The dividing line — written before or after
+admission — is not the title, not the age, not anything `ls` displays.
+
+**It is contagious and unrepairable, which is what settles it.**
+Re-encryption decrypts every entry with the acting identity and fails on
+the first one it cannot read. So a partially-admitted device cannot
+repair its own access *and cannot grant full access to anyone else*: its
+re-encryption pass dies partway through, after the trust-cache prompt
+and inside the write lock, naming an opaque entry UUID. Partial access
+therefore propagates to every recipient admitted by a partial recipient,
+each generation harder to diagnose than the last. A default able to
+quietly produce that is the wrong default, and an opt-out flag would
+keep the vector open.
+
+The cost is real and accepted: every `recipient add` rewrites every
+entry, which grows the repository over time and puts a
+no-plaintext-change revision into each entry's history for
+`history --decrypt` to walk. Vaults are small, the operation is rare,
+and the all-or-nothing machinery already exists — whereas the
+alternative is an access model users cannot predict.
+
+`remove` keeps its flag, and keeps it mandatory, because it means
+something different there: not "grant access to history" but "stop
+handing a removed party readable copies," which the next bullet in "A
+few decisions worth calling out" explains.
 
 ### Entry CRUD
 
@@ -1769,10 +1825,23 @@ here" — by construction, nothing would replace it.
   `--value-stdin` instead, and it's mutually exclusive with `-m` and
   `-e`/`--edit` — `gage` rejects more than one being set before doing any
   I/O.
+- **Adding a recipient always re-encrypts; there is no flag.** A
+  recipient who can read entries written after their admission but not
+  before is the finer-grained access tier principle 1 rules out — and
+  worse, the state is contagious: a partially-admitted device cannot
+  repair itself or grant full access to anyone else, because its own
+  re-encryption pass dies on the first entry it cannot read. An opt-out
+  flag would keep that vector open, so there isn't one. The cost — every
+  add rewrites every entry — is accepted. See "Why adding a recipient
+  always re-encrypts."
 - **`--reencrypt` is mandatory, not default-on, for recipient removal.**
-  Silently leaving stale ciphertext readable by a removed recipient is a
-  worse failure mode than forcing the user to explicitly opt into the
-  (slower) re-encryption pass.
+  It survives on `remove` alone, and means something different there:
+  not "grant access to history" but "stop handing a removed party
+  readable copies." Silently leaving stale ciphertext readable by a
+  removed recipient is a worse failure mode than forcing the user to
+  explicitly opt into the (slower) re-encryption pass. It stays explicit
+  rather than implicit because removal, unlike addition, has a genuinely
+  destructive edge the operator should have to name.
 - **`--reencrypt` is all-or-nothing, on purpose, not incrementally
   committed.** Re-encrypting hundreds of entries one commit at a time
   (with a resumable progress marker) would handle huge vaults more

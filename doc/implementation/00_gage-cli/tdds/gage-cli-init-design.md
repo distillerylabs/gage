@@ -411,10 +411,11 @@ leaving to inference:
    pending request. The user never chooses it and never has to remember
    it.
 3. **The approver's own identity passphrase** — prompted on the *other*
-   device, because approval needs their identity (always, not only for
-   `--reencrypt` — see "The approver unlocks, and the unlock comes
-   late"). Unrelated to either of the above, and notably it is *their*
-   secret, not the joining device's.
+   device, because approval needs their identity both to run the
+   re-encryption and to ask M10's recipient-change question (see "The
+   approver unlocks, and the unlock comes late"). Unrelated to either of
+   the above, and notably it is *their* secret, not the joining
+   device's.
 
 **(1) and (2) are opposites that appear four lines apart on one screen**,
 which is exactly the setup for an expensive mistake: one is chosen by the
@@ -468,7 +469,7 @@ that *don't* change are the interesting ones.
   in an existing field, not a new field, which is the whole reason it's
   carried today when only one value can appear.
 - **The approver's side is entirely unchanged.** They unlock with
-  *their* method, `--reencrypt` runs, a public key goes into
+  *their* method, the re-encryption runs, a public key goes into
   `.age-recipients`. age takes mixed recipient types in one file — a
   YubiKey recipient is `age1yubikey1...` and sits beside any other — so
   nothing downstream distinguishes them.
@@ -607,7 +608,7 @@ approver with several pending requests can't tell them apart at a glance
 everyone with read access, in exchange for saving one scrypt run.
 
 ```
-$ gage recipient approve --code GAGE-7K4M-9QX2-P3RH-8WVN --reencrypt
+$ gage recipient approve --code GAGE-7K4M-9QX2-P3RH-8WVN
 Opened 1 of 2 pending requests with that code.
 
   device:  andrews-macbook-pro
@@ -615,8 +616,8 @@ Opened 1 of 2 pending requests with that code.
   method:  passphrase
   created: 2026-09-07 10:12  (expires in 22h)
 
-Add this device as a recipient of "personal" and re-encrypt 47 entries
-so it can read existing history? [y/N] y
+Add this device as a recipient of "personal"? It will be able to read all
+47 entries, including everything already in the vault. [y/N] y
 
 Unlocking "personal" (your own passphrase for this vault, not the code):
 Enter passphrase: ****
@@ -631,16 +632,96 @@ identifies the request as a side effect of authenticating it. An
 optional positional ID narrows the search when someone wants to be
 explicit.
 
+### Approval always re-encrypts, and there is no `--reencrypt` flag
+
+Approval re-encrypts every entry, unconditionally. The flag that exists
+on `recipient add` is deliberately not carried over, because partial
+access is not a state this design has any coherent use for — and,
+worse, it's a state that spreads.
+
+**It contradicts the first design principle.** "A vault is the unit of
+trust. Each vault has its own set of recipients, and that list — nothing
+finer-grained — is who can read it." A recipient who can read some
+entries but not others is precisely the finer-grained tier that
+principle rules out. When two groups should see different things, the
+answer this design already gives is a second vault and `mv --to-vault`,
+not a half-admitted recipient of one vault. So "added but can't read
+history" isn't an access tier anyone chose; it's an artifact of age
+baking recipients into each file at encryption time, leaking into the
+user-facing model.
+
+**The confusion is exactly as bad as it sounds.** A newly approved
+device runs `ls`, sees 47 entries, opens three of them, and gets a
+decryption failure on the fourth — with nothing in the interface
+explaining why those three and not that one. The dividing line is
+"written before or after you were approved," which is invisible: it
+isn't the title, the age, or anything `ls` displays.
+
+**And the state is contagious, which is the part that turns a wart into
+a trap.** `reencryptTo` decrypts *every* entry with the acting
+identity and fails on the first one it can't read
+(`internal/gage/recipient.go:409`). So a device that was itself added
+without `--reencrypt`:
+
+- cannot repair its own access, and
+- **cannot grant full access to anyone else** — its own
+  re-encryption pass dies on the first entry predating its admission,
+  after the trust-cache prompt and inside the write lock, with an error
+  naming an opaque entry UUID.
+
+Partial access therefore propagates to every recipient admitted by a
+partial recipient, and each generation is harder to diagnose than the
+last. A default that can quietly produce that is the wrong default.
+
+**What it costs, stated honestly.** Every approval rewrites every entry,
+so each one is a commit touching the whole vault. That inflates repo
+size over time and puts a no-op-plaintext revision into every entry's
+history, which `history --decrypt` will walk. Both are real, and both
+are worth it: vaults are small (hundreds of entries of a few KB), the
+operation is rare, the all-or-nothing machinery already exists, and the
+alternative is an access model users can't predict.
+
+**When the approver can't read everything.** With no flag to skip
+re-encryption, an approver who is themselves partially admitted can no
+longer approve at all — which is correct, since they were never in a
+position to grant what they were being asked to grant. That must fail
+*before* the write lock and *before* the confirmation, with an error
+that names the real problem rather than surfacing a decryption failure
+on a UUID:
+
+```go
+var ErrCannotGrantFullAccess = errors.New("gage: this device cannot read every entry in the vault, so it cannot grant full access")
+```
+
+The message should say how many entries are unreadable and that someone
+who can read the whole vault has to perform the approval. This is the
+one place the feature surfaces pre-existing partial-access damage, and
+it should do so legibly.
+
+**`recipient add` is being changed to match**, since leaving the flag on
+the older door would keep the vector that creates partial recipients in
+the first place. That change is
+[A19](../plans/gage-cli-design/open-questions.md#a19): accepted, applied
+to the base design doc, and reflected in M9's test list — but **not yet
+implemented in code**, which is tracked under "Accepted, not yet
+implemented" in [index.md](../plans/gage-cli-design/index.md).
+
+Implementing A19 before this feature is the tidier order: it makes
+`ErrCannotGrantFullAccess` and the "always re-encrypt" behavior existing
+machinery that enrollment reuses, rather than two doors arriving at the
+same rule independently.
+
 ### The approver unlocks, and the unlock comes late
 
-**Approval always needs the approver's own identity**, with or without
-`--reencrypt`, and in a session where the vault is already unlocked
-there is no prompt at all — the cached `Identity` is reused, exactly as
-for any other command.
+**Approval always needs the approver's own identity**, and in a session
+where the vault is already unlocked there is no prompt at all — the
+cached `Identity` is reused, exactly as for any other command.
 
-That it's needed *even without* `--reencrypt` is not obvious, since
-adding a recipient decrypts nothing. Two reasons, both inherited rather
-than introduced here:
+The re-encryption pass is reason enough on its own. But the identity
+would be required even if nothing were decrypted, for two further
+reasons inherited rather than introduced here — worth recording so the
+requirement doesn't look like a side effect of re-encryption that could
+be optimized away:
 
 - **`recipient add` already unlocks unconditionally.** `cmd/gage` wraps
   it in `withUnlockedVault` regardless of the flag, and approval is a
@@ -690,11 +771,11 @@ re-verified under the lock before anything is committed. Otherwise a
 request could be swapped between the moment it was shown to the human
 and the moment its key was written into the recipient list.
 
-**Approving several devices at once is one `--reencrypt` pass**, which is
+**Approving several devices at once is one re-encryption pass**, which is
 the whole reason batch approval exists:
 
 ```
-$ gage recipient approve --code GAGE-7K4M-... --code GAGE-2NPT-... --reencrypt
+$ gage recipient approve --code GAGE-7K4M-... --code GAGE-2NPT-...
 ```
 
 Each device generated its own code, so approving N devices means N codes
@@ -778,21 +859,28 @@ gage recipient pending [--use NAME]
     none.
 
 gage recipient approve [ID...] --code CODE [--code CODE ...]
-                       [--use NAME] [--reencrypt] [--request-file PATH]
+                       [--use NAME] [--request-file PATH]
 
     Opens each pending request with the given code(s), shows what each
-    one claims, and — on confirmation — adds them to the recipient list
-    in a single atomic commit alongside a single --reencrypt pass and
-    the removal of every approved request file.
+    one claims, and — on confirmation — adds them to the recipient list,
+    re-encrypts every entry so they can read the whole vault, and
+    removes every approved request file, all in one atomic commit.
 
-    Needs the approver's own identity, with or without --reencrypt, and
-    unlocks for it only after the code has opened a request and the
-    confirmation has been answered — so a wrong code or a declined
-    prompt costs no unlock. Already-unlocked session vaults reuse the
-    cached Identity and prompt for nothing.
+    There is no --reencrypt flag: approval always re-encrypts, because a
+    recipient who can read only part of a vault is a state this design
+    has no use for and cannot cleanly recover from. See "Approval always
+    re-encrypts".
+
+    Needs the approver's own identity, and unlocks for it only after the
+    code has opened a request and the confirmation has been answered —
+    so a wrong code or a declined prompt costs no unlock.
+    Already-unlocked session vaults reuse the cached Identity and prompt
+    for nothing.
 
     Refuses an expired request, a request whose sealed request_id does
-    not match its filename, and a code that opens nothing.
+    not match its filename, a code that opens nothing, and — before
+    taking the lock or asking anything — an approver who cannot itself
+    read every entry.
 
 gage recipient deny <ID> [--use NAME]
 
@@ -803,11 +891,11 @@ gage recipient deny <ID> [--use NAME]
     and commits, like any other write.
 ```
 
-`--reencrypt` carries exactly the meaning it already has on `recipient
-add` — without it the new device reads only entries written after it was
-approved. For a device joining an existing vault that is almost never
-what the user wants, so `approve` says so explicitly at the confirmation
-prompt rather than letting someone discover it later.
+The confirmation prompt states the consequence in the terms the approver
+actually cares about — "it will be able to read all 47 entries,
+including everything already in the vault" — rather than naming a
+mechanism. Re-encryption is how that happens, not a thing the approver
+should have to reason about.
 
 ---
 
@@ -853,7 +941,7 @@ type OpenedRequest struct {
 func (v *Vault) Enroll(device string, ttl time.Duration, p Prompter) (EnrollmentRequest, error)
 func (v *Vault) PendingEnrollments() ([]PendingRequest, error)
 func (v *Vault) OpenEnrollment(codes []string) ([]OpenedRequest, error)
-func (v *Vault) ApproveEnrollments(reqs []OpenedRequest, reencrypt bool, ident *Identity) (RecipientChange, error)
+func (v *Vault) ApproveEnrollments(reqs []OpenedRequest, ident *Identity) (RecipientChange, error)
 func (v *Vault) DenyEnrollment(id string) error
 ```
 
@@ -870,7 +958,15 @@ var ErrEnrollmentExpired    = errors.New("gage: this enrollment request has expi
 var ErrEnrollmentCodeWrong  = errors.New("gage: no pending request opened with that code")
 var ErrEnrollmentIDMismatch = errors.New("gage: this request's sealed id does not match its filename")
 var ErrEnrollmentNoRemote   = errors.New("gage: publishing an enrollment request needs a writable remote")
+
+// Raised before the write lock and before any confirmation, so a
+// partially-admitted approver learns why rather than hitting a
+// decryption failure on an opaque entry UUID mid-operation.
+var ErrCannotGrantFullAccess = errors.New("gage: this device cannot read every entry in the vault, so it cannot grant full access")
 ```
+
+`ApproveEnrollments` takes no `reencrypt` parameter — there is nothing
+to decide. See "Approval always re-encrypts".
 
 **`Prompter` is unchanged — no new method, no new `UnlockKind`** (see
 D-ENROLL-PROMPTER). The approver's code is an argument to
@@ -903,7 +999,7 @@ existing command, and it departs toward `sync`'s lazy-unlock behavior
 rather than inventing anything.
 
 **`enroll` takes the per-vault write lock** for its commit, like every
-other write. **`approve` holds it across the whole `--reencrypt`
+other write. **`approve` holds it across the whole re-encryption
 sequence**, exactly as `recipient add --reencrypt` does today — and
 re-reads each sealed request under that lock before trusting what it
 showed the human a moment earlier.
@@ -970,9 +1066,13 @@ system.
   states the requirement at the moment it prints the code and cannot do
   more than that.
 - **It changes nothing about guarantee #1.** No already-encrypted entry
-  becomes readable through any of this. A pending request is inert; an
-  approval only affects what gets encrypted next, or — with
-  `--reencrypt` — what the approver deliberately chose to rewrite.
+  becomes readable through any of this. A pending request is inert. An
+  approval does rewrite every entry to include the new recipient — but
+  that is a deliberate act by a human who already holds the key,
+  producing *new* ciphertext, not a way to open ciphertext that already
+  exists. Anyone holding a copy of the old ciphertext gains nothing from
+  it, which is the same thing "Recipient / access management" already
+  says about removal being future-facing only.
 
 **One genuinely new piece of information leaks**, and it should be
 recorded rather than discovered: a reader of the vault can now see *that*
@@ -1067,20 +1167,27 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 **Approval:**
 - Approving adds exactly one recipient to both `.age-recipients` and
   `config.toml`, and `verify` still passes afterward.
-- Approving with `--reencrypt` makes pre-existing entries readable by the
-  new key; without it, only entries written after approval are.
+- **Approval makes every pre-existing entry readable by the new key** —
+  the newly approved device can read entries written long before it
+  existed. There is no flag, and no code path, that produces a
+  partially-readable recipient.
 - Approval, the re-encryption, and the request-file deletion land in
   **one** commit.
 - Batch approval of N requests performs **one** re-encryption pass and
   produces **one** commit.
-- An injected failure partway through `--reencrypt` leaves HEAD
+- An injected failure partway through the re-encryption leaves HEAD
   untouched and every request still pending.
+- **An approver who cannot read every entry is refused with
+  `ErrCannotGrantFullAccess` before the write lock is taken and before
+  any confirmation is shown** — the error names the count of unreadable
+  entries, never a bare decryption failure on a UUID. Construct the
+  state by adding a recipient without re-encryption (or by hand-editing
+  `.age-recipients`) and then approving from that device.
 - `deny` removes the file, grants nothing, and needs no code.
 
 **The approver's unlock:**
-- Approval prompts for the approver's passphrase **even without
-  `--reencrypt`** — a git-writer holding no key of this vault cannot
-  approve an enrollment.
+- Approval prompts for the approver's passphrase — a git-writer holding
+  no key of this vault cannot approve an enrollment.
 - **A wrong code costs no unlock**: the passphrase prompt count is zero
   when `--code` opens nothing. Same for an expired request.
 - **Declining the `[y/N]` costs no unlock**, and leaves the request

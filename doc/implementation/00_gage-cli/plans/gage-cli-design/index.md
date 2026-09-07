@@ -19,12 +19,15 @@ by being "handled later" without an entry there.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
-**All twelve milestones are complete** — M0 through M12 are implemented,
-their full test lists are green, and `make lint`/`make test` pass on the
-Linux/macOS/Windows matrix. Behavior that shipped *after* the plan was
-finished is recorded under "Post-plan changes" below, so this file stays
-an accurate account of the tool as built rather than as originally
-scheduled.
+**All twelve milestones were built and shipped** — M0 through M12 are
+implemented, and `make lint`/`make test` pass on the Linux/macOS/Windows
+matrix. Two things qualify that, and both are recorded below rather than
+left to be discovered: behavior that shipped *after* the plan was
+finished is under "Post-plan changes," and one milestone (M9) has since
+had its contract amended, so it carries work that is decided but not yet
+built — see "Accepted, not yet implemented." The aim is for this file to
+describe the tool as it actually is, including where it currently
+disagrees with the design doc.
 
 ---
 
@@ -42,10 +45,16 @@ scheduled.
 | M7 | [Metadata index](m7-metadata-index.md) | `[x]` | Sonnet | Decrypt-once cache, `search`/`grep`, `reindex` |
 | M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[x]` | **Opus** | Auth, auto fetch/pull/push, `clone`, divergence detection |
 | M8b | [Sync: conflict resolution](m8b-sync-conflicts.md) | `[x]` | **Opus** | `gage sync` — keep local/remote/both, merge commit |
-| M9 | [Identity & recipient management](m9-recipients.md) | `[x]` | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
+| M9 | [Identity & recipient management](m9-recipients.md) | `[x]`† | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
 | M10 | [Local trust cache](m10-trust-cache.md) | `[x]` | Sonnet* | `known-config.toml`, recipient-change detection |
 | M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[x]` | Sonnet | `mv`/`cp --to-vault` |
 | M12 | [Polish / output modes](m12-polish.md) | `[x]` | Sonnet | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
+
+**† M9 shipped complete, then had its contract amended.**
+[A19](open-questions.md#a19) makes re-encryption unconditional on
+`gage recipient add`. It is applied to the design doc and reflected in
+M9's test list as three unticked bullets; the code still has the old
+`--reencrypt` flag. See "Accepted, not yet implemented" below.
 
 **Model column.** `⚑` marks a milestone worth an Opus review pass over
 its *tests* before moving on, even where Sonnet wrote them. `*` marks a
@@ -278,6 +287,47 @@ milestone whose surface it touches rather than in a suite of their own.
   `main` under `scripts/` rather than a `gage` subcommand: destroying a
   user's vaults and identities has no place in the CLI's own command
   surface, and keeping it out means it can't be reached by accident.
+
+---
+
+## Accepted, not yet implemented
+
+Decided and written into the design doc, but the code does not do it
+yet. This section exists so that gap is visible rather than inferred
+from a mismatch between the TDD and the binary — and it should be empty
+most of the time.
+
+### A19 — `gage recipient add` always re-encrypts
+
+Full reasoning in [open-questions.md](open-questions.md#a19) and in the
+design doc's "Why adding a recipient always re-encrypts". Short version:
+a recipient who can read entries written after their admission but not
+before is the finer-grained access tier principle 1 rules out, it's
+undiagnosable from the interface, and — because `reencryptTo` fails on
+the first entry the acting identity can't read — it's contagious and
+unrepairable. A partially-admitted device can't fix itself or grant full
+access to anyone else.
+
+Work remaining, all in M9's surface:
+
+- `Vault.AddRecipient` drops its `reencrypt bool` parameter and always
+  re-encrypts. `RemoveRecipient` is untouched — its flag stays mandatory
+  and means something different.
+- A pre-flight check that the acting identity can decrypt every entry,
+  failing with a new `ErrCannotGrantFullAccess` **before** the vault lock
+  and **before** the trust-cache confirmation, naming the count of
+  unreadable entries.
+- `cmd/gage`'s `recipient add` loses `--reencrypt`; passing it becomes a
+  usage error rather than being silently accepted.
+- M9's three A19 test bullets go green, and the existing tests pinning
+  the old behavior (`add` without re-encryption leaving entries
+  unreadable) are replaced rather than deleted — the replacement asserts
+  no invocation of `add` can produce a partial recipient.
+
+Device enrollment ([gage-cli-init-design.md](../../tdds/gage-cli-init-design.md))
+already specifies `recipient approve` this way, so implementing A19 first
+keeps the two doors consistent rather than letting `add` remain the
+vector that creates partial recipients.
 
 ---
 

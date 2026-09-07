@@ -520,10 +520,16 @@ Changes [gage-cli-design.md](../../tdds/gage-cli-design.md) needs. `[x]`
 means applied to the design doc; entries are kept after application as a
 record of what changed and why.
 
-**Applied 2026-08-30:** A1, A2, A3, A5, A7, A8, A9, A10, A11, A12, A13,
-A14. **Still open:** A4 and A6 — both are blocked on unresolved questions
-(Q-DEVICE-NAME and Q-GIT-AUTH respectively) and can't be written until
-those are answered.
+**Applied:** A1–A18 — A1, A2, A3, A5, A7, A8, A9, A10, A11, A12, A13,
+A14 on 2026-08-30; A4 and A6 once Q-DEVICE-NAME and Q-GIT-AUTH were
+answered; A15–A18 alongside the milestones that needed them.
+
+A19 is applied to the design doc but **not yet implemented** — it is the
+only amendment here that changes shipped behavior rather than describing
+it. `[x]` in this section has always meant "the TDD says this," never
+"the code does"; that distinction matters for exactly one entry, and
+this is it. The outstanding work is listed under "Accepted, not yet
+implemented" in [index.md](index.md).
 
 ### `[x]` A1 — Add a concurrency section
 
@@ -719,6 +725,77 @@ naming the variable; that it is honored for unlocking an existing
 identity only, never for choosing a new one's passphrase; and that a
 script driving two vaults reassigns the variable between them, there
 being no per-vault spelling.
+
+---
+
+### `[x]` A19 — Make re-encryption unconditional on `recipient add` {#a19}
+
+**Accepted and applied to the design doc.** Per this section's
+convention, `[x]` means the TDD now says this — it does **not** mean the
+code does. This is the one amendment here that changes shipped behavior
+rather than documenting it, so it carries an implementation gap until
+the work below lands; that gap is tracked under "Accepted, not yet
+implemented" in [index.md](index.md).
+
+**Applied to the design doc as:** `--reencrypt` removed from
+`gage recipient add` in "Recipient / access management"; a new
+"Why adding a recipient always re-encrypts" subsection; and the
+`--reencrypt` bullets under "A few decisions worth calling out" split
+into one for `add` (no flag) and one for `remove` (flag stays
+mandatory).
+
+Raised while designing device enrollment
+([gage-cli-init-design.md](../../tdds/gage-cli-init-design.md)), which
+had already settled the same question the same way for `recipient
+approve`: approval always re-encrypts and has no flag.
+
+**The proposal:** `gage recipient add` re-encrypts every entry always.
+`--reencrypt` is removed from `add` (it stays mandatory on `remove`,
+where it means something different and is already required).
+
+**Why.** Adding a recipient without re-encrypting produces a recipient
+who can read entries written after their admission and not before, and
+that state is a problem in three compounding ways:
+
+1. **It contradicts design principle 1.** "A vault is the unit of trust.
+   Each vault has its own set of recipients, and that list — nothing
+   finer-grained — is who can read it." A partially-readable recipient
+   *is* the finer-grained tier the principle rules out. The design's own
+   answer to "these people should see less" is a second vault plus
+   `mv --to-vault`, not a half-admitted recipient.
+2. **It's undiagnosable from the interface.** The new device runs `ls`,
+   sees every entry, and gets decryption failures on an arbitrary-looking
+   subset. The dividing line — written before or after admission — is not
+   the title, the age, or anything `ls` shows.
+3. **It's contagious and unrepairable.** `reencryptTo`
+   (`internal/gage/recipient.go:409`) decrypts every entry with the
+   acting identity and hard-fails on the first one it can't read. So a
+   partially-admitted device cannot repair itself *and cannot grant full
+   access to anyone else* — its re-encryption pass dies partway, after
+   the trust-cache prompt and inside the write lock, with an error naming
+   an opaque entry UUID. Each generation is harder to diagnose than the
+   last.
+
+**What it costs.** Every `recipient add` rewrites every entry: a larger
+repo over time, and a no-op-plaintext revision in each entry's history
+that `history --decrypt` walks. Judged worth it — vaults are small, the
+operation is rare, and the all-or-nothing machinery already exists.
+
+**What it requires.** A typed refusal for the case that can no longer be
+worked around: an actor who can't read every entry can no longer add a
+recipient at all. That must fail before the lock and before any
+confirmation, naming the count of unreadable entries rather than
+surfacing a decryption error — `ErrCannotGrantFullAccess` in the
+enrollment doc's spelling.
+
+**If this is declined**, the enrollment doc should be revisited too:
+`approve` having no flag while `add` has one is defensible (the new door
+picks the better default) but leaves `add` as the vector that keeps
+creating partial recipients, so most of the benefit is lost.
+
+**Affected:** design doc "Recipient / access management" and the
+`--reencrypt` bullets under "A few decisions worth calling out"; M9's
+test list, which currently pins the opposite behavior.
 
 ---
 
