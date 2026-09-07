@@ -411,8 +411,10 @@ leaving to inference:
    pending request. The user never chooses it and never has to remember
    it.
 3. **The approver's own identity passphrase** — prompted on the *other*
-   device, because `--reencrypt` needs their identity to decrypt and
-   rewrite entries. Unrelated to either of the above.
+   device, because approval needs their identity (always, not only for
+   `--reencrypt` — see "The approver unlocks, and the unlock comes
+   late"). Unrelated to either of the above, and notably it is *their*
+   secret, not the joining device's.
 
 **(1) and (2) are opposites that appear four lines apart on one screen**,
 which is exactly the setup for an expensive mistake: one is chosen by the
@@ -616,6 +618,9 @@ Opened 1 of 2 pending requests with that code.
 Add this device as a recipient of "personal" and re-encrypt 47 entries
 so it can read existing history? [y/N] y
 
+Unlocking "personal" (your own passphrase for this vault, not the code):
+Enter passphrase: ****
+
 Re-encrypting 47 entries... done.
 Committed and pushed: +1 recipient, 47 entries re-encrypted, 1 request cleared.
 ```
@@ -625,6 +630,65 @@ that opens. The approver never has to know or type an ID; the code
 identifies the request as a side effect of authenticating it. An
 optional positional ID narrows the search when someone wants to be
 explicit.
+
+### The approver unlocks, and the unlock comes late
+
+**Approval always needs the approver's own identity**, with or without
+`--reencrypt`, and in a session where the vault is already unlocked
+there is no prompt at all — the cached `Identity` is reused, exactly as
+for any other command.
+
+That it's needed *even without* `--reencrypt` is not obvious, since
+adding a recipient decrypts nothing. Two reasons, both inherited rather
+than introduced here:
+
+- **`recipient add` already unlocks unconditionally.** `cmd/gage` wraps
+  it in `withUnlockedVault` regardless of the flag, and approval is a
+  recipient add — diverging would make the sanctioned path weaker than
+  the manual one.
+- **The `Prompter` rides on the `Identity`.** `AddRecipient` runs
+  M10's blocking trust-cache check via `ident.frontend()`, which is how
+  this codebase deliberately avoids "growing a `Prompter` parameter on
+  every mutating method." A nil `Identity` would mean no way to ask the
+  recipient-change question at all.
+
+There's a security dividend worth naming: it means **a git-writer
+holding no key of this vault cannot approve an enrollment.** They can
+still hand-edit `.age-recipients` — that hole is unchanged and unclosed
+— but the enrollment channel demands more than the direct-edit channel
+does, rather than offering a cheaper way around it.
+
+**The unlock happens after the confirmation, not before it**, and that
+ordering is the point. Opening the sealed request needs no identity —
+the seal is scrypt, keyed by the code — so `gage` can validate the code,
+check expiry, show what the request claims, and take the `[y/N]` while
+still holding nothing. Only once the answer is yes does it ask for a
+passphrase. A wrong code, an expired request, or a declined prompt
+therefore costs the approver no unlock at all.
+
+This is `sync`'s established pattern, not a new one: "**Sync unlocks
+lazily.** … `gage sync` only prompts for an unlock when it reaches a
+conflict whose resolution requires showing you plaintext." It's also the
+same instinct as `clone` refusing to prompt for a passphrase in order to
+report that the unlock was pointless. Concretely, `approve` cannot be a
+blanket `withUnlockedVault` wrapper the way `recipient add` is; it
+unlocks in the middle, after `OpenEnrollment` and the confirmation have
+both succeeded.
+
+One consequence to expect rather than be surprised by: the approver may
+answer **two** different `[y/N]` questions. The first is "approve this
+device," from this feature. The second is M10's recipient-change
+warning, which fires inside `AddRecipient` if someone *else* changed the
+recipient list since this device last encrypted. They're genuinely
+different questions — "should this device be let in" versus "do you
+trust the list you're about to encrypt to" — and collapsing them would
+hide the second one behind the first.
+
+Finally, because `OpenEnrollment` reads outside the vault write lock and
+`ApproveEnrollments` writes under it, the sealed request is re-read and
+re-verified under the lock before anything is committed. Otherwise a
+request could be swapped between the moment it was shown to the human
+and the moment its key was written into the recipient list.
 
 **Approving several devices at once is one `--reencrypt` pass**, which is
 the whole reason batch approval exists:
@@ -721,13 +785,22 @@ gage recipient approve [ID...] --code CODE [--code CODE ...]
     in a single atomic commit alongside a single --reencrypt pass and
     the removal of every approved request file.
 
+    Needs the approver's own identity, with or without --reencrypt, and
+    unlocks for it only after the code has opened a request and the
+    confirmation has been answered — so a wrong code or a declined
+    prompt costs no unlock. Already-unlocked session vaults reuse the
+    cached Identity and prompt for nothing.
+
     Refuses an expired request, a request whose sealed request_id does
     not match its filename, and a code that opens nothing.
 
 gage recipient deny <ID> [--use NAME]
 
-    Removes a pending request without granting anything. Needs no code:
-    refusing to grant access requires no proof.
+    Removes a pending request without granting anything. Needs no code
+    and no unlock: refusing to grant access requires no proof, it
+    changes no recipient list, and anyone with git write access could
+    delete the file directly anyway. It still takes the vault write lock
+    and commits, like any other write.
 ```
 
 `--reencrypt` carries exactly the meaning it already has on `recipient
@@ -818,9 +891,22 @@ a TTY" test that decides whether to prompt at all is a `cmd/gage`
 concern — the same split that keeps `--script`/`--stdin` out of the
 library today.
 
+**The signatures are what make the late unlock possible, and that's
+deliberate.** `PendingEnrollments` and `OpenEnrollment` take no
+`Identity` — listing and opening are keyed by the code, not by any
+vault key — while `ApproveEnrollments` takes one because it is a
+recipient write. So `cmd/gage` can call the first two, render, confirm,
+and only then call `Vault.Unlock`. `approve` is therefore *not* wrapped
+in `withUnlockedVault` the way `recipient add` is; it unlocks in the
+middle. That is the one place this feature departs from the shape of an
+existing command, and it departs toward `sync`'s lazy-unlock behavior
+rather than inventing anything.
+
 **`enroll` takes the per-vault write lock** for its commit, like every
 other write. **`approve` holds it across the whole `--reencrypt`
-sequence**, exactly as `recipient add --reencrypt` does today.
+sequence**, exactly as `recipient add --reencrypt` does today — and
+re-reads each sealed request under that lock before trusting what it
+showed the human a moment earlier.
 
 ---
 
@@ -990,6 +1076,24 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - An injected failure partway through `--reencrypt` leaves HEAD
   untouched and every request still pending.
 - `deny` removes the file, grants nothing, and needs no code.
+
+**The approver's unlock:**
+- Approval prompts for the approver's passphrase **even without
+  `--reencrypt`** — a git-writer holding no key of this vault cannot
+  approve an enrollment.
+- **A wrong code costs no unlock**: the passphrase prompt count is zero
+  when `--code` opens nothing. Same for an expired request.
+- **Declining the `[y/N]` costs no unlock**, and leaves the request
+  pending and nothing committed.
+- In a session with the vault already unlocked, approval prompts for no
+  passphrase at all and reuses the cached `Identity`.
+- When another device changed the recipient list first, the approver
+  answers *two* distinct prompts — the approve confirmation and M10's
+  recipient-change warning — and declining the second aborts with
+  nothing committed and the request still pending.
+- A sealed request swapped between `OpenEnrollment` and the commit is
+  caught: what gets written is what was verified under the lock, not
+  what was displayed.
 
 **Enroll-side behavior:**
 - `enroll` on a device with no identity creates one; `enroll` on a device
