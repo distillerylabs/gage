@@ -138,6 +138,12 @@ decrypt-on-demand per command.
       ad hoc inside a session
 - [x] An unknown REPL command reports usage and does not terminate the
       session, and points at `help`
+- [x] A real subcommand typed with the wrong argument count (e.g. `edit`
+      with no query) reports Cobra's complaint *and* that command's usage
+      block, the same M0 mechanism `gage <command>` uses in one-shot
+      mode — not the bare `accepts 1 arg(s), received 0` with nothing
+      else. Covered for both an interactive-style line and a `--stdin`
+      line, since both go through `runSessionCommand`
 - [ ] The full M6 test suite passes unmodified on Windows, not just
       Linux/macOS — `Session`'s locking/idle-timeout behavior doesn't
       depend on any POSIX-only mechanism. *The CI matrix has now run and

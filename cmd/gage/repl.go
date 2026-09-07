@@ -255,7 +255,15 @@ func runSessionCommand(app *App, args []string) error {
 	}
 
 	root.SetArgs(args)
-	return root.Execute()
+	err = root.Execute()
+	if err != nil && !exitcode.IsCoded(err) {
+		// target is already the resolved command from the Find above —
+		// the same one Execute's own internal Find would land on — so
+		// there's no need to ask ExecuteC for it a second time. See
+		// usageError.
+		return usageError(root, target, err)
+	}
+	return err
 }
 
 // commandPath joins the first two words of a command line, so a nested

@@ -36,24 +36,25 @@ func runApp(app *App, args []string) int {
 	// other half of that: the wrap lasts exactly one execution.
 	defer scopeAssumeYes(app)()
 
-	err := root.Execute()
+	cmd, err := root.ExecuteC()
 	if err == nil {
 		return int(exitcode.Success)
+	}
+
+	// Anything that reaches here without an explicit code is Cobra's own
+	// usage/parsing rejection (unknown command, bad flag, wrong argument
+	// count, ...) — genuine internal errors from our own handlers always
+	// construct an explicit exitcode.New/Wrap instead. usageError folds
+	// in the failing command's own usage text and codes it Usage, so an
+	// operator gets more than just "accepts 1 arg(s), received 0" — see
+	// the taxonomy's "no bare, unenumerated exit status" rule.
+	if !exitcode.IsCoded(err) {
+		err = usageError(root, cmd, err)
 	}
 
 	// If reporting the error itself fails there is nowhere left to
 	// report that to, and the exit code below still carries the outcome.
 	writeError(app.Err, err)
 
-	if exitcode.IsCoded(err) {
-		return int(exitcode.CodeOf(err))
-	}
-	// Anything that reaches here without an explicit code is Cobra's own
-	// usage/parsing rejection (unknown command, bad flag, ...) — genuine
-	// internal errors from our own handlers always construct an
-	// explicit exitcode.New/Wrap instead, so falling back to Usage
-	// (rather than exitcode.CodeOf's own Internal default) is correct
-	// here specifically. See the taxonomy's "no bare, unenumerated exit
-	// status" rule.
-	return int(exitcode.Usage)
+	return int(exitcode.CodeOf(err))
 }

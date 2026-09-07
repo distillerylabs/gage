@@ -837,6 +837,22 @@ available — so a command can't appear in one and go missing from the
 other. That's an implementation detail, but a load-bearing one: two
 hand-maintained lists would drift the first time a command is added.
 
+**A usage rejection carries its command's usage, not just the bare
+complaint.** `gage edit` with no query used to print only Cobra's own
+`accepts 1 arg(s), received 0` and leave the operator to go dig up `gage
+help edit` themselves. Any error that never opted into an explicit exit
+code — a bad argument count, an unknown flag, an unrecognized (sub)command
+— gets that command's usage block folded into the same message before
+it's printed, one blank line below the complaint; an unrecognized
+top-level command gets the full grouped listing instead, since there's no
+single command's usage to show. This applies identically in one-shot mode
+and inside a session (or a `--script`/`--stdin` run): both dispatch paths
+route through the same helper, so they can't drift on when or how much
+help is shown. A command's own error — wrong passphrase, entry not found,
+a sync conflict — already opted into a specific exit code and message via
+the exit-code taxonomy, and is left exactly as that command built it; only
+Cobra's own parsing rejections gain the extra text.
+
 ### Addressing entries & the metadata index
 
 With opaque UUID filenames, there's no more "path" to type. Instead,
