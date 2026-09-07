@@ -71,7 +71,7 @@ func (v *Vault) Unlock(p Prompter) (Identity, error) {
 		return Identity{}, exitcode.Wrap(exitcode.Internal, err)
 	}
 
-	plaintext, err := v.decryptIdentityFile(wrapped, device, p)
+	plaintext, err := decryptIdentityFile(v.Name, device, wrapped, p)
 	if err != nil {
 		return Identity{}, err
 	}
@@ -102,7 +102,12 @@ func (v *Vault) Unlock(p Prompter) (Identity, error) {
 
 // decryptIdentityFile runs the passphrase exchange until the file opens,
 // the Prompter gives up, or a failure that re-prompting cannot fix.
-func (v *Vault) decryptIdentityFile(wrapped []byte, device string, p Prompter) ([]byte, error) {
+//
+// It takes a vault name rather than a *Vault because CreateIdentity's
+// reuse path (see reuseIdentity) needs it before any Vault exists — the
+// identity file it's opening may be all that survives of a vault `vault
+// remove` only ever forgot the local registration for.
+func decryptIdentityFile(vault, device string, wrapped []byte, p Prompter) ([]byte, error) {
 	// wrongSoFar records that at least one attempt was a genuinely wrong
 	// passphrase, so that when the Prompter finally stops answering the
 	// error says *why* it was being asked again rather than only that it
@@ -113,7 +118,7 @@ func (v *Vault) decryptIdentityFile(wrapped []byte, device string, p Prompter) (
 		passphrase, err := requestPassphrase(p, UnlockRequest{
 			Kind:    KindPassphrase,
 			Purpose: PurposeUnlock,
-			Vault:   v.Name,
+			Vault:   vault,
 			Device:  device,
 			Attempt: attempt,
 		})
