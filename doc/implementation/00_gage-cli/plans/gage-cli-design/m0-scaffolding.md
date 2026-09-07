@@ -53,6 +53,17 @@ Nothing.
       the spelling every operator tries first
 - [ ] `gage help <subcommand>` prints that subcommand's usage and exits 0;
       `gage help <unknown>` fails with the usage exit code
+- [ ] A Cobra-native usage rejection (wrong argument count, unknown flag)
+      on a real subcommand prints both the original complaint (e.g.
+      `accepts 1 arg(s), received 0`) and that subcommand's own usage
+      block, not the bare complaint alone; an unrecognized top-level
+      command prints the same grouped listing `gage --help` renders. Both
+      one-shot mode and a session/script line (`edit` with no query typed
+      at the prompt, or read via `--stdin`) go through this
+- [ ] A command's own coded error (exit code already set via the
+      exit-code taxonomy — wrong passphrase, entry not found, a sync
+      conflict) is never expanded with an appended usage block; only
+      Cobra's own parsing rejections are
 - [ ] Neither help spelling lists the session-only commands
       (`use`/`lock`/`status`/`exit`/`help`) as top-level subcommands —
       they don't exist outside a session, and listing them would send an

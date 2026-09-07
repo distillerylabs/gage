@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"sort"
@@ -95,6 +96,37 @@ func renderHelp(w io.Writer, root *cobra.Command) {
 // unreportable error through every render function would not be.
 func writeOut(w io.Writer, lines []string) {
 	_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
+}
+
+// usageError turns a Cobra-native usage rejection — a bad argument count,
+// an unknown flag, an unrecognized (sub)command — into one that also
+// carries cmd's own usage text, so an operator never sees only "accepts 1
+// arg(s), received 0" with no indication of what was expected instead.
+//
+// It's the one place both dispatch paths (one-shot's runApp and the
+// session/script line dispatcher in repl.go) fold help text into a Cobra
+// usage error, so the two can't drift on when or how much help is shown.
+// The result is coded exitcode.Usage explicitly: these errors already
+// mapped to that exit code before this existed (see runApp's fallback),
+// and wrapping them here just makes that intent visible at the point the
+// error is built instead of falling out of a default further down.
+func usageError(root, cmd *cobra.Command, err error) error {
+	return exitcode.Wrap(exitcode.Usage, fmt.Errorf("%s\n\n%s", err.Error(), commandHelpText(root, cmd)))
+}
+
+// commandHelpText renders the same help a human would get from `gage help
+// <command>` (or, for a top-level rejection like an unknown command, the
+// same grouped listing as `gage --help`) as a string rather than directly
+// to a writer, so usageError can fold it into one error message rather
+// than a caller needing a second, separate write.
+func commandHelpText(root, cmd *cobra.Command) string {
+	var buf bytes.Buffer
+	if cmd == root {
+		renderHelp(&buf, root)
+	} else {
+		renderCommandHelp(&buf, cmd)
+	}
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // errorPrefix is how gage names itself in front of anything it reports.
