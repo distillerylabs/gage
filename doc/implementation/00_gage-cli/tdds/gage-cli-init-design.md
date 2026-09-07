@@ -39,41 +39,124 @@ and the thing the human moves out-of-band is a short code that
 
 ---
 
-## Decisions to make first
+## Decisions
 
-Per the project's milestone convention, these want a human answer before
-any code is written. Each has a recommendation; the reasoning is in the
-sections below.
+Settled in this document before any code is written, per the project's
+milestone convention: a decision recorded here is durable across
+sessions, while one made implicitly in code has to be re-derived by
+whoever reads it next.
 
-- **`[ ] D-ENROLL-VERBS` — command naming.** Recommendation: `gage
-  enroll` on the joining side, `gage recipient pending/approve/deny` on
-  the approving side. Rationale: they are two different actors with two
-  different mental models, and approval genuinely *is* a recipient
-  mutation — it shares `--reencrypt`, the trust cache, and `recipient
-  verify` with `recipient add`. The alternative is one `gage enroll
-  request/list/approve/deny` group, which keeps the feature findable
-  under one word at the cost of putting a recipient-list write somewhere
-  other than `recipient`. See "Command reference".
-- **`[ ] D-ENROLL-PROMPTER` — how the approver's code entry reaches the
-  library.** Recommendation: reuse `Prompter.Unlock` with a new
-  `UnlockKind` (`KindEnrollmentCode`), which is precisely what
-  `prompter.go`'s existing comment says a second `Kind` is for, and
-  which avoids adding a method to an interface that has three
-  implementers. The alternative — a dedicated
-  `Prompter.EnrollmentCode(...)` method — is more honest about the fact
-  that this proves knowledge of a shared code rather than possession of
-  a private key, but it breaks every existing `Prompter` implementation
-  the day it lands. See "Library surface".
-- **`[ ] D-ENROLL-CODE-FORMAT` — what the code looks like.**
-  Recommendation: Crockford base32, 16 characters in four hyphenated
-  groups (~80 bits), normalized case-insensitively with separators
-  stripped on input. The alternative is a diceware-style word list
-  (easier to read aloud, better for a phone call) at the cost of
-  shipping a word list in the binary. See "The enrollment code".
-- **`[ ] D-ENROLL-TTL` — default request lifetime.** Recommendation: 24
-  hours by default, `--ttl` to override, with a hard ceiling of 7 days
-  that exists so pruning can be done without opening anything. See
-  "Expiry, revocation, and pruning".
+### `[x]` D-ENROLL-PROMPTER — how the approver's code reaches the library
+
+**Resolved: it doesn't need to. The code is an ordinary input parameter,
+not an interactive decision, so no `Prompter` change is needed at all.**
+
+This overturns the draft's own recommendation (a new
+`KindEnrollmentCode` on `UnlockRequest`). Writing that up is what showed
+it was wrong, in two independent ways:
+
+- **It isn't an unlock.** `Prompter.Unlock` is documented as asking for
+  "whatever proves this device holds the private key a vault's chosen
+  method expects." An enrollment code proves nothing of the kind — it
+  proves the *requester* knew a secret shared out-of-band. Reusing that
+  exchange would make `Kind` mean two unrelated things.
+- **The additive-ness was illusory, and in the dangerous direction.**
+  Adding a `Kind` compiles against every existing `Prompter`, which
+  sounds like the "additive, not reworked" bar this project holds itself
+  to. But an implementation that renders "Enter passphrase for vault X"
+  for whatever it is handed would then render the *wrong prompt* for the
+  new `Kind` rather than failing. A silent behavioral break is strictly
+  worse than the compile-time break that adding a method would have
+  caused — loud failure is the entire reason `UnlockRequest` is typed.
+
+Neither option is needed, because the code is just an argument.
+`OpenEnrollment(codes []string)` is a pure function of what it's handed,
+the way `AddRecipient` takes a pubkey. `cmd/gage` collects codes from
+`--code` flags or, when none were given, by prompting with the existing
+`Prompter.Value` — masked, one line, carrying no vault/device/attempt
+context, which is exactly what that method's doc comment already
+describes. A wrong code returns `ErrEnrollmentCodeWrong`, and `cmd/gage`
+decides whether to ask again.
+
+That is the base design's stated split working as intended: "retry
+policy stays a decision `cmd/gage` makes, not one the library bakes in."
+The library gains no new interface surface, and neither does `Prompter`.
+
+### `[x]` D-ENROLL-CODE-FORMAT — what the code looks like
+
+**Resolved: Crockford base32, 16 characters, four hyphenated groups,
+displayed behind a cosmetic `GAGE-` prefix.**
+
+```
+GAGE-7K4M-9QX2-P3RH-8WVN
+```
+
+- **16 characters × 5 bits = 80 bits**, drawn from `crypto/rand`. Behind
+  age's scrypt work factor that is not brute-forceable, which matters
+  because the sealed blob is an offline, unlimited-guess target for
+  anyone who can read the vault (see "The reframe"). It stays short
+  enough to dictate over a phone call or type on a phone keyboard.
+- **Crockford's alphabet excludes `I`, `L`, `O`, and `U`**, so the
+  characters most often confused in handwriting or speech never appear.
+  Decoding additionally *maps* `I`/`L` → `1` and `O` → `0`, so the
+  ambiguity that survives a bad transcription is corrected rather than
+  rejected. Excluding `U` also keeps the generator from spelling
+  unfortunate words by accident.
+- **Input is normalized before use**: uppercased, with hyphens, spaces,
+  and any `GAGE-` prefix stripped, then Crockford-decoded. Someone who
+  writes it down and types it back lowercase, with spaces, or without
+  the prefix gets what they expect.
+- **A code that fails length or alphabet validation is rejected before
+  any decryption is attempted**, so a typo costs nothing instead of N
+  scrypt runs across N pending requests.
+- **The library never persists the code.** It is returned once from
+  `Enroll` for `cmd/gage` to display, and it exists nowhere else — not
+  in the vault, not in local state, not in the session history file
+  (which already refuses to record values).
+
+The alternative was a diceware-style word list, which is genuinely
+easier to read aloud. It was rejected for now because it means shipping
+and versioning a word list in the binary for a marginal gain over an
+unambiguous alphabet, and because a changed list would invalidate codes
+generated by an older build. If read-aloud transcription turns out to be
+the dominant channel in practice, this is additive later — the wire
+format is "a passphrase string," and nothing else depends on its shape.
+
+### `[x]` D-ENROLL-TTL — default request lifetime
+
+**Resolved: 24 hours by default, `--ttl` to override, a hard ceiling of
+7 days.**
+
+- **24 hours** covers the realistic slow case — a request made in one
+  timezone and approved the next morning in another — without leaving
+  blobs around for weeks. The common case (one person, two machines,
+  minutes apart) is unaffected by any value in this range.
+- **The 7-day ceiling is load-bearing, not a round number.** It is what
+  makes pruning sound without opening anything: a request committed
+  longer ago than the ceiling is definitely expired, whatever its sealed
+  `expires` claims, so `gage` can garbage-collect blobs it has no code
+  for. Without a ceiling, an unopenable blob could never be safely
+  pruned.
+- **`--ttl` is validated at the boundary** — positive and no greater
+  than the ceiling — and rejected with a usage error before anything is
+  generated or written, the same treatment `--type` and `--method`
+  already get.
+- **Expiry is always enforced from the sealed copy**, never from the
+  filename, the listing, or the commit date. The unauthenticated
+  timestamps are housekeeping hints only; see "Expiry, revocation, and
+  pruning".
+
+### `[ ]` D-ENROLL-VERBS — command naming (deferred)
+
+**Deliberately open.** Tracked as `Q-ENROLL-VERBS` in
+[open-questions.md](../plans/gage-cli-design/open-questions.md), since
+that register is the single place a deferred decision is allowed to live.
+
+**Every command name in this document is therefore provisional.** The
+shapes are settled — what the joining side does, what the approving side
+does, which flags each takes, what lands in one commit — and none of
+that depends on the spelling. Nothing should be implemented against
+these names until this is resolved.
 
 ---
 
@@ -231,24 +314,15 @@ Two rules enforce inertness in code, and both belong in the test list:
 
 ## The enrollment code
 
-Generated by `gage` on the joining device, never chosen by the user:
+Generated by `gage` on the joining device, never chosen by the user —
+`GAGE-7K4M-9QX2-P3RH-8WVN`. The format, entropy, alphabet, and
+normalization rules are settled under D-ENROLL-CODE-FORMAT above; what
+follows is what the code *means* rather than what it looks like.
 
-```
-GAGE-7K4M-9QX2-P3RH-8WVN
-```
-
-Crockford base32 — no `I`, `L`, `O`, or `U`, so there is no
-zero-versus-O or one-versus-l ambiguity when it's read aloud or
-retyped. Sixteen characters is ~80 bits, which behind age's scrypt work
-factor is not brute-forceable by anyone, and which stays short enough to
-dictate over a phone call or type on a phone keyboard.
-
-**Input is normalized before use**: uppercased, with all hyphens,
-spaces, and the `GAGE-` prefix stripped. Someone who writes the code
-down and types it back with spaces instead of hyphens, or in lowercase,
-gets the behavior they expect rather than a wrong-code error. The `GAGE-`
-prefix is cosmetic — it makes the string identifiable when it turns up in
-a chat log, which is also a reminder that it doesn't belong in one.
+The `GAGE-` prefix is cosmetic, and it earns its place by making the
+string recognizable when it turns up somewhere it shouldn't — a chat
+log, a screenshot, a terminal recording. That recognizability is a
+reminder that it doesn't belong there.
 
 **`gage` says what the channel requirements are, at the moment it prints
 the code**, rather than assuming the user has read this document: the
@@ -295,23 +369,64 @@ This device holds no identity for "personal", so it can't read anything here yet
 
 Set up an enrollment request now? [Y/n] y
 
-Generated a new identity for this device:
-  device:  andrews-macbook-pro
-  pubkey:  age1qz8x2...
-
-Enter a passphrase to protect this device's key: ****
+This device needs a key of its own for "personal". Choose a passphrase to
+protect it: it stays on this device, it is not the enrollment code, and
+you will never send it to anyone.
+Enter passphrase: ****
 Confirm passphrase: ****
+
+gage: this device is "andrews-macbook-pro", public key age1qz8x2...
 
 Enrollment request published (expires in 24h).
 
   Enrollment code:  GAGE-7K4M-9QX2-P3RH-8WVN
 
-Give this code to someone who can already read "personal", over a channel
-where they can tell it came from you — not through this vault's remote.
+This code is safe to send and is not your passphrase. Give it to someone
+who can already read "personal", over a channel where they can tell it
+came from you — not through this vault's remote.
 They run:  gage recipient approve --code GAGE-7K4M-9QX2-P3RH-8WVN
 
 Then run `gage sync` here.
 ```
+
+### Which secret is which
+
+Three distinct secrets appear in or around this flow. Conflating any two
+would be a genuine error, so they're worth naming outright rather than
+leaving to inference:
+
+1. **The identity passphrase** — the one prompted for above. It protects
+   this device's newly generated private key at
+   `$GAGE_DATA/identities/<vault>/<device>.age`. The *user* chooses it,
+   it never leaves this machine, it is never transmitted to anyone, and
+   it is what this device will be asked for on every future unlock. It's
+   confirmed twice because this is the existing `PurposeCreate`
+   exchange: there is nothing to check the answer against, so a typo
+   would be unrecoverable and nobody would find out until the next
+   unlock. It is also why `GAGE_PASSPHRASE` is not honored here — the
+   base design already refuses it wherever the answer protects a
+   brand-new key (see "Session model").
+2. **The enrollment code** — *generated* by `gage`, displayed once,
+   carried out-of-band, dead in 24 hours. It seals and authenticates the
+   pending request. The user never chooses it and never has to remember
+   it.
+3. **The approver's own identity passphrase** — prompted on the *other*
+   device, because `--reencrypt` needs their identity to decrypt and
+   rewrite entries. Unrelated to either of the above.
+
+**(1) and (2) are opposites that appear four lines apart on one screen**,
+which is exactly the setup for an expensive mistake: one is chosen by the
+user and stays on one machine forever, the other is produced by the tool
+and is meant to be sent. The failure mode to design against is someone
+pasting their identity passphrase into a chat window because they thought
+it was the code — or typing the code at their next unlock prompt and
+concluding gage is broken.
+
+So each is labeled at its point of use, in the output above: the
+passphrase prompt says the answer stays on this device and is not the
+code, and the code is printed with an explicit "safe to send, not your
+passphrase." This is cheap, and it's the only place in `gage` where two
+different secrets are on screen at once.
 
 `gage enroll --use personal` does the same thing against a vault that's
 already cloned, and is what someone reaches for when they cloned first
@@ -324,6 +439,67 @@ behavioral difference from `identity add`, which refuses to overwrite.
 The distinction is deliberate — `identity add`'s refusal protects "the
 only copy of a private key"; `enroll`'s reuse is what makes it safe to
 run twice after a failed push.
+
+### What changes when a method other than `passphrase` exists
+
+Yes, the flow adjusts — but only in one place, and it's the place that's
+already abstracted for it. Worth tracing precisely, because the parts
+that *don't* change are the interesting ones.
+
+- **The identity-creation exchange changes, and nothing else in the
+  flow does.** "Enter passphrase / Confirm passphrase" is a rendering of
+  the existing `Prompter.Unlock` call with `Purpose: PurposeCreate`. The
+  base design already says a YubiKey-method request "would carry `Kind:
+  "yubikey"` and expect nothing but a touch signal." So those two lines
+  become "Touch your YubiKey to generate a key…" and the rest of the
+  output — the pubkey, the published request, the code, the instructions
+  — is byte-for-byte the same. No new branch in the enrollment logic;
+  the method dispatch happens one layer down, where it already lives.
+- **The enrollment code is completely unaffected**, and that
+  orthogonality is worth stating because it isn't obvious. The sealed
+  request always uses a scrypt (passphrase) recipient — the *code* —
+  regardless of what method the joining device uses to store its own
+  key. The code authenticates the request; the method describes key
+  storage. They never interact, so "YubiKey device joining a vault"
+  needs no new sealing story.
+- **`method` in the payload is already provisioned.** It's a new value
+  in an existing field, not a new field, which is the whole reason it's
+  carried today when only one value can appear.
+- **The approver's side is entirely unchanged.** They unlock with
+  *their* method, `--reencrypt` runs, a public key goes into
+  `.age-recipients`. age takes mixed recipient types in one file — a
+  YubiKey recipient is `age1yubikey1...` and sits beside any other — so
+  nothing downstream distinguishes them.
+
+**The one thing that needs care, and it is a trap this document set for
+itself.** The clone prompt above is driven by `HasIdentity(vault,
+device)`, which is a pure file-existence check on
+`$GAGE_DATA/identities/<vault>/<device>.age`. Hardware-backed methods
+**never write that file** — "ssh/yubikey/secure-enclave write nothing
+here, since the private key never leaves external hardware, an agent, or
+the OS keychain." So a fully working YubiKey-backed device would report
+`false` forever, and `clone` would offer to enroll it on every single
+clone, permanently, no matter how many times it had already been
+approved.
+
+That is a rework waiting to happen, so the requirement gets recorded now
+even though nothing implements it yet: **the predicate behind the prompt
+is "is this device registered for this vault," not "does a wrapped file
+exist."** For `passphrase`/`age-key` those coincide, which is why
+today's check is correct today. For a hardware method the answer must
+come from this device's local registration — `[vaults.<name>].device`
+and `.method` in global config — rather than from the filesystem.
+
+Two constraints on whatever that becomes, both inherited rather than
+new: it must stay answerable **without an unlock** (prompting during a
+clone to report that the unlock was pointless is, per `clone.go`,
+"exactly backwards"), and it must treat "the external holder isn't
+plugged in right now" as an unlock-time problem, not a
+not-registered signal — otherwise leaving your YubiKey at home would
+offer to enroll you a second time. The exact spelling is settled when a
+second method actually lands; what's settled *here* is that the
+predicate is about registration, so that milestone extends this rather
+than rewriting it.
 
 ### Why there is no `--enroll` flag
 
@@ -385,8 +561,11 @@ to tell someone their unlock was pointless is, as `clone.go` puts it,
 
 So the condition `gage` tests is the one that costs nothing:
 `HasIdentity(vault, device)` — does this machine hold a wrapped identity
-for this vault at all? That yields the rule already shipped, which the
-enrollment prompt should adopt unchanged:
+for this vault at all? (Correct while `passphrase` is the only method;
+see "What changes when a method other than `passphrase` exists" for why
+this predicate has to become registration-based before a hardware method
+lands.) That yields the rule already shipped, which the enrollment
+prompt should adopt unchanged:
 
 - **No local identity for this vault.** This device certainly isn't a
   recipient. Offer to enroll, generating a key.
@@ -620,12 +799,15 @@ var ErrEnrollmentIDMismatch = errors.New("gage: this request's sealed id does no
 var ErrEnrollmentNoRemote   = errors.New("gage: publishing an enrollment request needs a writable remote")
 ```
 
-**The approver's code entry** reaches the library through
-`Prompter.Unlock` with a new `UnlockKind` — `KindEnrollmentCode`, with
-`Purpose: PurposeUnlock` — pending decision `D-ENROLL-PROMPTER` above.
-The joining side needs no prompt at all for the code, since `gage`
-generates it; it does need the existing `PurposeCreate` unlock exchange
-to protect the new identity file, which is unchanged behavior.
+**`Prompter` is unchanged — no new method, no new `UnlockKind`** (see
+D-ENROLL-PROMPTER). The approver's code is an argument to
+`OpenEnrollment`, not something the library asks for mid-flight;
+`cmd/gage` gathers it from `--code` or from the existing
+`Prompter.Value`, and owns the retry loop around
+`ErrEnrollmentCodeWrong`. The joining side needs no code prompt at all,
+since `gage` generates the code — it does still use the existing
+`PurposeCreate` unlock exchange to protect the new identity file, which
+is unchanged behavior.
 
 **Clone's "enroll now?" prompt needs no new interface surface.** It is
 `Prompter.Confirm`, which already exists for exactly this kind of
@@ -736,7 +918,11 @@ that matters should use the `--print-only` path instead.
   a `method` field so that a future `yubikey` or `ssh` request is a new
   value rather than a new field, but only `passphrase` is generated or
   accepted today — the same single-value-allowlist treatment `--type` and
-  `--method` already get.
+  `--method` already get. What such a method *would* change, and the one
+  predicate that has to be fixed before it can land, is traced under
+  "What changes when a method other than `passphrase` exists" — the
+  analysis is in scope even though the implementation isn't, because
+  getting the predicate wrong now would force a rework later.
 
 ---
 
@@ -762,6 +948,20 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - A wrong code opens nothing and returns `ErrEnrollmentCodeWrong`.
 - Codes normalize: lowercase, spaces-for-hyphens, and a missing `GAGE-`
   prefix all open the same request.
+- Crockford substitutions open the same request: `I` and `L` typed for
+  `1`, `O` typed for `0`.
+- Generated codes never contain `I`, `L`, `O`, or `U` — asserted over
+  many generations, not one.
+- Two successive `Enroll` calls produce different codes (the generator
+  is actually seeded from `crypto/rand`, not a fixed or time-derived
+  source).
+- A code failing length or alphabet validation is rejected **before any
+  decryption is attempted** — assert via decrypt call-count
+  instrumentation, the same technique M7 uses for the index, so a typo
+  can't cost N scrypt runs.
+- The generated code appears in `Enroll`'s return value and nowhere
+  else: not in the vault, not in local state, not in the session history
+  file.
 - A request whose sealed `request_id` disagrees with its filename is
   refused with `ErrEnrollmentIDMismatch` (write the file under a
   different name to produce this).
@@ -772,7 +972,11 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - A request past its sealed `expires` is refused with
   `ErrEnrollmentExpired`, **even when its commit date is recent** — this
   is the test that proves expiry is read from the authenticated copy.
-- `--ttl` beyond the 7-day ceiling is rejected at the boundary.
+- `--ttl` beyond the 7-day ceiling, zero, and negative are each rejected
+  at the boundary with a usage error, before anything is generated,
+  written, or committed.
+- A blob whose commit date is older than the ceiling is prunable without
+  being openable — the property the ceiling exists to provide.
 
 **Approval:**
 - Approving adds exactly one recipient to both `.age-recipients` and
@@ -807,6 +1011,13 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   clone — the passphrase prompt count for that run is zero.
 - `gage enroll` run explicitly in that state reuses the existing
   identity rather than generating a second one.
+- **The two secrets never cross.** The identity passphrase appears in no
+  output stream and in nothing committed; the enrollment code appears in
+  no identity file and in no committed plaintext. One test asserting
+  both, since the whole risk is that they get confused for each other.
+- The passphrase prompt and the printed code each carry their
+  disambiguating label ("stays on this device" / "safe to send"), so a
+  reader of the transcript alone can tell them apart.
 
 **Trust cache:**
 - A second already-authorized device gets the ordinary

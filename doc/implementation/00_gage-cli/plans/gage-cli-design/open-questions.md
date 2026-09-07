@@ -466,6 +466,41 @@ is answered the other way.
 
 ---
 
+### `[ ]` Q-ENROLL-VERBS — What are the device-enrollment commands called? {#q-enroll-verbs}
+
+**Blocks:** implementation of device enrollment
+([gage-cli-init-design.md](../../tdds/gage-cli-init-design.md)). Every
+other decision in that document is settled; this one is deliberately
+held open while the UX is iterated on. Nothing should be built against
+the provisional names until it's answered.
+
+The feature has two actors with two different mental models — a device
+asking to join, and a device that already has access deciding whether to
+let it — and the naming question is whether that split should be visible
+in the command surface.
+
+- **Split (the draft's provisional spelling):** `gage enroll` on the
+  joining side, `gage recipient pending/approve/deny` on the approving
+  side. Argues that approval genuinely *is* a recipient mutation — it
+  writes `.age-recipients` and `config.toml` together, shares
+  `--reencrypt`, regenerates the trust cache, and is what `recipient
+  verify` checks afterward — so it belongs where every other
+  recipient-list write already lives.
+- **Unified:** one `gage enroll request/list/approve/deny` group. Keeps
+  the whole feature findable under one word, which matters for something
+  a user meets exactly twice (once per new device) and has no chance to
+  build muscle memory for. Costs putting a recipient-list write
+  somewhere other than `recipient`.
+
+Worth deciding alongside the rest of the enrollment UX rather than in
+isolation, since the answer likely follows from how the flow reads
+end-to-end rather than from taxonomy. Whatever wins, the command
+registry (M0) is what keeps `gage help` and in-session `help` honest
+about it, and any new command must be registered there or M0's
+completeness test fails.
+
+---
+
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}
 
 **Blocks:** nothing; needed before a first public release.
