@@ -19,25 +19,32 @@ by being "handled later" without an entry there.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
+**All twelve milestones are complete** — M0 through M12 are implemented,
+their full test lists are green, and `make lint`/`make test` pass on the
+Linux/macOS/Windows matrix. Behavior that shipped *after* the plan was
+finished is recorded under "Post-plan changes" below, so this file stays
+an accurate account of the tool as built rather than as originally
+scheduled.
+
 ---
 
 ## Milestones
 
 | # | Milestone | Status | Model | Theme |
 |---|---|---|---|---|
-| M0 | [Scaffolding](m0-scaffolding.md) | `[ ]` | Sonnet ⚑ | Toolchain, layout, CI, primitives — no crypto, no vaults |
-| M1 | [Vault lifecycle & config](m1-vault-lifecycle.md) | `[ ]` | Sonnet | On-disk vault structure and the vault registry — still no crypto |
-| M2 | [Identity & memory protection](m2-identity-and-crypto.md) | `[ ]` | **Opus** ⚑ | age primitives, identity generation, `Unlock`/`Close`, page-locking |
-| M3 | [Entry format](m3-entry-format.md) | `[ ]` | Sonnet | Entry YAML + per-entry encrypt/decrypt round-trip |
-| M4 | [CRUD (one-shot)](m4-crud.md) | `[ ]` | Sonnet | `insert`/`cat`/`rm`/`ls`, commit-per-write |
-| M5 | [Query resolution](m5-query-resolution.md) | `[ ]` | Sonnet | title-then-UUID, exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
-| M6 | [Session mode](m6-session-mode.md) | `[ ]` | Sonnet* | `Session` type, REPL, multi-vault, idle timeout |
-| M7 | [Metadata index](m7-metadata-index.md) | `[ ]` | Sonnet | Decrypt-once cache, `search`/`grep`, `reindex` |
-| M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[ ]` | **Opus** | Auth, auto fetch/pull/push, `clone`, divergence detection |
-| M8b | [Sync: conflict resolution](m8b-sync-conflicts.md) | `[ ]` | **Opus** | `gage sync` — keep local/remote/both, merge commit |
-| M9 | [Identity & recipient management](m9-recipients.md) | `[ ]` | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
-| M10 | [Local trust cache](m10-trust-cache.md) | `[ ]` | Sonnet* | `known-config.toml`, recipient-change detection |
-| M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[ ]` | Sonnet | `mv`/`cp --to-vault` |
+| M0 | [Scaffolding](m0-scaffolding.md) | `[x]` | Sonnet ⚑ | Toolchain, layout, CI, primitives — no crypto, no vaults |
+| M1 | [Vault lifecycle & config](m1-vault-lifecycle.md) | `[x]` | Sonnet | On-disk vault structure and the vault registry — still no crypto |
+| M2 | [Identity & memory protection](m2-identity-and-crypto.md) | `[x]` | **Opus** ⚑ | age primitives, identity generation, `Unlock`/`Close`, page-locking |
+| M3 | [Entry format](m3-entry-format.md) | `[x]` | Sonnet | Entry YAML + per-entry encrypt/decrypt round-trip |
+| M4 | [CRUD (one-shot)](m4-crud.md) | `[x]` | Sonnet | `insert`/`cat`/`rm`/`ls`, commit-per-write |
+| M5 | [Query resolution](m5-query-resolution.md) | `[x]` | Sonnet | title-then-UUID, exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
+| M6 | [Session mode](m6-session-mode.md) | `[x]` | Sonnet* | `Session` type, REPL, multi-vault, idle timeout |
+| M7 | [Metadata index](m7-metadata-index.md) | `[x]` | Sonnet | Decrypt-once cache, `search`/`grep`, `reindex` |
+| M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[x]` | **Opus** | Auth, auto fetch/pull/push, `clone`, divergence detection |
+| M8b | [Sync: conflict resolution](m8b-sync-conflicts.md) | `[x]` | **Opus** | `gage sync` — keep local/remote/both, merge commit |
+| M9 | [Identity & recipient management](m9-recipients.md) | `[x]` | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
+| M10 | [Local trust cache](m10-trust-cache.md) | `[x]` | Sonnet* | `known-config.toml`, recipient-change detection |
+| M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[x]` | Sonnet | `mv`/`cp --to-vault` |
 | M12 | [Polish / output modes](m12-polish.md) | `[x]` | Sonnet | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
 
 **Model column.** `⚑` marks a milestone worth an Opus review pass over
@@ -232,6 +239,45 @@ this class of coupling easy to lose.
 | M7 | Session-scoped metadata index | **M8a must invalidate/rebuild it after a successful pull**; M8b after each resolution; M11 must update both vaults' indexes |
 | M9 | Recipient list changes touch `.age-recipients` and `config.toml` together, in one commit | M10 diffs exactly that pair |
 | M10 | `RecipientChangeWarning` typed value + cache regeneration rules | M11 runs the check against the *destination* vault |
+
+---
+
+## Post-plan changes (shipped after M12)
+
+Work that landed after the milestone plan was finished. It's recorded
+here because it changes behavior the milestone docs specify, and would
+otherwise live only in git history. Each item's tests sit with the
+milestone whose surface it touches rather than in a suite of their own.
+
+- **Context-relevant help on a usage rejection** (#27). A Cobra-native
+  parsing rejection — wrong argument count, unknown flag, unrecognized
+  (sub)command — now carries that command's own usage block alongside
+  the bare complaint, in one-shot mode and inside a session alike, while
+  a command's own coded error is left exactly as it built it. Folded
+  into **M0**'s test list (`cmd/gage/usageerror_test.go`) rather than
+  tracked separately, since it's the help/registry surface M0 owns.
+- **`gage init --remote` solicits a token inline** (#38). Specified in
+  **M8a** all along; the implementation simply landed after the rest of
+  that milestone.
+- **`gage vault remove` cleans up an orphaned identity file** (#39).
+  This *extends* M1's "drops registration, leaves the underlying files
+  untouched" bullet, and the narrowness is the whole point: the local
+  identity file is deleted only when the vault's recipient list is
+  readable **and** no longer lists this device. If the device is still a
+  listed recipient, or the list can't be read at all (moved store,
+  remote-only, filesystem trouble), `gage` keeps the file and says why —
+  guessing wrong would permanently strand access to that vault's
+  ciphertext, and `vault remove` never touches the store. `gage init`
+  and `identity add` reusing an existing identity file rather than
+  overwriting it is the other half of the same guarantee.
+- **`make reset-local-state`** (`scripts/resetlocalstate`) — a
+  development helper that deletes this machine's
+  `$GAGE_CONFIG`/`$GAGE_DATA`/`$GAGE_STATE` so the fresh-install path can
+  be exercised by hand. It prints the paths it resolved and requires an
+  interactive `yes` before deleting anything. Deliberately a separate
+  `main` under `scripts/` rather than a `gage` subcommand: destroying a
+  user's vaults and identities has no place in the CLI's own command
+  surface, and keeping it out means it can't be reached by accident.
 
 ---
 

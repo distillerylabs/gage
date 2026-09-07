@@ -54,110 +54,110 @@ bare-remote test harness exists to clone *from*.
 
 ## Tests (write first)
 
-- [ ] `gage init <name> --recipient <pubkey>` creates `.gage/config.toml`,
+- [x] `gage init <name> --recipient <pubkey>` creates `.gage/config.toml`,
       `.age-recipients`, `entries/`, `.gitignore`, `.gitattributes`, and
       a git repo with exactly one commit
-- [ ] Without `--dir`, the vault is created at `$GAGE_DATA/vaults/<name>`
+- [x] Without `--dir`, the vault is created at `$GAGE_DATA/vaults/<name>`
       and registered under exactly that path in global config
-- [ ] With `--dir PATH`, the vault is created at `PATH` and registered
+- [x] With `--dir PATH`, the vault is created at `PATH` and registered
       under it
-- [ ] `gage init` writes a `.gitattributes` marking `.age-recipients` and
+- [x] `gage init` writes a `.gitattributes` marking `.age-recipients` and
       `.gage/config.toml` as `-merge`, so a later divergence on either is
       forced to a conflict instead of being line-merged into a recipient
       list neither device wrote (Q-SYNC-CONFLICT; the merge behavior
       itself is tested in M8a)
-- [ ] The generated `.gitignore` contains the standard OS-cruft patterns
+- [x] The generated `.gitignore` contains the standard OS-cruft patterns
       (`.DS_Store`, `Thumbs.db`) and nothing `gage`-state-specific —
       there's nothing else to ignore, since the trust cache and identity
       files live outside the vault by design
-- [ ] `gage init` into a non-empty, non-gage directory fails cleanly
+- [x] `gage init` into a non-empty, non-gage directory fails cleanly
       without touching existing files
-- [ ] `gage init` with a name already registered in global config behaves
+- [x] `gage init` with a name already registered in global config behaves
       per the decision above, and either way leaves the existing vault's
       files and registration untouched
-- [ ] `.gage/config.toml` round-trip: `[vault]` (including `type = "git"`
+- [x] `.gage/config.toml` round-trip: `[vault]` (including `type = "git"`
       and `format_version`) + `[method].default` + `[[recipients]]` fields
       survive write/parse
-- [ ] `[[recipients]]` entries carry only `device` and `pubkey` — no
+- [x] `[[recipients]]` entries carry only `device` and `pubkey` — no
       per-device `method` field leaks into the committed vault config,
       which would tell anyone with read access which recipient is the
       softest target (Q-METHOD-SCOPE)
-- [ ] Global config round-trips per-vault `device` and `method` fields
+- [x] Global config round-trips per-vault `device` and `method` fields
       (M2 populates them; M1 only has to define and preserve the schema)
-- [ ] Device-name normalization: a hostname like `Andrews-MacBook-Pro.local`
+- [x] Device-name normalization: a hostname like `Andrews-MacBook-Pro.local`
       normalizes to `andrews-macbook-pro`; names are lowercased,
       truncated at the first dot, non-allowlisted characters replaced,
       runs collapsed, length capped
-- [ ] A hostname that normalizes to nothing usable causes `gage` to
+- [x] A hostname that normalizes to nothing usable causes `gage` to
       prompt for a device name rather than inventing one
-- [ ] `--device NAME` overrides the hostname default on `init`, and the
+- [x] `--device NAME` overrides the hostname default on `init`, and the
       given name is what lands in `[[recipients]].device` and the
       identity file path
-- [ ] `--device` with a name failing the allowlist is rejected with a
+- [x] `--device` with a name failing the allowlist is rejected with a
       usage error before any file is created
-- [ ] **A `.gage/config.toml` whose `[[recipients]].device` contains a
+- [x] **A `.gage/config.toml` whose `[[recipients]].device` contains a
       path traversal (`../../../etc/x`), an absolute path, or a path
       separator is rejected on read** — never normalized into something
       usable, never used to build a path. The file is committed and any
       git-writer can edit it, so this is untrusted input (Q-DEVICE-NAME)
-- [ ] A `.gage/config.toml` carrying an unrecognized `format_version`
+- [x] A `.gage/config.toml` carrying an unrecognized `format_version`
       is refused cleanly with an "upgrade gage" error, before any other
       field is acted on — never best-effort parsed
-- [ ] `gage init` with no `--type` flag defaults to `type = "git"`
-- [ ] `gage init --type git` succeeds and is equivalent to omitting the flag
-- [ ] `gage init --type <anything-else>` fails with a usage error before
+- [x] `gage init` with no `--type` flag defaults to `type = "git"`
+- [x] `gage init --type git` succeeds and is equivalent to omitting the flag
+- [x] `gage init --type <anything-else>` fails with a usage error before
       creating any files, and lists `git` as the only accepted value
-- [ ] `gage init` with no `--method` flag defaults to
+- [x] `gage init` with no `--method` flag defaults to
       `[method].default = "passphrase"` in `.gage/config.toml` — a
       default for devices joining, not a vault-wide constraint
       (Q-METHOD-SCOPE)
-- [ ] `gage init --method passphrase` succeeds and is equivalent to
+- [x] `gage init --method passphrase` succeeds and is equivalent to
       omitting the flag
-- [ ] `gage init --method <anything-else>` fails with a usage error before
+- [x] `gage init --method <anything-else>` fails with a usage error before
       creating any files, and lists `passphrase` as the only accepted
       value — including for the method names the design doc mentions as
       future work (`ssh`, `yubikey`, `age-key`, `secure-enclave`,
       `plugin:*`), which must fail like any other unknown value rather
       than being silently accepted and written to config
-- [ ] `gage init` with no `--recipient` fails with a clear error naming
+- [x] `gage init` with no `--recipient` fails with a clear error naming
       the flag — in M1 there's no identity generation to supply a key
       (M2 changes this test)
-- [ ] `gage init --recipient` repeated N times writes all N keys
-- [ ] `gage init --recipient <malformed>` fails with a usage error before
+- [x] `gage init --recipient` repeated N times writes all N keys
+- [x] `gage init --recipient <malformed>` fails with a usage error before
       creating any files
-- [ ] `.age-recipients` round-trip: one public key per line, no gage-only
+- [x] `.age-recipients` round-trip: one public key per line, no gage-only
       framing, so a stock `age`/`passage` CLI could use it as-is
-- [ ] The keys written to `.age-recipients` match `.gage/config.toml`'s
+- [x] The keys written to `.age-recipients` match `.gage/config.toml`'s
       `[[recipients]]` exactly
-- [ ] `gage vault list` includes a freshly-`init`'d vault
-- [ ] `gage vault info <name>` reports the correct type, method, recipient
+- [x] `gage vault list` includes a freshly-`init`'d vault
+- [x] `gage vault info <name>` reports the correct type, method, recipient
       count, and (for `git`) remote + clean/dirty state
-- [ ] `gage vault info` with no argument reports on `current`
-- [ ] `gage vault remove <name>` drops it from global config but leaves
+- [x] `gage vault info` with no argument reports on `current`
+- [x] `gage vault remove <name>` drops it from global config but leaves
       the underlying git repo and its files on disk untouched
-- [ ] `gage vault set-default <name>` updates `current` in global config
-- [ ] `gage init` without `--remote` succeeds and leaves the vault
+- [x] `gage vault set-default <name>` updates `current` in global config
+- [x] `gage init` without `--remote` succeeds and leaves the vault
       remote-less (no `origin`, no `[vaults.<name>.git]` table in global
       config)
-- [ ] `gage git set-remote <name> <url>` sets `origin` on the actual git
+- [x] `gage git set-remote <name> <url>` sets `origin` on the actual git
       repo (verified by reading git config back via go-git) *and* updates
       `vaults.<name>.git.origin` in global config in the same call
-- [ ] `gage git set-remote <name> <new-url>` on a vault that already has
+- [x] `gage git set-remote <name> <new-url>` on a vault that already has
       an `origin` changes it (equivalent to `set-url`), and `vault info`
       reflects the new URL afterward
-- [ ] `gage git set-remote` invoked without both `<name>` and `<url>`
+- [x] `gage git set-remote` invoked without both `<name>` and `<url>`
       fails with a usage error and makes no change to the repo or global
       config
 
 ## Implementation
 
-- [ ] `Vault.Create(spec)` in the library: writes the full on-disk
+- [x] `Vault.Create(spec)` in the library: writes the full on-disk
       skeleton — including `.gitattributes` marking the two
       recipient-defining files unmergeable — given a name, type, method,
       path, and a list of recipient public keys as strings; go-git
       `PlainInit` + initial commit. Takes no identity and performs no
       encryption
-- [ ] `gage init <name> [--dir PATH] [--type git] [--method passphrase]
+- [x] `gage init <name> [--dir PATH] [--type git] [--method passphrase]
       [--recipient PUBKEY ...] [--remote URL]` as a thin wiring layer
       over `Vault.Create`. `--type` and `--method` get identical
       treatment: optional, defaulting to the single value that exists
@@ -165,28 +165,28 @@ bare-remote test harness exists to clone *from*.
       allowlist before any file is touched, so a second value later is
       additive to the CLI surface rather than a breaking change
       (Q-METHOD-FLAG)
-- [ ] `.gage/config.toml` read/write (`[vault]` incl. `type` and
+- [x] `.gage/config.toml` read/write (`[vault]` incl. `type` and
       `format_version`, `[method]`, `[[recipients]]`), through M0's
       atomic-write helper
-- [ ] `format_version` written on create and strictly validated on every
+- [x] `format_version` written on create and strictly validated on every
       read — an unrecognized version is a typed refusal, not a
       best-effort parse
-- [ ] `.age-recipients` read/write — one key per line, no framing
-- [ ] Recipient public key parsing/validation (well-formed `age1...`
+- [x] `.age-recipients` read/write — one key per line, no framing
+- [x] Recipient public key parsing/validation (well-formed `age1...`
       bech32), so a malformed `--recipient` fails at the CLI boundary
       rather than at first encrypt in M3
-- [ ] Global config registry: register on `init`, deregister on `vault
+- [x] Global config registry: register on `init`, deregister on `vault
       remove`, `current` on `set-default`; schema includes the per-vault
       `device` and `method` fields (populated in M2)
-- [ ] Device-name normalization and validation helper: normalize a
+- [x] Device-name normalization and validation helper: normalize a
       hostname to the allowlist, and validate any name read from
       `.gage/config.toml` before it is used anywhere. Validation is the
       security-relevant half — device names reach the filesystem as path
       components and arrive from a committed file any git-writer can
       edit
-- [ ] `--device NAME` on `init`
-- [ ] `gage vault list/info/remove/set-default`
-- [ ] `gage git set-remote` (go-git set/update `origin`, synced into
+- [x] `--device NAME` on `init`
+- [x] `gage vault list/info/remove/set-default`
+- [x] `gage git set-remote` (go-git set/update `origin`, synced into
       `vaults.<name>.git.origin` in global config in the same call)
 
 ## Definition of done

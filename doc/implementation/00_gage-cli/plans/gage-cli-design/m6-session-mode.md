@@ -144,7 +144,7 @@ decrypt-on-demand per command.
       mode — not the bare `accepts 1 arg(s), received 0` with nothing
       else. Covered for both an interactive-style line and a `--stdin`
       line, since both go through `runSessionCommand`
-- [ ] The full M6 test suite passes unmodified on Windows, not just
+- [x] The full M6 test suite passes unmodified on Windows, not just
       Linux/macOS — `Session`'s locking/idle-timeout behavior doesn't
       depend on any POSIX-only mechanism. *The CI matrix has now run and
       found two real failures, both fixed:*
