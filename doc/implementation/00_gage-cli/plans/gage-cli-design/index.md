@@ -52,13 +52,14 @@ it currently disagrees with the design doc.
 
 **† These milestones shipped complete, then had their contracts
 amended.** [A19](open-questions.md#a19) makes re-encryption
-unconditional on `gage recipient add` (M9). [A20](open-questions.md#a20)
-keys the identities directory by a vault id rather than by the local
-vault name (M1's config schema and `format_version`, M2's identity
-paths). Both are applied to the design doc; neither is in the code. See
-"Accepted, not yet implemented" below — **A20 should be done before
-anything ships**, since its migration is only free while there is no
-installed base.
+unconditional on `gage recipient add` (M9) — applied to the design doc,
+not yet in the code; see "Accepted, not yet implemented" below.
+[A20](open-questions.md#a20) keys the identities directory by a vault id
+rather than by the local vault name (M1's config schema and
+`format_version`, M2's identity paths) — **implemented** in
+[E0](../gage-cli-init-design/e0-vault-id-keying.md), together with
+[Q-ORPHAN-BY-NAME](open-questions.md#q-orphan-by-name), so those two
+milestones' amended contracts are now what the code does.
 
 **Model column.** `⚑` marks a milestone worth an Opus review pass over
 its *tests* before moving on, even where Sonnet wrote them. `*` marks a
@@ -272,23 +273,27 @@ milestone whose surface it touches rather than in a suite of their own.
 - **`gage init --remote` solicits a token inline** (#38). Specified in
   **M8a** all along; the implementation simply landed after the rest of
   that milestone.
-- **`gage vault remove` cleans up an orphaned identity file** (#39).
-  This *extends* M1's "drops registration, leaves the underlying files
-  untouched" bullet, and the narrowness is the whole point: the local
-  identity file is deleted only when the vault's recipient list is
-  readable **and** no longer lists this device. If the device is still a
-  listed recipient, or the list can't be read at all (moved store,
-  remote-only, filesystem trouble), `gage` keeps the file and says why —
-  guessing wrong would permanently strand access to that vault's
-  ciphertext, and `vault remove` never touches the store. `gage init`
-  and `identity add` reusing an existing identity file rather than
-  overwriting it is the other half of the same guarantee.
-  **Being revised:** the "no longer lists this device" test compares
-  device *names*, which A20's follow-on changes to a public-key
-  comparison behind a confirmation. A20 also removes most of this
-  cleanup's original motivation, since keying identities by vault id
-  makes the silent-reuse case it guarded against structurally
-  impossible.
+- **`gage vault remove` offers to clean up an orphaned identity file**
+  (#39, as revised by E0). This *extends* M1's "drops registration,
+  leaves the underlying files untouched" bullet, and the narrowness is
+  the whole point: deletion is offered only when the vault's recipient
+  list is readable **and** no longer contains this device's *public
+  key*, and it never happens without a `Confirm` that names the path.
+  If the key is still listed (under any label), or the list can't be
+  read at all (moved store, remote-only, filesystem trouble), or global
+  config records no public key for this device, `gage` keeps the file
+  and says why — guessing wrong would permanently strand access to that
+  vault's ciphertext, and `vault remove` never touches the store.
+  `Confirm` defaults to no, so a non-interactive run keeps the file by
+  construction.
+  **What E0 changed:** the test used to compare device *names*, which
+  was wrong in both directions (Q-ORPHAN-BY-NAME) — it would delete an
+  active recipient's key whenever the vault labelled it differently, and
+  keep a stale key whenever another device took its old label. E0 also
+  removed most of this cleanup's original motivation: keying identities
+  by vault id makes the silent-reuse case it guarded against
+  structurally impossible, which is why the remaining deletion asks
+  rather than assumes.
 - **`make reset-local-state`** (`scripts/resetlocalstate`) — a
   development helper that deletes this machine's
   `$GAGE_CONFIG`/`$GAGE_DATA`/`$GAGE_STATE` so the fresh-install path can
@@ -307,12 +312,14 @@ yet. This section exists so that gap is visible rather than inferred
 from a mismatch between the TDD and the binary — and it should be empty
 most of the time.
 
-**Both items below are sequenced in their own plan.** A20 is `E0` and
-A19 is `E1a` in
+**One item remains.** A19 is `E1a` in
 [plans/gage-cli-init-design/](../gage-cli-init-design/index.md), which
-also covers the device-enrollment feature that raised them. The
-summaries here are the standing record; the milestone docs carry the
-test lists.
+also covers the device-enrollment feature that raised it. The summary
+here is the standing record; the milestone doc carries the test list.
+
+A20 was the other item and is **done** — `E0`, landed with
+Q-ORPHAN-BY-NAME. Its former entry is kept below as a record of what
+changed, the way the amendment register keeps applied entries.
 
 ### A19 — `gage recipient add` always re-encrypts
 
@@ -346,7 +353,7 @@ already specifies `recipient approve` this way, so implementing A19 first
 keeps the two doors consistent rather than letting `add` remain the
 vector that creates partial recipients.
 
-### A20 — the identities directory is keyed by a vault id
+### A20 — the identities directory is keyed by a vault id — **done (E0)**
 
 Full reasoning in [open-questions.md](open-questions.md#q-identity-vault-name).
 Short version: identity files are keyed by the *local* vault name, which
@@ -356,7 +363,7 @@ failures follow, and the second is unrecoverable: a vault silently
 reusing another's keypair, and `vault remove` deleting a private key
 belonging to a vault it is not removing.
 
-Work remaining, spanning M1 and M2:
+What landed, spanning M1 and M2:
 
 - `[vault].id` (UUIDv4) minted by `init` and written to
   `.gage/config.toml`; `format_version` to 2, with a v1 vault refused by
@@ -380,18 +387,19 @@ Work remaining, spanning M1 and M2:
   comparing labels, which is wrong in both directions; the false-delete
   direction is unrecoverable, and `recipient approve --device` makes it
   newly reachable.
+- **The vault lock too**, which this summary did not originally name:
+  `$GAGE_STATE/locks/<vault-id>.lock`. E0 makes "one repository
+  registered twice under two local names" a supported state, and a
+  name-keyed lock would have given those two registrations one lock file
+  each — so both could write the same working tree at once. After E0
+  nothing under `$GAGE_DATA` or `$GAGE_STATE` is addressed by a vault's
+  local name.
 
-**Do this before shipping anything.** Migration is "re-create the
-vault," which is only tolerable because there is no installed base;
-`make reset-local-state` already exists for exactly this. Every day this
-waits makes it more expensive, and it is the only item here with that
-property.
-
-**Ordering against enrollment.** A20's keying half should land first —
-it is the only item here that gets more expensive with time. The
-`removeOrphanedIdentity` half should land with device enrollment, since
-`recipient approve --device` is what makes its unrecoverable case
-reachable.
+**Migration is "re-create the vault,"** which was only tolerable because
+there is no installed base; `make reset-local-state` exists for exactly
+this. A v1 vault is refused by the `format_version` check with a
+directional message — older than this build says re-create, newer still
+says upgrade gage.
 
 ---
 

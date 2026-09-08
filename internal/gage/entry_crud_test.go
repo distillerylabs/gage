@@ -376,7 +376,7 @@ func TestInsertBlocksOnAConcurrentlyHeldWriteLock(t *testing.T) {
 	v, id := newEntryTestVault(t, "personal", "laptop-1")
 	defer func() { _ = id.Close() }()
 
-	path, err := LockFilePath(v.Name)
+	path, err := LockFilePath(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestReadDoesNotBlockOnAHeldWriteLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, err := LockFilePath(v.Name)
+	path, err := LockFilePath(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

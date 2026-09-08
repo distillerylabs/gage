@@ -80,6 +80,7 @@ func newRecipientTestVault(t *testing.T, vaultName, device string) (*Vault, test
 		var err error
 		v, err = Create(CreateSpec{
 			Name:       vaultName,
+			ID:         d.vaultID,
 			Path:       filepath.Join(t.TempDir(), vaultName),
 			Type:       TypeGit,
 			Method:     MethodPassphrase,
@@ -756,7 +757,7 @@ func TestVerifyNeedsNoIdentityFileOrPrompter(t *testing.T) {
 	// this device knows nothing but where the vault directory is.
 	stranger := t.TempDir()
 	withXDGRoot(t, stranger, func() {
-		hasIdentity, err := HasIdentity(v.Name, laptop.name)
+		hasIdentity, err := HasIdentity(v.ID, laptop.name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -784,7 +785,7 @@ func TestVerifyReadsNeitherIdentityNorPrompter(t *testing.T) {
 
 	// Remove every identity file for this vault, so any Unlock attempt
 	// inside VerifyRecipients would fail rather than silently succeed.
-	dir, err := IdentitiesDir(v.Name)
+	dir, err := IdentitiesDir(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

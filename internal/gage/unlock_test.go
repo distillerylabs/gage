@@ -23,13 +23,13 @@ const testPassphrase = "correct horse battery staple"
 func newUnlockableVault(t *testing.T, name, device string) (*Vault, string) {
 	t.Helper()
 	isolateXDG(t)
-	registerVault(t, name, device, MethodPassphrase)
+	id := registerVault(t, name, device, MethodPassphrase)
 
-	pubkey, err := CreateIdentity(name, device, &fakePrompter{passphrases: []string{testPassphrase}})
+	pubkey, err := CreateIdentity(id, name, device, &fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Vault{Name: name, Path: filepath.Join(t.TempDir(), name)}, pubkey
+	return &Vault{Name: name, ID: id, Path: filepath.Join(t.TempDir(), name)}, pubkey
 }
 
 // TestUnlockProducesAnIdentityThatDecrypts is the milestone's definition
@@ -271,10 +271,10 @@ func TestUnlockRejectsAnEmptyPassphrase(t *testing.T) {
 func TestCreateIdentityRejectsAnEmptyPassphrase(t *testing.T) {
 	isolateXDG(t)
 
-	if _, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{""}}); err == nil {
+	if _, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", &fakePrompter{passphrases: []string{""}}); err == nil {
 		t.Fatal("expected CreateIdentity to refuse an empty passphrase")
 	}
-	path, err := IdentityFilePath("personal", "laptop-1")
+	path, err := IdentityFilePath(vaultIDForTest("personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,12 +303,12 @@ func TestUnlockRejectsAPrompterAnsweringTheWrongKind(t *testing.T) {
 func TestUnlockWithNoLocalIdentityIsDistinguishable(t *testing.T) {
 	t.Run("no identity file", func(t *testing.T) {
 		isolateXDG(t)
-		registerVault(t, "personal", "laptop-1", MethodPassphrase)
+		id := registerVault(t, "personal", "laptop-1", MethodPassphrase)
 
-		v := &Vault{Name: "personal"}
-		id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
+		v := &Vault{Name: "personal", ID: id}
+		unlocked, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 		if err == nil {
-			_ = id.Close()
+			_ = unlocked.Close()
 			t.Fatal("expected Unlock with no identity file to fail")
 		}
 		assertNoLocalIdentity(t, err)
@@ -318,7 +318,7 @@ func TestUnlockWithNoLocalIdentityIsDistinguishable(t *testing.T) {
 		isolateXDG(t)
 		registerVault(t, "personal", "laptop-1", MethodPassphrase)
 
-		v := &Vault{Name: "some-other-vault"}
+		v := &Vault{Name: "some-other-vault", ID: vaultIDForTest("some-other-vault")}
 		id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 		if err == nil {
 			_ = id.Close()
@@ -330,7 +330,7 @@ func TestUnlockWithNoLocalIdentityIsDistinguishable(t *testing.T) {
 	t.Run("no global config at all", func(t *testing.T) {
 		isolateXDG(t)
 
-		v := &Vault{Name: "personal"}
+		v := &Vault{Name: "personal", ID: vaultIDForTest("personal")}
 		id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 		if err == nil {
 			_ = id.Close()
@@ -479,6 +479,7 @@ func TestUnlockDispatchesOnTheLocalMethodNotTheVaultDefault(t *testing.T) {
 	vaultPath := filepath.Join(t.TempDir(), "personal")
 	if _, err := Create(CreateSpec{
 		Name:       "personal",
+		ID:         vaultIDForTest("personal"),
 		Path:       vaultPath,
 		Type:       TypeGit,
 		Method:     MethodPassphrase,
@@ -491,13 +492,13 @@ func TestUnlockDispatchesOnTheLocalMethodNotTheVaultDefault(t *testing.T) {
 	// ...while this device's own local record says something else.
 	dir := configDirForTest(t)
 	g := config.Global{Vaults: map[string]config.VaultEntry{
-		"personal": {Path: vaultPath, Type: TypeGit, Device: "laptop-1", Method: "yubikey"},
+		"personal": {Path: vaultPath, ID: vaultIDForTest("personal"), Type: TypeGit, Device: "laptop-1", Method: "yubikey"},
 	}}
 	if err := config.Write(filepath.Join(dir, "config.toml"), g); err != nil {
 		t.Fatal(err)
 	}
 
-	v := &Vault{Name: "personal", Path: vaultPath}
+	v := &Vault{Name: "personal", ID: vaultIDForTest("personal"), Path: vaultPath}
 	p := &fakePrompter{passphrases: []string{testPassphrase}}
 	id, err := v.Unlock(p)
 	if err == nil {
@@ -525,7 +526,7 @@ func testX25519Recipient(t *testing.T) string {
 // which is the shape of an interrupted copy or a damaged disk.
 func corruptIdentityFile(t *testing.T, vault, device string) {
 	t.Helper()
-	path, err := IdentityFilePath(vault, device)
+	path, err := IdentityFilePath(vaultIDForTest(vault), device)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +539,7 @@ func corruptIdentityFile(t *testing.T, vault, device string) {
 
 func writeIdentityFileForTest(t *testing.T, vault, device string, data []byte) {
 	t.Helper()
-	path, err := IdentityFilePath(vault, device)
+	path, err := IdentityFilePath(vaultIDForTest(vault), device)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,17 +555,17 @@ func TestCreateIdentityWritesTheFileWithTightPermissions(t *testing.T) {
 	isolateXDG(t)
 
 	p := &fakePrompter{passphrases: []string{testPassphrase}}
-	pubkey, err := CreateIdentity("personal", "laptop-1", p)
+	pubkey, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", p)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	path, err := IdentityFilePath("personal", "laptop-1")
+	path, err := IdentityFilePath(vaultIDForTest("personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	dataDir := os.Getenv("XDG_DATA_HOME")
-	want := filepath.Join(dataDir, "gage", "identities", "personal", "laptop-1.age")
+	want := filepath.Join(dataDir, "gage", "identities", vaultIDForTest("personal"), "laptop-1.age")
 	if path != want {
 		t.Errorf("identity path = %q, want %q", path, want)
 	}
@@ -604,11 +605,11 @@ func TestCreateIdentityWritesTheFileWithTightPermissions(t *testing.T) {
 func TestCreateIdentityFileIsPassphraseWrappedAndSoleRecipient(t *testing.T) {
 	isolateXDG(t)
 
-	pubkey, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}})
+	pubkey, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := IdentityFilePath("personal", "laptop-1")
+	path, err := IdentityFilePath(vaultIDForTest("personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,13 +649,13 @@ func TestCreateIdentityFileIsPassphraseWrappedAndSoleRecipient(t *testing.T) {
 func TestCreateIdentityReusesAnExistingFile(t *testing.T) {
 	isolateXDG(t)
 
-	first, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}})
+	first, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	p := &fakePrompter{passphrases: []string{testPassphrase}}
-	second, err := CreateIdentity("personal", "laptop-1", p)
+	second, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", p)
 	if err != nil {
 		t.Fatalf("CreateIdentity should reuse an existing identity file, got: %v", err)
 	}
@@ -667,8 +668,8 @@ func TestCreateIdentityReusesAnExistingFile(t *testing.T) {
 
 	// The file itself is untouched: it still opens with the original
 	// passphrase and yields the original key.
-	registerVault(t, "personal", "laptop-1", MethodPassphrase)
-	v := &Vault{Name: "personal"}
+	vaultID := registerVault(t, "personal", "laptop-1", MethodPassphrase)
+	v := &Vault{Name: "personal", ID: vaultID}
 	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatalf("the original identity no longer unlocks: %v", err)
@@ -686,12 +687,12 @@ func TestCreateIdentityReusesAnExistingFile(t *testing.T) {
 func TestCreateIdentityReuseRejectsWrongPassphrase(t *testing.T) {
 	isolateXDG(t)
 
-	if _, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
+	if _, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
 		t.Fatal(err)
 	}
 
 	p := &fakePrompter{passphrases: []string{"a different passphrase"}}
-	if _, err := CreateIdentity("personal", "laptop-1", p); err == nil {
+	if _, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", p); err == nil {
 		t.Fatal("expected CreateIdentity to reject the wrong passphrase for an existing file")
 	} else if !errors.Is(err, ErrWrongPassphrase) {
 		t.Errorf("error = %v, want it to wrap ErrWrongPassphrase", err)
@@ -702,7 +703,7 @@ func TestCreateIdentityRefusesAnUnsafeDeviceName(t *testing.T) {
 	isolateXDG(t)
 
 	p := &fakePrompter{passphrases: []string{testPassphrase}}
-	if _, err := CreateIdentity("personal", "../../escape", p); err == nil {
+	if _, err := CreateIdentity(vaultIDForTest("personal"), "personal", "../../escape", p); err == nil {
 		t.Fatal("expected CreateIdentity to refuse a traversal-style device name")
 	} else if !errors.Is(err, ErrUnsafePathComponent) {
 		t.Errorf("error = %v, want it to wrap ErrUnsafePathComponent", err)
@@ -716,11 +717,11 @@ func TestIdentityFileIsAgeKeygenCompatible(t *testing.T) {
 	isolateXDG(t)
 	registerVault(t, "personal", "laptop-1", MethodPassphrase)
 
-	pubkey, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}})
+	pubkey, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := IdentityFilePath("personal", "laptop-1")
+	path, err := IdentityFilePath(vaultIDForTest("personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -770,17 +771,17 @@ func newScryptIdentityForTest(passphrase string) (*age.ScryptIdentity, error) {
 func TestRemoveIdentityIsTheRollbackPathAndNothingMore(t *testing.T) {
 	isolateXDG(t)
 
-	if _, err := CreateIdentity("personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
+	if _, err := CreateIdentity(vaultIDForTest("personal"), "personal", "laptop-1", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreateIdentity("personal", "desktop-2", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
+	if _, err := CreateIdentity(vaultIDForTest("personal"), "personal", "desktop-2", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := RemoveIdentity("personal", "laptop-1"); err != nil {
+	if err := RemoveIdentity(vaultIDForTest("personal"), "laptop-1"); err != nil {
 		t.Fatalf("RemoveIdentity: %v", err)
 	}
-	gone, err := IdentityFilePath("personal", "laptop-1")
+	gone, err := IdentityFilePath(vaultIDForTest("personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -788,7 +789,7 @@ func TestRemoveIdentityIsTheRollbackPathAndNothingMore(t *testing.T) {
 		t.Errorf("%s still exists after RemoveIdentity", gone)
 	}
 
-	kept, err := IdentityFilePath("personal", "desktop-2")
+	kept, err := IdentityFilePath(vaultIDForTest("personal"), "desktop-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,11 +798,11 @@ func TestRemoveIdentityIsTheRollbackPathAndNothingMore(t *testing.T) {
 	}
 
 	// Idempotent: a rollback runs where the state is already uncertain.
-	if err := RemoveIdentity("personal", "laptop-1"); err != nil {
+	if err := RemoveIdentity(vaultIDForTest("personal"), "laptop-1"); err != nil {
 		t.Errorf("second RemoveIdentity: %v", err)
 	}
 
-	if err := RemoveIdentity("personal", "../../escape"); err == nil {
+	if err := RemoveIdentity(vaultIDForTest("personal"), "../../escape"); err == nil {
 		t.Error("RemoveIdentity accepted a traversal-style device name")
 	} else if !errors.Is(err, ErrUnsafePathComponent) {
 		t.Errorf("error = %v, want it to wrap ErrUnsafePathComponent", err)
@@ -809,8 +810,7 @@ func TestRemoveIdentityIsTheRollbackPathAndNothingMore(t *testing.T) {
 
 	// And the identity that's left is still unlockable — the removal
 	// touched nothing about it.
-	registerVault(t, "personal", "desktop-2", MethodPassphrase)
-	v := &Vault{Name: "personal"}
+	v := &Vault{Name: "personal", ID: registerVault(t, "personal", "desktop-2", MethodPassphrase)}
 	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatalf("the surviving identity no longer unlocks: %v", err)

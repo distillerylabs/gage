@@ -383,7 +383,7 @@ func openSessionVault(name string) (*gage.Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &gage.Vault{Name: name, Path: entry.Path}, nil
+	return vaultFromEntry(name, entry)
 }
 
 // splitLine splits a typed command line into arguments on whitespace,

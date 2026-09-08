@@ -336,14 +336,14 @@ func TestRecipientVerifyRunsWithNoIdentityAndNoPrompter(t *testing.T) {
 	initVaultForTest(t, "personal", "--device", "laptop-1")
 
 	// The post-clone state: registered vault, no wrapped identity.
-	dir, err := gage.IdentitiesDir("personal")
+	dir, err := gage.IdentitiesDir(vaultIDForTest(t, "personal"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	has, err := gage.HasIdentity("personal", "laptop-1")
+	has, err := gage.HasIdentity(vaultIDForTest(t, "personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}

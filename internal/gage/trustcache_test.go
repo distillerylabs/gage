@@ -167,11 +167,11 @@ func trustCacheOf(t *testing.T, v *Vault, d testDevice) (trustCache, bool) {
 
 // knownConfigPathFor spells the cache's location out literally rather
 // than asking the code under test where it put things: "under
-// $GAGE_STATE, keyed by vault name" is a claim about a path, and a test
-// that computed it the same way the implementation does could not catch
-// the implementation computing it wrongly.
+// $GAGE_STATE, keyed by vault id" (A20) is a claim about a path, and a
+// test that computed it the same way the implementation does could not
+// catch the implementation computing it wrongly.
 func knownConfigPathFor(d testDevice, vault string) string {
-	return filepath.Join(d.root, "state", "gage", vault, "known-config.toml")
+	return filepath.Join(d.root, "state", "gage", vaultIDForTest(vault), "known-config.toml")
 }
 
 // sha256HexOfVaultFile hashes a file in the vault independently of

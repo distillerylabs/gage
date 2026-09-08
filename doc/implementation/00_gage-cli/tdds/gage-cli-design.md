@@ -1025,6 +1025,14 @@ sequence, and released on every exit path including error paths:
   each other. A write blocks other writes to the same vault, and only
   that vault — a session working in `personal` is unaffected by a write
   to `work`.
+- **"The same vault" means the same `id`, not the same local name.** The
+  lock file is `$GAGE_STATE/locks/<vault-id>.lock`, keyed like every
+  other piece of per-vault local state (see "Local identity storage").
+  One repository registered twice under two local names is one vault, so
+  the two registrations contend for one lock rather than holding one
+  each and both writing the same working tree. That is also why `mv`/`cp`
+  refuse a destination whose id matches the source's, however the two
+  are labelled.
 - **A contended lock waits, with a message**, rather than failing
   immediately. Whoever holds it is nearly always about to finish; a
   one-line "waiting for another gage process" beats a spurious failure.
@@ -1041,7 +1049,8 @@ sequence, and released on every exit path including error paths:
   trade: the operation's all-or-nothing guarantee is worth more than
   letting an unrelated write slip in beside it.
 - **Cross-vault `mv`/`cp` take two locks**, one per vault, acquired in a
-  deterministic order so two simultaneous moves in opposite directions
+  deterministic order — sorted by vault id, the same thing the lock file
+  is named for — so two simultaneous moves in opposite directions
   between the same pair can't deadlock.
 
 This is about correctness between cooperating `gage` processes, not

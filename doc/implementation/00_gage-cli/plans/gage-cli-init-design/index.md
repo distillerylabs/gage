@@ -65,7 +65,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 | # | Milestone | Status | Model | Theme |
 |---|---|---|---|---|
-| E0 | [Vault-id keying](e0-vault-id-keying.md) | `[ ]` | **Opus** ⚑ | A20: identities and trust cache keyed by vault id, not local name |
+| E0 | [Vault-id keying](e0-vault-id-keying.md) | `[x]` | **Opus** ⚑ | A20: identities, trust cache and vault lock keyed by vault id, not local name |
 | E1a | [Unconditional re-encryption](e1a-unconditional-reencrypt.md) | `[ ]` | Sonnet | A19: `recipient add` always re-encrypts |
 | E1b | [The shared recipient write](e1b-shared-recipient-write.md) | `[ ]` | Sonnet* ⚑ | The N-recipient form of `AddRecipient`'s body, which E4's batch approval calls |
 | E2 | [The sealed request](e2-sealed-request.md) | `[ ]` | **Opus** ⚑ | Code generation, the seal, the filename scheme, expiry — library only |

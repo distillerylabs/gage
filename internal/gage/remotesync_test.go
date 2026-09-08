@@ -69,6 +69,7 @@ func newSyncVault(t *testing.T, name, device string) (*Vault, Identity, string) 
 		var err error
 		v, err = Create(CreateSpec{
 			Name:       name,
+			ID:         d.vaultID,
 			Path:       filepath.Join(t.TempDir(), name),
 			Type:       TypeGit,
 			Method:     MethodPassphrase,
@@ -542,7 +543,7 @@ func TestSyncTakesTheWriteLock(t *testing.T) {
 	v, id, _ := newSyncVault(t, "personal", "laptop-1")
 	defer func() { _ = id.Close() }()
 
-	path, err := LockFilePath(v.Name)
+	path, err := LockFilePath(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +643,7 @@ func TestUnlockDoesNotQueueBehindAConcurrentWrite(t *testing.T) {
 	v, id, _ := newSyncVault(t, "personal", "laptop-1")
 	defer func() { _ = id.Close() }()
 
-	path, err := LockFilePath(v.Name)
+	path, err := LockFilePath(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

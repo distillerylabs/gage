@@ -11,10 +11,13 @@ import (
 )
 
 // identityFileFor is the path M9 promises each device's wrapped key
-// lands at, resolved under whatever XDG root is currently in effect.
+// lands at, resolved under whatever XDG root is currently in effect. It
+// takes the vault's *name* and derives its id the way the test helpers
+// do, so a caller reads as "this vault, this device" rather than
+// restating A20's keying at every assertion.
 func identityFileFor(t *testing.T, vault, device string) string {
 	t.Helper()
-	path, err := IdentityFilePath(vault, device)
+	path, err := IdentityFilePath(vaultIDForTest(vault), device)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +183,7 @@ func TestListIdentitiesReportsThisDevicesRegisteredIdentities(t *testing.T) {
 	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
 
 	withXDGRoot(t, laptop.root, func() {
-		got, err := ListIdentities("personal")
+		got, err := v.ListIdentities()
 		if err != nil {
 			t.Fatalf("ListIdentities: %v", err)
 		}
@@ -197,7 +200,7 @@ func TestListIdentitiesReportsThisDevicesRegisteredIdentities(t *testing.T) {
 		if _, err := v.AddIdentity("laptop-2", &fakePrompter{passphrases: []string{testPassphrase}}); err != nil {
 			t.Fatalf("AddIdentity: %v", err)
 		}
-		got, err = ListIdentities("personal")
+		got, err = v.ListIdentities()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +218,7 @@ func TestListIdentitiesReportsThisDevicesRegisteredIdentities(t *testing.T) {
 	// clone.
 	stranger := t.TempDir()
 	withXDGRoot(t, stranger, func() {
-		got, err := ListIdentities("personal")
+		got, err := v.ListIdentities()
 		if err != nil {
 			t.Fatalf("ListIdentities on a device with no identities: %v", err)
 		}

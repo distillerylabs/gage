@@ -15,6 +15,7 @@ import (
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/remoteauth"
 	"github.com/denmark/gage/internal/gage/syncerr"
+	"github.com/denmark/gage/internal/gage/vaultconfig"
 )
 
 // newInitCommand builds `gage init`, a thin wiring layer over
@@ -121,26 +122,21 @@ func runInit(app *App, opt initOptions) error {
 		path = filepath.Join(vaultsDir, opt.name)
 	}
 
-	// Checked before CreateIdentity so the rollback below knows whether a
-	// failure further down would be destroying something this call made
-	// or something that was already here — see there for why that
-	// distinction matters.
-	identityExisted, err := gage.HasIdentity(opt.name, device)
-	if err != nil {
-		return exitcode.Wrap(exitcode.Internal, err)
-	}
+	// The vault's id is minted here, before the identity, and handed to
+	// Create below rather than minted there. Ordering is the whole point:
+	// the identity file is filed under this id (see IdentitiesDir), so an
+	// id that did not exist until after CreateIdentity had already
+	// written the file would leave a working vault carrying one id and
+	// this device's only key filed under another. Nothing would look
+	// wrong; the key would simply be unreachable. See A20.
+	id := vaultconfig.NewID()
 
-	// The identity comes first, and with it the passphrase prompt. Every
+	// The identity comes second, and with it the passphrase prompt. Every
 	// later step can fail on something already knowable (a non-empty
 	// target directory, a bad recipient), so asking a human to type a
 	// passphrase twice and only then reporting one of those would be the
-	// wrong order to fail in. If an identity file already sits at this
-	// vault/device path — typically surviving a `vault remove` that
-	// couldn't prove it was safe to delete (see removeOrphanedIdentity) —
-	// CreateIdentity reuses it instead of failing, which is also what
-	// makes retrying the same `init` after fixing an unrelated problem an
-	// ordinary retry rather than a permanent conflict.
-	pubkey, err := gage.CreateIdentity(opt.name, device, app.Prompter)
+	// wrong order to fail in.
+	pubkey, err := gage.CreateIdentity(id, opt.name, device, app.Prompter)
 	if err != nil {
 		return err
 	}
@@ -153,6 +149,7 @@ func runInit(app *App, opt initOptions) error {
 
 	spec := gage.CreateSpec{
 		Name:       opt.name,
+		ID:         id,
 		Path:       path,
 		Type:       opt.typ,
 		Method:     opt.method,
@@ -160,21 +157,25 @@ func runInit(app *App, opt initOptions) error {
 		Recipients: recipients,
 		Remote:     opt.remote,
 	}
-	if _, err := gage.Create(spec); err != nil {
-		// Only roll back an identity file this call actually generated.
-		// One that already existed came from somewhere else — possibly
-		// still needed there — and CreateIdentity only reused it; deleting
-		// it here would destroy access this failed init never granted and
-		// has no way to restore. A freshly generated one, by contrast, is
-		// referenced by nothing yet (Create wrote no vault at all), so
-		// leaving it in place would just have `gage init` reuse it — with
-		// its just-chosen passphrase — on the very next retry, rather than
-		// letting that retry start clean.
-		if !identityExisted {
-			if rmErr := gage.RemoveIdentity(opt.name, device); rmErr != nil {
-				return exitcode.Newf(exitcode.Internal,
-					"gage: %v (and rolling back the generated identity failed: %v)", err, rmErr)
-			}
+	v, err := gage.Create(spec)
+	if err != nil {
+		// Roll back the identity this call generated, unconditionally.
+		// It is referenced by nothing — Create wrote no vault at all —
+		// and it sits alone under a directory named by an id that now
+		// belongs to no vault, so nothing will ever look it up again.
+		//
+		// This used to be conditional on the file not having existed
+		// beforehand, since CreateIdentity would otherwise have reused
+		// someone else's key. With A20 that condition is dead: `init`
+		// mints a fresh id every run, so the directory it addresses is
+		// always empty and the reuse path is unreachable from here. The
+		// same change makes this rollback load-bearing rather than tidy
+		// — without it, repeated failed inits leave one orphaned
+		// directory per attempt, each holding a private key for a vault
+		// that was never created.
+		if rmErr := gage.RemoveIdentity(id, device); rmErr != nil {
+			return exitcode.Newf(exitcode.Internal,
+				"gage: %v (and rolling back the generated identity failed: %v)", err, rmErr)
 		}
 		return err
 	}
@@ -184,8 +185,14 @@ func runInit(app *App, opt initOptions) error {
 	}
 	entry := config.VaultEntry{
 		Path:   path,
+		ID:     id,
 		Type:   opt.typ,
 		Device: device,
+		// Recorded here, at the one moment gage holds this device's key
+		// without needing an unlock to reach it, so `vault remove` can
+		// later ask whether the local key is still a recipient by
+		// comparing keys rather than device names. See Q-ORPHAN-BY-NAME.
+		Pubkey: pubkey,
 		Method: opt.method,
 	}
 	if opt.remote != "" {
@@ -207,7 +214,7 @@ func runInit(app *App, opt initOptions) error {
 	if opt.remote == "" {
 		return nil
 	}
-	return publishNewVault(app, opt.name, path, opt.remote)
+	return publishNewVault(app, v, opt.remote)
 }
 
 // publishNewVault pushes a freshly created vault's first commit to the
@@ -224,7 +231,8 @@ func runInit(app *App, opt initOptions) error {
 // stays that way regardless: it is durable locally, which is the whole
 // local-durability half of the sync model. Being unable to publish is a
 // thing to report, never a reason to throw away a vault that exists.
-func publishNewVault(app *App, name, path, remote string) error {
+func publishNewVault(app *App, v *gage.Vault, remote string) error {
+	name := v.Name
 	if err := ensureRemoteToken(app, remote); err != nil {
 		return err
 	}
@@ -232,7 +240,6 @@ func publishNewVault(app *App, name, path, remote string) error {
 	ctx, cancel := syncContext()
 	defer cancel()
 
-	v := &gage.Vault{Name: name, Path: path}
 	if _, err := v.Push(ctx); err != nil {
 		if errors.Is(err, syncerr.ErrUnreachable) {
 			// Offline at creation time is not a failure: the next

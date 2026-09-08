@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/xdgpaths"
 )
@@ -164,20 +166,40 @@ func isolateXDG(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 }
 
+// vaultIDForTest derives a stable vault id from a vault name, so that
+// every device a test sets up for one vault agrees on that vault's id —
+// which is what real devices do, since they all read it out of the same
+// committed .gage/config.toml.
+//
+// Derived rather than minted because these helpers register each device
+// through its own isolated XDG roots and have nowhere to thread a freshly
+// minted id through. It proves nothing about A20 by itself, and is not
+// meant to: the property that matters — two different vaults never
+// sharing an id, and nothing local being keyed by the local name — is
+// asserted directly in paths_test.go and in cmd/gage's keying tests,
+// against ids that really were minted independently.
+func vaultIDForTest(name string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("gage-test-vault:"+name)).String()
+}
+
 // registerVault writes the global-config record Unlock reads this
-// device's name and method out of.
-func registerVault(t *testing.T, name, device, method string) {
+// device's name, id and method out of, and returns that vault's id —
+// which is what every per-vault local path is keyed by (A20), so tests
+// need it as much as the code does.
+func registerVault(t *testing.T, name, device, method string) string {
 	t.Helper()
 	dir := configDirForTest(t)
+	id := vaultIDForTest(name)
 	g := config.Global{
 		Current: name,
 		Vaults: map[string]config.VaultEntry{
-			name: {Path: filepath.Join(t.TempDir(), name), Type: TypeGit, Device: device, Method: method},
+			name: {Path: filepath.Join(t.TempDir(), name), ID: id, Type: TypeGit, Device: device, Method: method},
 		},
 	}
 	if err := config.Write(filepath.Join(dir, "config.toml"), g); err != nil {
 		t.Fatal(err)
 	}
+	return id
 }
 
 // configDirForTest resolves and creates $GAGE_CONFIG under the isolated

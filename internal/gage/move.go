@@ -25,6 +25,13 @@ import (
 // vault itself. There is nothing to share with yourself, and running the
 // shared two-lock machinery against one vault twice would try to acquire
 // its own advisory lock a second time rather than sharing an entry.
+//
+// "The same vault" means the same *id*, not the same local name. Since
+// A20 one repository can legitimately be registered twice under two
+// names, and those two registrations are one vault however they are
+// labelled: they share a working tree and — see LockFilePath — a single
+// lock file, so a move between them would deadlock against itself rather
+// than share anything.
 var ErrSameVault = errors.New("gage: --to-vault must name a different vault than the source")
 
 // MoveResult is what Move/Copy hand back: enough for a caller to update a
@@ -66,7 +73,7 @@ func (src *Vault) Copy(query string, dest *Vault, ident *Identity) (MoveResult, 
 }
 
 func moveOrCopy(src, dest *Vault, query string, ident *Identity, remove bool) (MoveResult, error) {
-	if src.Name == dest.Name {
+	if src.ID == dest.ID {
 		return MoveResult{}, exitcode.Wrap(exitcode.Usage,
 			fmt.Errorf("%w: %q", ErrSameVault, dest.Name))
 	}
@@ -144,11 +151,16 @@ func moveOrCopy(src, dest *Vault, query string, ident *Identity, remove bool) (M
 }
 
 // withTwoVaultLocks acquires both a and b's advisory write locks for the
-// duration of fn, in a fixed order: sorted by vault *name*, the same
-// identifier LockFilePath keys each lock file by, rather than by
-// filesystem path — see the M11 plan's "Lock ordering across two vaults".
-// mv/cp are its only callers; every other mutating method still goes
-// through the single-vault withWriteLock/withEncryptingWrite.
+// duration of fn, in a fixed order: sorted by vault *id*, the same
+// identifier LockFilePath keys each lock file by, rather than by local
+// name or filesystem path — see the M11 plan's "Lock ordering across two
+// vaults". mv/cp are its only callers; every other mutating method still
+// goes through the single-vault withWriteLock/withEncryptingWrite.
+//
+// The ordering key follows the lock file, which A20 re-keyed from the
+// name to the id: ordering by a name that no longer identifies the lock
+// would let two processes request the same pair of locks in opposite
+// sequences, which is the deadlock this fixed order exists to rule out.
 //
 // Both locks are held for fn's entire duration, not acquired and released
 // one at a time — that's what makes moveOrCopy's crash-safety property
@@ -159,17 +171,17 @@ func moveOrCopy(src, dest *Vault, query string, ident *Identity, remove bool) (M
 // sequence, so neither can ever hold one while waiting on the other.
 func withTwoVaultLocks(a, b *Vault, fn func() error) error {
 	first, second := a, b
-	if second.Name < first.Name {
+	if second.ID < first.ID {
 		first, second = second, first
 	}
 
-	firstLock, err := acquireVaultLock(first.Name, vaultLockTimeout)
+	firstLock, err := acquireVaultLock(first.ID, vaultLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = firstLock.Release() }()
 
-	secondLock, err := acquireVaultLock(second.Name, vaultLockTimeout)
+	secondLock, err := acquireVaultLock(second.ID, vaultLockTimeout)
 	if err != nil {
 		return err
 	}

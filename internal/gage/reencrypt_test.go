@@ -320,7 +320,7 @@ func TestReencryptHoldsTheVaultLockThroughout(t *testing.T) {
 	id = unlockAs(t, v, laptop)
 	defer func() { _ = id.Close() }()
 
-	lockPath, err := LockFilePath(v.Name)
+	lockPath, err := LockFilePath(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

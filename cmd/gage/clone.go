@@ -132,7 +132,19 @@ func runClone(app *App, opt cloneOptions) error {
 		g.Vaults = map[string]config.VaultEntry{}
 	}
 	g.Vaults[name] = config.VaultEntry{
-		Path:   path,
+		Path: path,
+		// Copied from the config this clone just fetched — no ordering
+		// problem here, unlike `init`: the vault already exists and
+		// already carries its id, and this file has just been read to
+		// register the vault at all.
+		//
+		// Pubkey is deliberately *not* set. A clone holds no identity, and
+		// it refuses to unlock in order to derive one (see accessLines) —
+		// so there is no public key to record. A freshly cloned vault
+		// legitimately lands in removeOrphanedIdentity's "pubkey missing,
+		// so keep the file and say why" branch until `identity add` or
+		// enrollment puts a key here.
+		ID:     vc.Vault.ID,
 		Type:   vc.Vault.Type,
 		Device: device,
 		// The cloned vault's default method is a suggestion for devices
@@ -149,7 +161,7 @@ func runClone(app *App, opt cloneOptions) error {
 	}
 
 	lines := []string{fmt.Sprintf("gage: cloned %q to %s", name, path)}
-	lines = append(lines, accessLines(name, device)...)
+	lines = append(lines, accessLines(vc.Vault.ID, name, device)...)
 	writeOut(app.Out, lines)
 	return nil
 }
@@ -163,8 +175,8 @@ func runClone(app *App, opt cloneOptions) error {
 // was pointless, would be exactly backwards. A device with no identity
 // certainly isn't a recipient; one that has an identity was set up
 // deliberately and is left alone.
-func accessLines(name, device string) []string {
-	hasIdentity, err := gage.HasIdentity(name, device)
+func accessLines(vaultID, name, device string) []string {
+	hasIdentity, err := gage.HasIdentity(vaultID, device)
 	if err != nil || hasIdentity {
 		return nil
 	}

@@ -104,7 +104,7 @@ func runIdentityAdd(app *App, use, deviceFlag, methodFlag string) error {
 		return err
 	}
 
-	if err := recordLocalIdentity(v.Name, device, method); err != nil {
+	if err := recordLocalIdentity(v.Name, device, method, pubkey); err != nil {
 		return err
 	}
 
@@ -152,7 +152,14 @@ func resolveIdentityMethod(v *gage.Vault, methodFlag string) (string, error) {
 // `identity add` the next unlock must use the new key without anyone
 // hand-editing config, which is the step the lost-identity recovery
 // story would otherwise be missing.
-func recordLocalIdentity(vault, device, method string) error {
+//
+// The public key is recorded alongside them for Q-ORPHAN-BY-NAME: it is
+// what lets `vault remove` decide whether the local key is still a
+// recipient by comparing keys instead of device names, and this is one
+// of the two moments gage holds the key without needing an unlock to
+// reach it. Re-pointing must move it too — a stale pubkey beside a new
+// device would answer that question about the wrong key.
+func recordLocalIdentity(vault, device, method, pubkey string) error {
 	g, err := readGlobalConfig()
 	if err != nil {
 		return exitcode.Wrap(exitcode.Internal, err)
@@ -163,6 +170,7 @@ func recordLocalIdentity(vault, device, method string) error {
 	}
 	entry.Device = device
 	entry.Method = method
+	entry.Pubkey = pubkey
 	g.Vaults[vault] = entry
 	if err := writeGlobalConfig(g); err != nil {
 		return exitcode.Wrap(exitcode.Internal, err)
@@ -189,7 +197,7 @@ func newIdentityListCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			identities, err := gage.ListIdentities(v.Name)
+			identities, err := v.ListIdentities()
 			if err != nil {
 				return err
 			}
