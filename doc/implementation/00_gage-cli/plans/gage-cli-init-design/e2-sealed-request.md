@@ -41,21 +41,27 @@ E2 is independent of E0 and E1 and can be worked in parallel with either.
 
 ## Decisions
 
-**One is open and blocks this milestone: `D-ENROLL-SEAL-COST`.** Resolve
-it in the TDD before writing code here, per the project rule that a
-milestone's decisions are settled in the doc first. It asks what work
-factor a seal is written at — the identity file's 19 is calibrated for a
-*user-chosen* passphrase and buys nothing against an 80-bit generated
-code, while costing ~2s on every open, multiplied by codes × requests —
-and whether one run bounds how many requests it attempts. The answer
-changes this milestone's sealing code and adds or removes test bullets
-below; everything else here is unaffected either way.
+All settled. Two to keep in front of you while writing tests:
 
-The rest are settled. The one to keep in front of you while writing
-tests: **the seal provides authentication, not confidentiality.** The
-plaintext is a public key. A test that only proves round-tripping has not
-tested the property the feature depends on — tampering must fail, and a
-wrong code must open nothing.
+**The seal provides authentication, not confidentiality.** The plaintext
+is a public key. A test that only proves round-tripping has not tested
+the property the feature depends on — tampering must fail, and a wrong
+code must open nothing.
+
+**`D-ENROLL-SEAL-COST` was added after this doc was first written**, and
+lands squarely in this milestone. Three things, and the reasoning for
+each is in the TDD rather than restated here:
+
+- The open path caps a request's **claimed** work factor, as
+  `unlock.go` already does for identity files. Not doing it is a hang,
+  not a slowdown.
+- Seals are **written** at factor 14, not the identity file's 19,
+  licensed explicitly by the code being 80 generated bits. It gets its
+  own const and its own "is deliberate" test, following
+  `shippedScryptWorkFactor`'s pattern — and must not read the mutable
+  `scryptWorkFactor` test hook, or a suite that lowers the identity
+  factor silently lowers this one too.
+- One code-trying run attempts at most **32 live requests**.
 
 ## Tests (write first)
 
@@ -98,9 +104,34 @@ wrong code must open nothing.
       path must call `SetMaxWorkFactor(scryptMaxWorkFactor)` the way
       `unlock.go` already does for identity files — enrollment is a new
       decryption path and inherits that guard from nothing. This is the
-      settled half of `D-ENROLL-SEAL-COST`, and it is worth writing early:
+      first part of `D-ENROLL-SEAL-COST`, and it is worth writing early:
       **one** hostile file is enough, no volume required, and the symptom
       is a process that appears to have stopped rather than an error.
+- [ ] **Seals are written at factor 14**, asserted against the constant
+      the way `TestScryptWorkFactorIsDeliberate` asserts the identity
+      file's — a number this deliberate should fail a test when someone
+      changes it, not drift silently.
+- [ ] **The two work factors are independent.** Move the identity factor
+      with `SetScryptWorkFactorForTests` and assert a sealed request's is
+      unchanged. This is the test that stops the two being collapsed into
+      one const later, which would recalibrate a security parameter
+      through a test-only hook.
+- [ ] **A wrong code against a full directory is fast.** Not a
+      benchmark — assert the honest-typo path finishes well inside a
+      generous ceiling with 32 requests pending, at the real factor. This
+      is the case the factor was chosen for, and it regresses invisibly
+      if someone later "hardens" the seal back to 19.
+- [ ] **More than 32 live requests is refused** with
+      `ErrEnrollmentTooManyPending` at `exitcode.Conflict`, **before any
+      decryption**, naming the ID form.
+- [ ] **The bound counts live requests only**: a directory of 40 where
+      most have expired prunes below the bound and proceeds normally.
+      Expired files must never consume the budget, or ordinary neglect
+      starts to look like an attack.
+- [ ] **An ID-scoped run ignores the bound** and costs one attempt per
+      code. Build a directory well past 32 and assert resolution by ID
+      still works — this is what makes the refusal recoverable rather
+      than a wall.
 - [ ] A request whose sealed `request_id` disagrees with its filename's
       UUID portion is refused with `ErrEnrollmentIDMismatch`. Changing
       only the **epoch** portion is not a mismatch.
@@ -185,7 +216,19 @@ what makes the late unlock possible.
       decryption is attempted.
 - [ ] The sealed payload as TOML — `request_id`, `device`, `pubkey`,
       `method`, `created`, `expires` — encrypted to a single scrypt
-      recipient.
+      recipient at `enrollmentScryptWorkFactor`.
+- [ ] `enrollmentScryptWorkFactor = 14` as its own const, carrying
+      D-ENROLL-SEAL-COST's reasoning in its comment — including the
+      coupling that licenses it (the code is generated, uniform, ~80
+      bits) and the instruction not to merge it with
+      `shippedScryptWorkFactor`.
+- [ ] `SetMaxWorkFactor(scryptMaxWorkFactor)` on the open path, before
+      any request is decrypted.
+- [ ] The 32-request bound, applied after pruning and before any
+      decryption, returning `ErrEnrollmentTooManyPending`. It belongs on
+      the code-trying path only — `deny` and `PendingEnrollments` open
+      nothing and stay unbounded, which is also how someone inspects and
+      cleans up a stuffed directory.
 - [ ] Filename construction and parsing, with the UUID and epoch halves
       validated independently.
 - [ ] `Vault.PendingEnrollments()` — builds `PendingRequest`s from

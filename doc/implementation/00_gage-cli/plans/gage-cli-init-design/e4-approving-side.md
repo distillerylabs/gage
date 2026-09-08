@@ -177,6 +177,16 @@ like they do:
       `exitcode.NotFound`, and deletes nothing.
 - [ ] `deny <8-char-prefix>` works — the form the TDD's own transcript
       uses.
+- [ ] **`approve` with no ID against a stuffed `pending/` refuses**
+      with `ErrEnrollmentTooManyPending` at `exitcode.Conflict`, prompts
+      for nothing, commits nothing, and the message names
+      `approve <ID>`. E2 proves the bound; this proves the command
+      surfaces it as advice rather than as a bare error.
+- [ ] **`approve <ID>` against that same directory works**, and `deny`
+      and `recipient pending` are unaffected by it — neither opens
+      anything, so a stuffed directory stays inspectable and cleanable.
+      This is the pair that makes the refusal a detour rather than a
+      dead end.
 - [ ] A request expired by its **sealed** copy is refused with
       `ErrEnrollmentExpired`; one that was expired before it was created
       is refused with `ErrEnrollmentClockSkew`, and the message names the

@@ -28,20 +28,21 @@ Enrollment's decisions already live there (`Q-ENROLL-VERBS`,
 `A20`). Forking a second register would defeat the thing that register
 is for — being the single place a deferred problem is allowed to live.
 
-**Design decisions are in the TDD, not here.** Eight of the nine
-`D-ENROLL-*` decisions are settled in
+**Design decisions are in the TDD, not here.** All nine `D-ENROLL-*`
+decisions are settled in
 [gage-cli-init-design.md](../../tdds/gage-cli-init-design.md); milestone
 docs reference them rather than re-arguing them. If a decision needs
 revisiting, it changes there and the milestone follows.
 
-**One is open, and it gates E2.** `D-ENROLL-SEAL-COST` — what work
-factor a seal is written at, and whether one `approve` run bounds how
-many requests it attempts. Per this project's rule that a milestone's
-open decisions are resolved in the doc *before* any code is written for
-it, E2 does not start until this is answered. The settled half of it
-(cap the *claimed* work factor on the open path, as `unlock.go` already
-does for identity files) is an E2 implementation item regardless of how
-the open half lands.
+**`D-ENROLL-SEAL-COST` is the newest and the one least likely to be
+remembered**, since it was added after the milestone docs were first
+written. It settles three things E2 and E4 both depend on: the open path
+caps a request's *claimed* scrypt work factor (as `unlock.go` already
+does for identity files), seals are written at factor 14 rather than the
+identity file's 19, and one code-trying run attempts at most 32 live
+requests. The first is a bug not to introduce; the other two are
+calibrated numbers with reasoning attached — read it before changing
+either.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 

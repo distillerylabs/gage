@@ -1218,29 +1218,27 @@ Malformed codes are rejected on length and alphabet before any
 decryption, so the common typo costs nothing.
 
 **Two things this entry originally got wrong**, both found reviewing the
-enrollment plan and both now tracked in the TDD as
+enrollment plan and both now resolved in the TDD as
 `D-ENROLL-SEAL-COST`:
 
-- **The benign case is slower than "30 runs" makes it sound.** gage
-  seals at the identity file's work factor, ~2s a run, so that example
-  is about a minute of wall clock. Whether it should seal that high is
-  now an open question in its own right: factor 19 is calibrated for a
-  *user-chosen* passphrase, and an enrollment code is 80 bits from
-  `crypto/rand`, where the entropy is doing all the work the KDF is
-  being paid for.
-- **Neither multiplicand is bounded by anything gage controls.** The
+- **The benign case was slower than "30 runs" makes it sound**, because
+  the entry assumed the identity file's work factor. Seals are now
+  written at 14 rather than 19 — roughly 60ms a run instead of 2s —
+  licensed by the code being 80 bits from `crypto/rand`, where the
+  entropy is doing all the work the KDF was being paid for. That example
+  is now a couple of seconds rather than a minute.
+- **Neither multiplicand was bounded by anything gage controls.** The
   count comes from a directory any git-writer can fill, and the
-  per-attempt cost comes from a work factor each blob *claims*.
-  `unlock.go` already caps a claimed factor for identity files; the
-  enrollment open path is new code and has to do the same, or one
-  committed blob claiming 2^30 hangs `approve`.
+  per-attempt cost comes from a work factor each blob *claims*. Both are
+  now bounded: the open path caps a claimed factor the way `unlock.go`
+  already does for identity files, and a code-trying run attempts at most
+  32 live requests.
 
-So the remaining accepted risk is narrower than it was: with the claimed
-factor capped and the attempt count bounded, a stuffed `pending/` is a
-bounded refusal that names `approve <ID>`, which is O(1) in directory
-size. That it is *possible* to make approval briefly unpleasant is
-accepted, and is the same class as the filename section's "anyone who
-can rename the file can equally delete it."
+So the accepted risk is narrower than it was. A stuffed `pending/` is a
+bounded refusal naming `approve <ID>`, which resolves from the filename
+and is O(1) in directory size. That it is *possible* to make approval
+briefly inconvenient is accepted, and is the same class as the filename
+section's "anyone who can rename the file can equally delete it."
 
 What is still ruled out is the shortcut this entry originally described:
 adding unsealed hints about which code opens which request leaks who is
