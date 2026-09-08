@@ -68,6 +68,9 @@ easy to "simplify" back into bugs:
       pushes nothing — a failure the create path cannot produce.
 - [ ] The public key sealed into the request equals the one derived from
       the identity file this device actually holds.
+- [ ] After a successful enroll, global config's `[vaults.<name>].pubkey`
+      holds that same key — without it, E0's orphan check falls back to
+      "keep and say why" on every enrolled device.
 
 **Remote behavior (`D-ENROLL-REMOTE`)**
 
@@ -92,12 +95,28 @@ easy to "simplify" back into bugs:
       a fresh request and code, and succeeds once the push is allowed.
 - [ ] `identity enroll` warns, and proceeds, when local time is behind
       the vault's HEAD committer timestamp.
+- [ ] Each remote error carries its exit code: `ErrEnrollmentNoRemote` →
+      `Usage`, `ErrEnrollmentRemoteUnreachable` → `Unreachable`.
+
+**Flags**
+
+- [ ] `--ttl` is honored: the sealed `expires` and the filename epoch
+      both reflect it, and the default with no flag is 24h.
+- [ ] `--ttl` beyond the 7-day ceiling, zero, or negative is a usage
+      error at `exitcode.Usage` that publishes nothing and writes no
+      identity — E2 proves the library's rejection, this proves the flag
+      reaches it before anything happens.
+- [ ] `--use NAME` selects the vault, like every other vault-scoped
+      command.
 
 **Collisions**
 
 - [ ] `identity enroll` whose device name already labels a recipient
       fails with `ErrDeviceNameTaken`, **writes no identity file**, and
       the message names `--device`.
+- [ ] `identity enroll --device NAME` seals that name into the request
+      and publishes successfully where the default hostname would have
+      collided — the recovery the message above points at.
 
 **Clone integration**
 
@@ -125,17 +144,25 @@ easy to "simplify" back into bugs:
 
 **Crash-safety of a partial enroll**
 
+Rewritten against what the code actually does: `resetDirtyWorkTree`
+covers the **whole** working tree and deletes untracked files, not just
+`entries/`. The TDD said otherwise and was wrong; see
+[A21](../gage-cli-design/open-questions.md#a21). The tests below assert
+the real behavior, which is stronger than what the doc had claimed.
+
 - [ ] A file written into `pending/` by an enroll that died before
       committing is **inert** — an entry written afterwards is not
       decryptable by the key it names.
-- [ ] That stray is pruned on its own epoch like any other expired
-      request.
-- [ ] **No commit ever stages the `pending/` directory wholesale.**
-      Construct a stray, run an unrelated write, and assert the stray is
-      absent from the resulting commit. This is what keeps a local
-      artifact from becoming something other devices see.
-- [ ] `recipient pending` on the machine that failed lists the stray; on
-      any other machine it does not exist.
+- [ ] **The next write on that machine discards the stray**, warning once
+      and naming it, exactly as it would for any other unexpected dirt.
+      Construct a stray, run an unrelated write, and assert both the
+      warning and that the stray is gone and absent from the commit.
+- [ ] `recipient pending` on the machine that failed lists the stray
+      while it survives — a read takes no lock and resets nothing — and
+      on any other machine it does not exist.
+- [ ] No test asserts a stray surviving to expire on its own epoch. That
+      was the old, incorrect story; a stray outlives only the interval
+      before the next local write.
 
 ## Implementation
 
@@ -143,7 +170,16 @@ easy to "simplify" back into bugs:
       ordered per `D-ENROLL-REMOTE`: remote check → lock → fetch+pull →
       collision check → identity → seal/write/commit → push → release.
 - [ ] `cmd/gage`'s `identity enroll`, registered with a `Short`, the
-      `Identity` group, and both-mode availability.
+      `Identity` group, and both-mode availability, and carrying
+      `--use`, `--device`, and `--ttl`.
+- [ ] **`identity add`'s and `identity list`'s existing `Short`s are
+      reworded** per D-ENROLL-VERBS' table. `identity add`'s is what
+      makes it and `enroll` identical up to their second clause — the
+      listing's only signal that one is a superset of the other — so it
+      lands with `enroll`, not later. (`recipient list`'s is E4's.)
+- [ ] Enroll records this device's `pubkey` (and `device`/`method`) into
+      global config's `[vaults.<name>]`, the same as `identity add` —
+      see E0's note on the fourth writer.
 - [ ] Clone's post-success branch: `Prompter.Confirm` when interactive
       and this device holds no identity; today's message otherwise. The
       TTY test lives in `cmd/gage`, never in the library.

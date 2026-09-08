@@ -58,6 +58,10 @@ must open nothing.
 - [ ] Garbage files, non-age files, and files whose names don't match
       `<uuid>-<epoch>.age` are skipped, not fatal — the same posture
       `ListIdentities` takes toward strays.
+- [ ] **A vault with no `pending/` directory at all reports zero pending
+      requests**, not an error. This is the normal state, not an edge
+      case: git tracks no empty directories, so every vault has it until
+      the first enroll creates the directory lazily.
 
 **Seal and code**
 
@@ -96,8 +100,10 @@ must open nothing.
       vault with a long history, or by instrumenting the git layer. This
       is the property the whole filename scheme exists to buy.
 - [ ] A TTL beyond the 7-day ceiling, zero, and negative are each
-      rejected at the boundary with a usage error, before anything is
-      generated or written.
+      rejected **by the library**, before anything is generated or
+      written, with an error carrying `exitcode.Usage`. (E3 proves the
+      `--ttl` flag itself; there is no command here to produce a usage
+      rejection from.)
 - [ ] **A filename epoch more than the ceiling beyond now is pruned as
       already expired** — the clamp that stops a forged
       `<uuid>-99999999999.age` lingering forever.
@@ -107,9 +113,17 @@ must open nothing.
       one request's epoch contains another's short id as a substring,
       and assert resolution picks the UUID match. An id appearing only
       inside an epoch matches nothing.
+- [ ] **Resolution follows the base design's order**: exact UUID beats a
+      substring match; a substring matching several requests returns the
+      candidates rather than picking one; an id matching nothing returns
+      `ErrEnrollmentNoSuchRequest`. Assert the ambiguous case returns
+      *all* matches — a resolver that guesses here deletes a request the
+      human did not name.
 - [ ] A request sealed with `expires` already in the past at `created`
-      (a slow-clock device) is distinguishable from one that merely sat
-      too long, so the error can name clock skew.
+      (a slow-clock device) returns `ErrEnrollmentClockSkew`, and one
+      that merely sat too long returns `ErrEnrollmentExpired`. Two
+      errors, because the fixes are unrelated — fix that machine's clock,
+      versus ask for a fresh request.
 
 **Code hygiene**
 
@@ -130,7 +144,15 @@ must open nothing.
 - [ ] Filename construction and parsing, with the UUID and epoch halves
       validated independently.
 - [ ] `PendingRequest`, `OpenedRequest`, `EnrollmentRequest` types, and
-      the typed errors for expired / wrong-code / id-mismatch.
+      the typed errors: expired, wrong-code, id-mismatch, clock-skew, and
+      no-such-request. Each carries the exit code the TDD's "Library
+      surface" table assigns it — the taxonomy is an M0 contract, not a
+      per-command choice.
+- [ ] `Vault.ResolveEnrollment(id)` as the single resolution path both
+      `approve` and `deny` use, returning `*AmbiguousRequestError` with
+      the matches on ambiguity — a value `cmd/gage` renders, mirroring
+      M5's `CandidateList` rather than inventing a second shape for the
+      same question.
 - [ ] Pruning: expired-by-filename, plus the beyond-ceiling clamp,
       leaving unparseable names alone.
 

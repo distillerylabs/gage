@@ -459,6 +459,25 @@ session as well as one-shot, since none of them creates a vault the way
 `init`/`clone` do; `groupOrder` is untouched. `recipient add`'s
 description changes as part of A19 rather than this decision.
 
+**Three existing `Short`s change, and they are not cosmetic** — each one
+is a contrast this decision leans on, so shipping the new commands beside
+the old wording would leave the listing arguing with itself:
+
+| Command | Today | Becomes |
+|---|---|---|
+| `identity add` | "Register a new identity for this device and print its public key" | "Register this device's identity and print its public key" |
+| `identity list` | "List the identities this device holds for a vault" | "List the keys this machine holds for a vault" |
+| `recipient list` | "List every device this vault is encrypted to" | "List the keys this vault is encrypted to" |
+
+`identity add`'s rewording is what makes it and `identity enroll`
+identical up to their second clause, which is how the listing shows that
+one is a superset of the other without prose. `identity list` and
+`recipient list` are the pair this decision calls "close enough to be
+confused": the new wording puts the contrast in the grammatical subject —
+"this machine holds" against "this vault is encrypted to" — where the
+current wording buries it in "identities" versus "devices," which reads
+as a synonym.
+
 ---
 
 ## The reframe: the seal is authentication, not confidentiality
@@ -530,6 +549,16 @@ myvault/
 ├── .gitattributes
 └── .gitignore
 ```
+
+**`pending/` is created lazily, by the first enroll**, and its absence is
+the normal state rather than an error. Git does not track empty
+directories, so a vault that has never had a request simply does not have
+the directory — including every vault that predates this feature.
+`PendingEnrollments` reports zero requests for a missing directory, the
+same answer it gives for an empty one, and no command creates it
+speculatively. (Recorded as
+[A22](../plans/gage-cli-design/open-questions.md#a22), which folds the
+directory into the base design's layout section when E3 ships.)
 
 Each file is one sealed enrollment request: an age file with a single
 scrypt (passphrase) recipient, whose plaintext is:
@@ -1180,6 +1209,42 @@ still holding nothing. Only once the answer is yes does it ask for a
 passphrase. A wrong code, an expired request, or a declined prompt
 therefore costs the approver no unlock at all.
 
+**Which forces `ErrCannotGrantFullAccess` to sit after that
+confirmation, not before it** — and an earlier draft of this document had
+that wrong, because it copied a sentence from `recipient add` where the
+same phrase means something different. The pre-flight is "decrypt every
+entry with the acting identity," so it *needs* an unlocked `Identity`;
+there is no cheaper way to ask the question, since an age file's X25519
+stanzas carry an ephemeral share rather than the recipient's public key
+and cannot be matched against a key you do not hold. In `recipient add`,
+`withUnlockedVault` has already run by the time the pre-flight happens,
+so "before any confirmation" there means *before M10's trust-cache
+prompt*. `approve` has an extra, earlier confirmation that `add` does not
+have, and running the pre-flight ahead of it would mean unlocking first —
+giving up exactly the property this section exists to preserve.
+
+So the order is:
+
+1. `OpenEnrollment(codes)` — no identity held.
+2. Device-name collision pre-check (`ErrEnrollmentNameTaken`) — still no
+   identity; it reads the recipient list, which is plaintext.
+3. Render what each request claims.
+4. **The approve `[y/N]`.** Declining here costs no unlock, as does a
+   wrong code or an expired request at step 1.
+5. **Unlock.**
+6. Full-access pre-flight — `ErrCannotGrantFullAccess`, still **before
+   the write lock** and **before M10's recipient-change prompt**, which
+   is what that guarantee was always actually about: the refusal never
+   arrives mid-write, on an opaque entry UUID, after a human has answered
+   the question about trusting the list.
+7. Take the lock, re-verify each seal under it, then write.
+
+The cost of this ordering, stated so it isn't rediscovered as a bug: a
+partially-admitted approver types their passphrase before learning they
+cannot grant what they were asked to grant. That is one wasted unlock in
+a state that is itself already damage, against a wrong code costing none
+in the common case — and the common case is the one worth optimizing.
+
 This is `sync`'s established pattern, not a new one: "**Sync unlocks
 lazily.** … `gage sync` only prompts for an unlock when it reaches a
 conflict whose resolution requires showing you plaintext." It's also the
@@ -1280,6 +1345,34 @@ class of bug that ordering was written to close.
 So the epoch is parsed off before any matching happens, and it is not
 part of the searchable text.
 
+**What an ID resolves *to* is the base design's rule, reused rather than
+reinvented.** "Addressing entries" already settled how a human-typed
+identifier becomes one thing: exact match first, then substring, then —
+when more than one survives — a candidate list, never a guess. Pending
+requests get the same order, over the UUID portion only:
+
+1. **Exact UUID.** The whole 36 characters.
+2. **Substring of the UUID.** `e4f88b21` in the transcripts above is
+   this case, and it is the one people actually type.
+3. **More than one match: ambiguous.** The matching `PendingRequest`s
+   come back as a *value* for `cmd/gage` to render, exactly as an
+   ambiguous entry query returns a candidate list rather than printed
+   text. `exitcode.Ambiguous`.
+4. **No match: `ErrEnrollmentNoSuchRequest`**, at `exitcode.NotFound`.
+
+Reusing the order matters more here than it would for a read, because
+`deny` deletes. A resolution rule that guessed — first match wins, or
+silently picking the soonest to expire — would delete a request the human
+did not name, and the thing they would have to notice is a UUID prefix.
+Two pending UUIDs sharing an eight-character prefix is vanishingly
+unlikely; a human typing three characters is not, and that is the case
+the candidate list is for.
+
+Note this is the *only* resolution `gage` performs on a pending request.
+There is no title to match, no metadata outside the seal, and
+deliberately no matching on device name — the name is sealed, which is
+the whole point of the filename scheme.
+
 ### Clock skew, in the direction the ceiling doesn't cover
 
 The far-future clamp above handles a *fast* clock. A **slow** one fails
@@ -1296,8 +1389,12 @@ make it legible rather than baffling:
 - **At approve time, diagnose it.** Both `created` and `expires` are in
   the seal. A request whose `expires` is in the past *and* whose
   `created` is also in the past by less than its own TTL was expired
-  before it was written. That is not an expiry, it is a wrong clock, and
-  the error should say so instead of reporting a stale request.
+  before it was written. That is not an expiry, it is a wrong clock, so
+  it gets its own error — `ErrEnrollmentClockSkew`, declared under
+  "Library surface" — rather than being reported as a stale request. The
+  two are separated because their fixes share nothing: one says fix that
+  machine's clock and enroll again, the other says ask for a fresh
+  request.
 - **At enroll time, warn on the available signal.** A freshly cloned or
   fetched vault carries commit timestamps written by other devices. If
   local time is meaningfully behind HEAD's committer timestamp, this
@@ -1305,30 +1402,49 @@ make it legible rather than baffling:
   Warn and proceed, the same posture as an unreachable network or a
   failed page-lock; refusing to enroll over a heuristic would be worse
   than publishing a request that might expire early.
-- **An interrupted enroll can strand an uncommitted file**, and that is
-  tolerated rather than prevented. Enroll seals the request, writes it
-  into `pending/`, then commits; process death between those two steps
-  leaves an untracked file behind. The base design has machinery for
-  this shape of problem — "gage refuses to start any write against a
-  dirty `entries/` working tree it didn't just create itself," warns,
-  and resets to HEAD — but it is scoped to `entries/` and deliberately
-  not extended here. That reset exists because a stale partial
-  `--reencrypt` is *dangerous*: the recipient list and the actual
-  ciphertext disagree. A stray pending file is inert, expires on its own
-  epoch, and is visible only on the machine that failed to publish it,
-  where `recipient pending` will list a request nobody else can see. Not
-  worth a second reset path.
+- **An interrupted enroll can strand an uncommitted file**, and the
+  machinery that already exists handles it — no new path, and none
+  wanted. Enroll seals the request, writes it into `pending/`, then
+  commits; process death between those two steps leaves an untracked file
+  behind. The next write on that machine discards it: every mutating
+  method runs `resetDirtyWorkTree` under the vault lock, which warns once
+  naming what it found and resets to HEAD, **deleting untracked files
+  along with modified ones, across the whole working tree**.
 
-  `D-ENROLL-REMOTE` already narrowed it: enroll holds the write lock
-  across the whole sequence, so another process cannot interleave with
-  it. What remains is genuine process death.
+  An earlier draft of this section said that reset was "scoped to
+  `entries/`" and concluded a stray would survive to expire on its own
+  epoch. That was wrong about the shipped code, and the base design doc
+  was wrong in the same way — corrected as
+  [A21](../plans/gage-cli-design/open-questions.md#a21). The scope is
+  deliberate: a crash after `--reencrypt` writes the recipient files but
+  before it commits dirties those two as well, so a reset scoped to
+  `entries/` would leave the half-migrated state `--reencrypt` exists to
+  prevent.
 
-  **The one hard requirement is staging.** Every commit this feature
-  makes stages *explicit paths* — the recipient files, the entries it
-  re-encrypted, the specific request files it approved — never the
-  `pending/` directory wholesale. Otherwise an unrelated write could
-  sweep a stray into a commit it has nothing to do with, which turns a
-  harmless local artifact into something other devices see.
+  What that means here, precisely, since it is the opposite of what the
+  draft claimed:
+
+  - A stray pending file lives until the next write on that machine,
+    which may be seconds away or never come. `recipient pending` — a
+    read, which takes no lock and resets nothing — lists it meanwhile.
+  - It is inert for as long as it exists, and visible only on the machine
+    that failed to publish it. Either way it grants nothing, which is why
+    tolerating it was always the right call even though the reason given
+    was wrong.
+  - **No commit can sweep it up**, and that holds structurally rather
+    than by anyone remembering to stage carefully: the reset runs
+    *before* each write's own changes, so by the time anything is staged
+    the stray is gone. An earlier draft made "stage explicit paths, never
+    the `pending/` directory wholesale" a hard requirement on every commit
+    this feature makes. That would have meant replacing
+    `gitrepo.CommitAll` — `git add -A`, which every write path in the
+    codebase uses — with a path-scoped variant, to buy a guarantee the
+    reset already provides. The requirement is dropped; why it is safe to
+    drop is recorded here rather than left as a silent omission.
+
+  `D-ENROLL-REMOTE` already narrowed the window: enroll holds the write
+  lock across the whole sequence, so another process cannot interleave
+  with it. What remains is genuine process death.
 
 - **Replay within the TTL is accepted, not defended against.** Someone
   with read and write access could copy a pending blob and re-commit it.
@@ -1423,9 +1539,18 @@ gage recipient approve [ID...] --code CODE [--code CODE ...]
 
     Refuses an expired request, a request whose sealed request_id does
     not match its filename's UUID portion, and a code that opens
-    nothing. Two refusals happen before the lock is taken and before
-    anything is asked: an approver who cannot itself read every entry,
-    and a device name that now collides with an existing recipient.
+    nothing. A device-name collision is refused before the lock, before
+    any unlock, and before the confirmation. An approver who cannot
+    itself read every entry is refused before the lock and before M10's
+    recipient-change prompt, but necessarily after the unlock — the check
+    is a decryption pass and has no identity-free form. See "The approver
+    unlocks, and the unlock comes late".
+
+    Every supplied --code must open a pending request. One that opens
+    nothing fails the whole run with ErrEnrollmentCodeWrong, before any
+    confirmation and before anything is committed: a mistyped code is far
+    likelier than a deliberately surplus one, and partially approving a
+    batch the human confirmed as a batch is the wrong way to be helpful.
 
 gage recipient deny <ID> [--use NAME]
 
@@ -1514,8 +1639,23 @@ type ApprovalResult struct {
     Commit      string
 }
 
+// AmbiguousRequestError carries the requests an ID matched when it
+// matched more than one. It is a value cmd/gage renders, not printed
+// text — the same shape as M5's CandidateList, for the same reason.
+type AmbiguousRequestError struct {
+    ID      string
+    Matches []PendingRequest
+}
+
 func (v *Vault) Enroll(device string, ttl time.Duration, p Prompter) (EnrollmentRequest, error)
 func (v *Vault) PendingEnrollments() ([]PendingRequest, error)
+
+// ResolveEnrollment applies the resolution order in "An ID always means
+// the UUID, never the whole filename": exact, then substring, over the
+// UUID portion only. Ambiguity is *AmbiguousRequestError; no match is
+// ErrEnrollmentNoSuchRequest. Both approve and deny go through it, so
+// there is one resolution rule rather than one per verb.
+func (v *Vault) ResolveEnrollment(id string) (PendingRequest, error)
 func (v *Vault) OpenEnrollment(codes []string) ([]OpenedRequest, error)
 func (v *Vault) ApproveEnrollments(approvals []Approval, ident *Identity) (ApprovalResult, error)
 func (v *Vault) DenyEnrollment(id string, p Prompter) error
@@ -1553,11 +1693,56 @@ var ErrEnrollmentRemoteUnreachable = errors.New("gage: could not reach this vaul
 // --device; the key was authenticated, the label was not.
 var ErrEnrollmentNameTaken = errors.New("gage: another recipient of this vault already uses this request's device name")
 
-// Raised before the write lock and before any confirmation, so a
-// partially-admitted approver learns why rather than hitting a
-// decryption failure on an opaque entry UUID mid-operation.
+// Raised before the write lock and before M10's recipient-change prompt,
+// so a partially-admitted approver learns why rather than hitting a
+// decryption failure on an opaque entry UUID mid-operation. It follows
+// the approve confirmation and the unlock, because the check is a
+// decryption pass — see "The approver unlocks, and the unlock comes late".
 var ErrCannotGrantFullAccess = errors.New("gage: this device cannot read every entry in the vault, so it cannot grant full access")
+
+// Raised when an ID names no pending request. Its sibling — an ID
+// matching several — is not an error but a candidate list, per
+// "An ID always means the UUID, never the whole filename".
+var ErrEnrollmentNoSuchRequest = errors.New("gage: no pending enrollment request with that id")
+
+// Raised when a request's sealed expires is in the past *and* its
+// created is in the past by less than its own TTL: it was expired before
+// it was written, which is a wrong clock rather than a stale request.
+// Distinct from ErrEnrollmentExpired because the fix is completely
+// different — fix the joining device's clock and enroll again, versus
+// ask for a fresh request. See "Clock skew, in the direction the ceiling
+// doesn't cover".
+var ErrEnrollmentClockSkew = errors.New("gage: this enrollment request expired before it was created, so the requesting device's clock is wrong")
 ```
+
+**Exit codes**, mapped here rather than left to each command, since the
+taxonomy is a contract every command answers to and three of these have
+a non-obvious home:
+
+| Error | Code | Why |
+|---|---|---|
+| `ErrEnrollmentCodeWrong` | `LockedOrAuth` | A secret that didn't open what it was meant to open — the same shape as a wrong passphrase, and what a retry loop keys on |
+| `ErrEnrollmentExpired` | `Conflict` | A state a human resolves, by asking for a fresh request |
+| `ErrEnrollmentClockSkew` | `Conflict` | Same, with a different fix |
+| `ErrEnrollmentIDMismatch` | `Conflict` | Vault state a human must look at; never a usage mistake |
+| `ErrEnrollmentNameTaken` | `Conflict` | Resolvable in place, with `--device` |
+| `ErrCannotGrantFullAccess` | `Conflict` | Pre-existing damage surfacing; needs a different human |
+| `ErrEnrollmentNoRemote` | `Usage` | The vault was never configured for this; `gage git set-remote` |
+| `ErrEnrollmentRemoteUnreachable` | `Unreachable` | The code that already exists for exactly this |
+| `ErrEnrollmentNoSuchRequest` | `NotFound` | Matches the entry resolver's answer to the same question |
+| An ambiguous ID | `Ambiguous` | Likewise — a candidate list, not a failure |
+| `--ttl` out of range, `--device` with a multi-request run | `Usage` | Rejections of the command line itself |
+
+**Two different errors describe one device-name collision, deliberately.**
+`cmd/gage`'s pre-check returns `ErrEnrollmentNameTaken`, which names
+`--device` as the fix. `AddRecipient`'s own check, under the write lock,
+returns the pre-existing `ErrRecipientExists`. Both are correct for where
+they sit: the first is the UX path, reached in every ordinary run; the
+second is the race, reached only when another writer took the name in the
+window between them, and it belongs to `recipient add`'s vocabulary
+rather than enrollment's. Unifying them would mean either teaching
+`AddRecipient` about enrollment or losing the `--device` advice in the
+common case.
 
 `ApproveEnrollments` takes no `reencrypt` parameter — there is nothing
 to decide. See "Approval always re-encrypts".

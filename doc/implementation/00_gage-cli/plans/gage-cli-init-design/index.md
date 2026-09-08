@@ -13,6 +13,14 @@ guidance all live in the [core plan index](../gage-cli-design/index.md)
 and apply unchanged here. What follows is only what is specific to
 enrollment.
 
+**Exit codes are part of every milestone's definition of done.** The
+taxonomy is an M0 contract, and the mapping for all of this feature's
+errors is settled in one table in the TDD's "Library surface" — including
+the three with a non-obvious home (`ErrEnrollmentCodeWrong` →
+`LockedOrAuth`, `ErrEnrollmentNoRemote` → `Usage`, an ambiguous ID →
+`Ambiguous`). A milestone that adds an error adds its code and a test
+pinning it.
+
 **There is still one open-questions register**, and it is the core
 plan's: [open-questions.md](../gage-cli-design/open-questions.md).
 Enrollment's decisions already live there (`Q-ENROLL-VERBS`,
@@ -80,6 +88,29 @@ E1 (A19) ───────────────────────�
 **E1 and E2 are mutually independent** and can be worked in either
 order, or in parallel by two people.
 
+### Two things this plan corrected after review
+
+Recorded because both were wrong in a way a passing test suite would not
+have caught, and someone reading the milestone docs alone would inherit
+the mistake.
+
+- **The dirty-tree reset covers the whole working tree, not `entries/`,
+  and deletes untracked files.** Both TDDs said otherwise, and the
+  enrollment doc built a crash-safety story on it — that a stray
+  `pending/` file survives to expire on its own epoch, when in fact the
+  next local write discards it. Corrected as
+  [A21](../gage-cli-design/open-questions.md#a21); E3's test list asserts
+  the real behavior. The knock-on: the "every commit stages explicit
+  paths, never `pending/` wholesale" requirement is **dropped**, since
+  the reset already provides that guarantee and honoring it literally
+  would have meant replacing `gitrepo.CommitAll` across every write path
+  in the codebase.
+- **`ErrCannotGrantFullAccess` cannot precede `approve`'s confirmation.**
+  The check is a decryption pass, so it needs the unlock — which
+  `approve` deliberately defers until after the human says yes. E1's
+  phrasing was correct for `recipient add` and wrong when copied into
+  E4. See E4's Decisions for the ordering that replaces it.
+
 ### One ordering constraint that is easy to miss
 
 E0 has two halves, and they want different timing:
@@ -106,14 +137,17 @@ files.
 | Established in | Contract | Consumed by |
 |---|---|---|
 | E0 | `[vault].id` in `.gage/config.toml`; `format_version = 2` | Every later reader of that file |
-| E0 | `$GAGE_DATA/identities/<vault-id>/<device>.age` | E3 (create/reuse), E4 (nothing — approval never touches local identities) |
-| E0 | `pubkey` in global config's `[vaults.<name>]` | E0's own `removeOrphanedIdentity`; available to anything else needing a key-not-name comparison |
-| E1 | `recipient add` always re-encrypts; `ErrCannotGrantFullAccess` raised before the lock and before any confirmation | E4 reuses both unchanged |
+| E0 | `$GAGE_DATA/identities/<vault-id>/<device>.age` | E3 (create/reuse). E4 never touches local identities — but it still **depends on E0**, for the `removeOrphanedIdentity` fix that `--device` makes reachable |
+| E0 | `pubkey` in global config's `[vaults.<name>]`, written by `init`, `clone`, `identity add` — and by E3's `enroll` | E0's own `removeOrphanedIdentity`; anything else needing a key-not-name comparison |
+| E1 | `recipient add` always re-encrypts; `ErrCannotGrantFullAccess` exposed as a **separately callable pre-flight pass**, not buried in `AddRecipient` | E4 reuses the error and the pass, but places it differently — after its own confirmation and unlock, still before the lock and M10's prompt |
 | E2 | Enrollment code: generation, Crockford normalization, validation-before-decrypt | E3 displays one, E4 consumes one |
 | E2 | Sealed payload + `<request-id>-<expires-epoch>.age` filename scheme | E3 writes them, E4 reads and prunes them |
-| E2 | `pending/` is inert — never read at encryption time | Everything after; it is the invariant that keeps the feature from widening the trust boundary |
+| E2 | ID resolution — exact, substring, candidate list — over the UUID portion only | E4's `approve <ID>` and `deny <ID>` |
+| E2 | Pruning, including the beyond-ceiling clamp | E4 wires it into approve, deny, and both recipient verbs |
+| E2 | `pending/` is inert — never read at encryption time; the directory is created lazily and its absence means zero requests | Everything after; it is the invariant that keeps the feature from widening the trust boundary |
 | E3 | `Vault.Enroll` create-or-reuse semantics, and the two prompt paths | E4's tests construct pending requests through it |
 | E3 | `ErrEnrollmentNoRemote` / `ErrEnrollmentRemoteUnreachable` as distinct errors | `cmd/gage` chooses the advice for each |
+| E3 | `identity add` / `identity list` `Short`s reworded per D-ENROLL-VERBS | E4 rewords `recipient list` against them; M0's registry test holds all four honest |
 
 ---
 

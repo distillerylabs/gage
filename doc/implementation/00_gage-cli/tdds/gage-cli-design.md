@@ -1011,7 +1011,7 @@ That collides with "every write is a commit." A write is a
 read-modify-commit sequence against a single git working tree — decrypt,
 modify, re-encrypt, stage, commit — and two of those interleaving can
 produce a commit containing another process's half-written state, or lose
-one of the two writes entirely. The dirty-`entries/` reset described
+one of the two writes entirely. The dirty-working-tree reset described
 under "Recipient / access management" makes it sharper still: run
 concurrently, one process's cleanup would discard another's in-flight
 work, which is exactly the "silently discard a just-rotated password"
@@ -1517,13 +1517,18 @@ gage recipient verify [--use NAME]
     the process is interrupted partway (crash, kill, power loss), HEAD is
     untouched; the vault is exactly as it was before the command ran, and
     re-running --reencrypt picks up cleanly from scratch. gage also
-    refuses to start any write against a dirty entries/ working tree it
-    didn't just create itself — the only thing that could leave one is an
-    interrupted --reencrypt, so gage warns once (naming the untracked/
-    modified paths it found) and resets entries/ to HEAD before the new
-    operation proceeds, rather than either silently discarding whatever it
-    found or risking an unrelated write folding a stale partial reencrypt
-    into its own commit. The warning, not the reset itself, is what's load-
+    refuses to start any write against a dirty working tree it didn't just
+    create itself — the likeliest thing to leave one is an interrupted
+    --reencrypt, so gage warns once (naming the untracked/modified paths
+    it found) and resets the whole tree to HEAD, discarding untracked
+    files along with modified ones, before the new operation proceeds,
+    rather than either silently discarding whatever it found or risking an
+    unrelated write folding a stale partial reencrypt into its own commit.
+    The reset covers the whole tree rather than only entries/ because a
+    crash in the window after --reencrypt writes the recipient files but
+    before it commits dirties those two as well, and a reset that skipped
+    them would leave exactly the half-migrated state --reencrypt exists to
+    rule out. The warning, not the reset itself, is what's load-
     bearing here: the interrupted-reencrypt assumption is strong but not
     provable in general, so a change that's actually a hand-edit gage
     didn't cause still gets surfaced, even though gage doesn't stop to ask

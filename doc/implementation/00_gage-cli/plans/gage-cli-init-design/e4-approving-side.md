@@ -21,7 +21,9 @@ This is the milestone that makes enrollment actually grant access.
 - **E3** — requests exist to approve, and its `Enroll` builds the test
   fixtures.
 - **E1** — approval always re-encrypts and reuses
-  `ErrCannotGrantFullAccess`.
+  `ErrCannotGrantFullAccess`, **and needs its pre-flight callable on its
+  own** rather than only from inside `AddRecipient`: approval runs it at
+  a different point in the sequence than `recipient add` does.
 - **E0** — `recipient approve --device` relabels recipients, which is
   precisely what makes E0's `removeOrphanedIdentity` fix necessary. **Do
   not ship E4 without it**, or approval introduces a new route to an
@@ -41,8 +43,11 @@ This is the milestone that makes enrollment actually grant access.
 
 ## Decisions
 
-Settled. Three that shape the structure more than they look like they
-do:
+Settled — but read the second bullet before writing anything. It
+corrects an ordering this milestone inherited from E1 that cannot hold
+here, and getting it wrong means either an impossible test or the loss
+of the late unlock. The rest shape the structure more than they look
+like they do:
 
 - **The unlock comes after the confirmation.** Opening a request needs
   no identity, so a wrong code, an expired request, or a declined prompt
@@ -50,6 +55,26 @@ do:
   `withUnlockedVault` wrapper the way `recipient add` is — it unlocks in
   the middle. That is the one place this feature departs from an
   existing command's shape, and it departs toward `sync`'s lazy unlock.
+- **And therefore `ErrCannotGrantFullAccess` lands *after* that
+  confirmation**, not before it — the one place this milestone's
+  ordering differs from E1's, and the thing to get right before writing
+  any of it. The pre-flight decrypts every entry, so it needs the
+  unlocked identity; an age file's X25519 stanzas carry an ephemeral
+  share rather than a recipient key, so there is no cheaper form of the
+  question. In `recipient add` the phrase "before any confirmation"
+  means *before M10's trust prompt*, because the unlock has already
+  happened. Here it can only mean the same thing. The guarantee that
+  survives — and the one that was always the point — is that the refusal
+  never arrives mid-write on an opaque entry UUID: it is still before
+  the write lock and before M10's prompt.
+- **Every supplied `--code` must open something.** One that opens
+  nothing fails the whole run before any confirmation and before any
+  commit, rather than approving a subset of the batch the human
+  confirmed. A mistyped code is likelier than a surplus one.
+- **An ID resolves the way an entry query does** — exact, then
+  substring, then a candidate list — over the UUID portion only. `deny`
+  deletes, so a resolver that guessed would delete a request nobody
+  named.
 - **A device name is a label; the pubkey is the identity.** Relabeling
   on approval is legitimate and changes nothing about what was
   authenticated.
@@ -74,10 +99,26 @@ do:
 - [ ] An injected failure partway through the re-encryption leaves HEAD
       untouched and every request still pending.
 - [ ] **An approver who cannot read every entry is refused with
-      `ErrCannotGrantFullAccess` before the lock and before any
-      confirmation** — the error names the count of unreadable entries,
-      never a bare decryption failure on a UUID.
+      `ErrCannotGrantFullAccess` before the write lock and before M10's
+      recipient-change prompt** — the error names the count of unreadable
+      entries, never a bare decryption failure on a UUID. Assert the
+      position precisely: nothing committed, no entry rewritten, and
+      M10's prompt never shown.
+- [ ] That refusal comes **after** the approve confirmation and the
+      unlock, which is the documented cost of the late unlock: assert the
+      passphrase prompt count is one, not zero. A test asserting zero
+      here is asserting the impossible — see this milestone's Decisions.
 - [ ] `deny` removes the file, grants nothing, and needs no code.
+- [ ] **Approve and deny each prune expired requests they encounter**,
+      since both are already writing and holding the lock. A request
+      expired by its filename epoch, and one whose epoch is beyond the
+      ceiling, are both gone from `pending/` after either command — in
+      the same commit, not a second one.
+- [ ] **`recipient add` and `recipient remove` prune too.** The TDD says
+      pruning rides "the next recipient change"; E1 is the milestone that
+      touches `AddRecipient`, but pruning does not exist until E2, so the
+      wiring lands here. Assert an expired request is cleared by an
+      ordinary `recipient add` with no enrollment involved.
 - [ ] **`deny` warns when its push fails** rather than reporting plain
       success — injected fake `RemoteSyncer`, and assert the warning
       reached the `Prompter`. A silent failed deny leaves the request
@@ -100,11 +141,49 @@ do:
       caught: what gets written is what was verified **under the lock**,
       not what was displayed.
 
+**Codes and IDs**
+
+- [ ] `--code A --code B` where B opens nothing fails the whole run with
+      `ErrEnrollmentCodeWrong` at `exitcode.LockedOrAuth` — nothing
+      confirmed, nothing approved, A's request still pending.
+- [ ] With no `--code`, the code is read through `Prompter.Value`, and
+      `cmd/gage` — not the library — owns the retry loop around a wrong
+      one.
+- [ ] A positional ID narrows an `approve` run to that request even when
+      the code would have opened several.
+- [ ] `deny <ambiguous-substring>` returns the matches as
+      `*AmbiguousRequestError`, deletes nothing, and exits `Ambiguous`;
+      `cmd/gage` renders the list. `approve` resolves through the same
+      function, so the behavior is identical there.
+- [ ] `deny <unmatched>` is `ErrEnrollmentNoSuchRequest` at
+      `exitcode.NotFound`, and deletes nothing.
+- [ ] `deny <8-char-prefix>` works — the form the TDD's own transcript
+      uses.
+- [ ] A request expired by its **sealed** copy is refused with
+      `ErrEnrollmentExpired`; one that was expired before it was created
+      is refused with `ErrEnrollmentClockSkew`, and the message names the
+      requesting device's clock rather than a stale request.
+
+**Non-interactive**
+
+- [ ] `recipient approve` under `--script` fails cleanly rather than
+      approving: `--yes` answers only `ConfirmRecipientChange`, so
+      approve's own `[y/N]` stays a real question and defaults to no.
+      Assert nothing is committed and the message says why.
+- [ ] `recipient pending` and `recipient deny` work unchanged under
+      `--script` — neither asks anything a script cannot answer.
+
 **Collisions and duplicates**
 
 - [ ] A request whose device name became taken between enroll and
       approve is refused with `ErrEnrollmentNameTaken` **before the
-      confirmation and before any unlock**.
+      confirmation and before any unlock** — this one genuinely can come
+      first, since it reads only the plaintext recipient list.
+- [ ] The authoritative check inside `AddRecipient`, under the lock,
+      still fires when another writer takes the name in the window — and
+      returns the pre-existing `ErrRecipientExists`, not
+      `ErrEnrollmentNameTaken`. Two errors for one condition is
+      deliberate; see the TDD's "Library surface".
 - [ ] `approve --device <other-name>` applies that same request,
       recording the approver's label. The recipient's pubkey is the
       sealed one, unchanged — relabeling changes the name and nothing
@@ -150,13 +229,20 @@ do:
       is a deliberate exception rather than an erosion of the
       interaction-rides-the-Identity rule.
 - [ ] `cmd/gage` orders it: open → collision check → render → confirm →
-      **unlock** → lock → re-verify → add + re-encrypt + clear → commit
-      → push.
+      **unlock** → full-access pre-flight → lock → re-verify → add +
+      re-encrypt + clear → commit → push. The pre-flight sits between the
+      unlock and the lock, which is why E1 must expose it as its own pass
+      rather than burying it inside `AddRecipient`.
 - [ ] Three commands registered in the `Recipients` group, both-mode
       availability. `recipient list`'s `Short` reworded to "List the
       keys this vault is encrypted to", against `identity list`'s "List
-      the keys this machine holds for a vault" — they answer different
-      questions and previously scanned as synonyms.
+      the keys this machine holds for a vault" (reworded in E3) — they
+      answer different questions and previously scanned as synonyms.
+- [ ] Pruning wired into `AddRecipient`/`RemoveRecipient` as well as
+      approve and deny — the "next recipient change" half of the TDD's
+      pruning rule, which has no other home.
+- [ ] Every error mapped to the exit code the TDD's "Library surface"
+      table assigns it.
 - [ ] Codes gathered from `--code` or, when absent, `Prompter.Value`,
       with the retry loop around `ErrEnrollmentCodeWrong` owned by
       `cmd/gage`. **No `Prompter` change**, and no new `UnlockKind`.

@@ -104,6 +104,14 @@ before starting.
       guessing.
 - [ ] `vault remove` still leaves the vault's own files and repository
       untouched in every one of the above.
+- [ ] **One vault registered twice under two local names shares one
+      identities directory** — the intended consequence of id-keying, and
+      the case name-keying used to hide. `vault remove` of either
+      registration must not delete a key the other still needs. Both
+      halves matter: the device that is still a recipient (the pubkey
+      comparison keeps it) and the device that holds a key but is *not*
+      yet a recipient, which is exactly the state `identity enroll`
+      creates while a request is pending.
 
 ## Implementation
 
@@ -126,8 +134,12 @@ before starting.
       `pubkey`, and gates deletion behind `app.Prompter.Confirm` with a
       message naming the path. `app.Prompter` is already on the struct;
       no plumbing needed.
-- [ ] `make reset-local-state` mentioned in the version-refusal message,
-      since it is the migration for a developer vault.
+- [ ] The version-refusal message becomes **directional**. Today it ends
+      "upgrade gage" for any mismatch (`vaultconfig.go`), which is the
+      wrong advice in the direction this milestone creates: a v1 vault
+      read by a v2 build needs re-creating, not a newer binary. Older
+      than this build → re-create, naming `make reset-local-state`; newer
+      → upgrade gage, as now.
 
 ## Definition of done
 
@@ -138,7 +150,12 @@ clear re-create message rather than misbehaving.
 ## Affects later milestones
 
 - **E3** writes identity files at the new path and relies on the id
-  being available from global config without reading the vault.
+  being available from global config without reading the vault. It is
+  also a **fourth writer of `pubkey`** into `[vaults.<name>]`, alongside
+  `init`, `clone`, and `identity add` — an enrolled device that never
+  records its key lands in this milestone's "pubkey absent, so keep the
+  file and say why" branch, which would quietly disable this fix on
+  precisely the devices enrollment creates.
 - **E4** introduces `recipient approve --device`, which produces exactly
   the relabel case above. E0's `removeOrphanedIdentity` fix must be in
   before E4 ships, or approval creates a new route to an unrecoverable

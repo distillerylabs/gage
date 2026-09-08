@@ -62,7 +62,12 @@ are the starting point; these expand them.
       the path it runs on is now the only path.
 - [ ] **An actor that cannot decrypt every entry is refused with
       `ErrCannotGrantFullAccess`**, *before* the vault write lock is
-      taken and *before* the trust-cache confirmation is shown.
+      taken and *before* the trust-cache confirmation is shown. Note the
+      unlock has already happened here — `recipient add` is wrapped in
+      `withUnlockedVault` — because the check is a decryption pass and
+      has no identity-free form. E4 inherits the error but **not** this
+      ordering; see its own list.
+- [ ] The error maps to `exitcode.Conflict`.
 - [ ] That error names **how many entries are unreadable**, and never
       surfaces a bare decryption failure on an entry UUID.
 - [ ] The refusal leaves nothing changed: no commit, no partial
@@ -71,7 +76,9 @@ are the starting point; these expand them.
       still prints the revokes-future-access-only warning.
 - [ ] `recipient add`'s registry `Short` reads "Authorize a public key
       and re-encrypt the vault to include it", parallel to `remove`'s
-      wording. M0's registry test keeps both surfaces honest.
+      wording. M0's registry test keeps both surfaces honest. (Three
+      further `Short`s change in E3/E4 — see the table in D-ENROLL-VERBS.
+      This milestone owns only `recipient add`'s.)
 
 **Constructing the refusal state.** The only ways in are a recipient
 added before this milestone, or a hand-edited `.age-recipients`. Use the
@@ -107,3 +114,11 @@ longer describes a flag that does not exist.
   E4 has to define both itself, and `recipient add` remains the vector
   that keeps creating partial recipients — which is most of what A19
   was for.
+
+  **The error is reused; its position is not.** `recipient add` unlocks
+  first and runs the pre-flight before *any* confirmation it shows.
+  `approve` shows a confirmation before it unlocks at all, so there the
+  same check necessarily lands after that first `[y/N]` — still before
+  the lock and before M10's prompt. Keep the pre-flight a separately
+  callable pass rather than burying it inside `AddRecipient`, or E4
+  cannot place it where it needs to go.

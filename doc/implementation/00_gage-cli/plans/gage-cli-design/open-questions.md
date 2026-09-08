@@ -815,12 +815,19 @@ record of what changed and why.
 A14 on 2026-08-30; A4 and A6 once Q-DEVICE-NAME and Q-GIT-AUTH were
 answered; A15–A18 alongside the milestones that needed them.
 
-A19 is applied to the design doc but **not yet implemented** — it is the
-only amendment here that changes shipped behavior rather than describing
-it. `[x]` in this section has always meant "the TDD says this," never
-"the code does"; that distinction matters for exactly one entry, and
-this is it. The outstanding work is listed under "Accepted, not yet
-implemented" in [index.md](index.md).
+A19 and A20 are applied to the design doc but **not yet implemented** —
+they are the only amendments here that change shipped behavior rather
+than describing it. `[x]` in this section has always meant "the TDD says
+this," never "the code does"; that distinction matters for exactly those
+two entries. The outstanding work is listed under "Accepted, not yet
+implemented" in [index.md](index.md), and sequenced as E0/E1 in
+[plans/gage-cli-init-design/](../gage-cli-init-design/index.md).
+
+A21 runs the other way: the code was right and the doc was wrong, so
+applying it changed nothing but prose. A22 is the one entry deliberately
+**not** applied yet — the layout it describes does not exist until E3
+ships, and a design doc that describes a directory no build creates is
+the failure mode this register exists to prevent.
 
 ### `[x]` A1 — Add a concurrency section
 
@@ -1131,6 +1138,68 @@ deferring makes this strictly more expensive.
 deletions by comparing device names; correct keying removes the
 cross-vault collision but not the label-versus-identity confusion
 underneath it.
+
+---
+
+### `[x]` A21 — the dirty-tree reset covers the whole working tree, not `entries/` {#a21}
+
+**Applied to the design doc. No code change — this is the doc catching up
+to what shipped.**
+
+The design doc said in two places that gage "refuses to start any write
+against a dirty `entries/` working tree" and "resets `entries/` to HEAD".
+The shipped implementation resets the **whole** working tree and
+**deletes untracked files** while doing it — `resetDirtyWorkTree`
+(`internal/gage/vault.go`) calls `gitrepo.ResetHard`, whose own doc
+comment states the reason: a crash in the window after `--reencrypt`
+writes the recipient files but before it commits dirties those two as
+well, and a reset scoped to `entries/` would leave exactly the
+half-migrated state `--reencrypt` exists to rule out.
+
+**Found while reviewing the enrollment plan**, which inherited the stale
+claim and built a crash-safety story on it — a stray `.gage/pending/`
+file was described as surviving to expire on its own epoch, when in fact
+the next write on that machine discards it. Recorded here rather than
+fixed silently because two documents and one milestone's test list were
+reasoning from it, and because "what does a write do to a tree it didn't
+expect" is a property worth being able to look up.
+
+**Applied as:** both passages in
+["Recipient / access management"](../../tdds/gage-cli-design.md) and the
+concurrency section now say "dirty working tree", name the untracked-file
+deletion, and carry the reason the scope is what it is. The enrollment
+doc's "Clock skew" section and E3's test list are corrected to match.
+
+---
+
+### `[x]` A22 — the vault layout gains `.gage/pending/` {#a22}
+
+**Accepted; applies to the design doc when E3 lands**, since that is the
+first release in which a vault can actually grow the directory.
+
+The base design's on-disk layout enumerates `.gage/`, `.age-recipients`,
+`entries/`, `.gitattributes`, `.gitignore`. Device enrollment adds
+`.gage/pending/`, holding one sealed request per file. The layout diagram
+gains it with a one-line pointer to
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md) rather than
+a restatement of the scheme, which lives there.
+
+**Two properties belong in the base doc rather than only the enhancement
+doc**, because they constrain readers of the layout who never read the
+enrollment feature:
+
+- **The directory is created lazily**, on the first enroll. Git does not
+  track empty directories, so its absence is the normal state and means
+  "no pending requests", never an error.
+- **`pending/` is inert.** Nothing in it is read at encryption time. This
+  is the invariant that keeps the directory from widening the trust
+  boundary, and it is stated where someone auditing the layout will see
+  it.
+
+`.gitattributes` deliberately does **not** cover `pending/` — a union of
+two devices' pending requests is the correct merge outcome, unlike a
+union of two recipient lists. The reasoning is in the enrollment doc's
+"`.gitattributes` deliberately does *not* cover `pending/`".
 
 ---
 
