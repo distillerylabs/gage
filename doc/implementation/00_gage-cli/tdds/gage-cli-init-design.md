@@ -174,6 +174,97 @@ the existence of pending requests already leaks, the commit already
 reveals roughly when, and what's added is the TTL, which is the 24h
 default nearly always.
 
+### `[x]` D-ENROLL-COLLISIONS — device names collide; the pubkey is the identity
+
+**Resolved: a device name is a *label*, not an identity. The public key
+is the identity.** Every collision case follows from that one sentence.
+
+Two machines called `macbook-pro` is not exotic — default OS names,
+corporate imaging, `ubuntu` on every VM. The codebase already treats it
+as real: `TestIdentityAddRejectsAHostnameCollisionWithoutAnyoneTypingTheName`
+exists precisely because the collision happens *without anyone typing
+the name*. Three cases, three answers:
+
+- **At enroll time**, `AddIdentity` already checks the vault's recipient
+  list before generating anything and returns `ErrDeviceNameTaken`. That
+  behavior is correct and unchanged; what this document adds is the
+  requirement that the message name the fix (`--device NAME`) rather
+  than only stating the conflict.
+- **Between enroll and approve** — the request was created with no
+  collision, and one appeared before it was approved — `approve` takes an
+  optional `--device NAME` that relabels the request on the way in. The
+  approver owns the recipient list, so choosing a non-colliding label is
+  squarely their call, and it costs no new round trip with a joining
+  device that is sitting there waiting. Without this the request would be
+  **permanently unapprovable**: a valid code and a valid authenticated
+  request that `AddRecipient` refuses on a name clash, failing late, with
+  nothing the approver can do about it.
+- **When the request's pubkey is already a recipient**, approval is a
+  **success that does no work**: clear the request, report "already a
+  recipient," re-encrypt nothing, commit nothing new. This is the stale
+  duplicate — enroll, failed push, enroll again, one of the two approved
+  — and erroring on it would be answering a question nobody asked.
+
+**Relabeling does not weaken the authentication**, and it's worth being
+precise about why. The code authenticates the *key*; the device name was
+only ever advisory metadata that the vault happens to store beside it.
+`OpenedRequest` stays immutable — every field on it is authenticated —
+and the chosen label travels separately, as data the approver supplied
+rather than data the seal vouched for.
+
+**Auto-suffixing to `macbook-pro-2` was rejected.** Silent renaming
+contradicts the posture of every other decision here.
+
+**Re-running `enroll` mints a fresh request and a fresh code**, never
+reusing the pending one. Reuse would force gage either to persist the
+code — which D-ENROLL-CODE-FORMAT forbids — or to re-seal under a new
+code and leave two live ids for one device. Duplicates are harmless
+because `pending/` is inert, expiry prunes them, and the already-a-
+recipient rule above turns a late approval into a no-op.
+
+### `[x]` D-ENROLL-PRINT-ONLY — cut from v1
+
+**Resolved: `--print-only` and `--request-file` are not in the first
+version.** They are moved to "Deliberately out of scope."
+
+The idea was an offline path: print the sealed request instead of
+committing it, and let the approver read it back from a file — for a
+remote this device cannot write to, and for air-gapped transfer. It was
+the only part of this document that was sketched rather than designed,
+and it forks nearly every rule in it:
+
+- **No wire format.** "Prints" implies text; an age file is binary, so it
+  would need ASCII armor specified.
+- **No filename**, so `<request-id>-<expires-epoch>` doesn't exist —
+  `ErrEnrollmentIDMismatch` has nothing to compare against and
+  D-ENROLL-EXPIRY-IN-NAME simply doesn't apply.
+- **No commit**, so nothing ever prunes it.
+- **No file to delete on approval**, so the one-shot property quietly
+  stops holding and the same blob can be approved repeatedly.
+
+None of those are *unsafe* — approval reads only the sealed copy — but
+four unstated exceptions is not a specification.
+
+**What it would have bought, and why that isn't enough yet.** Both use
+cases already have a supported answer this document points at twice: the
+manual path (`gage identity add`, carry the public key, `gage recipient
+add` elsewhere). What `--print-only` adds over it is *authentication* —
+genuinely the point of this whole feature. But it buys that by having a
+human hand-carry a ~500-byte armored blob **plus** a code out-of-band,
+versus a 62-character key. On a manual channel that is a worse trade
+than it first appears, and it is a second control flow for exactly the
+reason `--wait` and approver-initiated invites are already deferred.
+
+It stays cleanly additive: the sealed blob is unchanged, so accepting one
+from a file later is a new input source, not a redesign.
+
+**The cost is real and is not being hidden.** The trust-boundary section
+used to name `--print-only` as the answer for a vault where the mere
+*existence* of enrollment activity is sensitive. With it cut, that
+answer becomes the manual path — which means giving up the
+authentication this feature exists to provide. That narrowing is stated
+where the leak is described rather than dropped.
+
 ### `[ ]` D-ENROLL-VERBS — command naming (deferred)
 
 **Deliberately open.** Tracked as `Q-ENROLL-VERBS` in
@@ -994,7 +1085,7 @@ Removed pending request e4f88b21. Nothing was granted; nothing to re-encrypt.
 ## Command reference (additions)
 
 ```
-gage enroll [--use NAME] [--device NAME] [--ttl DURATION] [--print-only]
+gage enroll [--use NAME] [--device NAME] [--ttl DURATION]
 
     Publishes an enrollment request for this device: creates a local
     identity if one does not already exist for this vault (reusing it if
@@ -1011,12 +1102,11 @@ gage enroll [--use NAME] [--device NAME] [--ttl DURATION] [--print-only]
     Requires git write access to the remote. A device with read-only
     access gets a message saying so and pointing at the manual path
     (`gage identity add`, then `gage recipient add` elsewhere), which
-    remains fully supported.
+    remains fully supported and is also the answer for air-gapped
+    transfer (see D-ENROLL-PRINT-ONLY).
 
-    --print-only skips the commit and push and just prints the sealed
-    request, for a remote this device cannot write to and for air-gapped
-    transfer. The approving device reads it back with
-    `gage recipient approve --request-file PATH --code CODE`.
+    Refuses, before generating any key, a device name that already
+    labels a recipient of this vault — and says to pass --device.
 
 gage clone <remote-url> [--name NAME] [--dir PATH]
 
@@ -1036,7 +1126,7 @@ gage recipient pending [--use NAME]
     the filename. Exits 0 with "no pending requests" when there are none.
 
 gage recipient approve [ID...] --code CODE [--code CODE ...]
-                       [--use NAME] [--request-file PATH]
+                       [--use NAME] [--device NAME]
 
     Opens each pending request with the given code(s), shows what each
     one claims, and — on confirmation — adds them to the recipient list,
@@ -1054,11 +1144,21 @@ gage recipient approve [ID...] --code CODE [--code CODE ...]
     Already-unlocked session vaults reuse the cached Identity and prompt
     for nothing.
 
+    --device relabels a request whose claimed device name now collides
+    with an existing recipient, which is the approver's call to make: the
+    code authenticated the key, not the label. Without it such a request
+    would be permanently unapprovable. With several requests in one run,
+    --device applies to the one it disambiguates and gage says which.
+
+    A request whose pubkey is already a recipient is not an error: the
+    request is cleared, nothing is re-encrypted, and gage reports that
+    the device already had access.
+
     Refuses an expired request, a request whose sealed request_id does
-    not match its filename's UUID portion, a code that opens nothing,
-    and — before
-    taking the lock or asking anything — an approver who cannot itself
-    read every entry.
+    not match its filename's UUID portion, and a code that opens
+    nothing. Two refusals happen before the lock is taken and before
+    anything is asked: an approver who cannot itself read every entry,
+    and a device name that now collides with an existing recipient.
 
 gage recipient deny <ID> [--use NAME]
 
@@ -1117,17 +1217,51 @@ type OpenedRequest struct {
     Expires time.Time
 }
 
+// Approval pairs an opened request with the label the approver chose for
+// it. An empty Label means "use what the request claims"; a non-empty
+// one overrides it, which is how a device-name collision gets resolved
+// without a new round trip (D-ENROLL-COLLISIONS).
+//
+// The label rides here rather than being written onto OpenedRequest,
+// because every field on that type is authenticated and a label the
+// approver typed is not.
+type Approval struct {
+    Request OpenedRequest
+    Label   string
+}
+
+// ApprovalOutcome is what happened to one request.
+type ApprovalOutcome struct {
+    Request OpenedRequest
+    Label   string // the name actually recorded in the recipient list
+    Added   bool   // false when this pubkey was already a recipient
+}
+
+// ApprovalResult covers the whole batch, which shares one re-encryption
+// pass and one commit.
+type ApprovalResult struct {
+    Outcomes    []ApprovalOutcome
+    Reencrypted int
+    Commit      string
+}
+
 func (v *Vault) Enroll(device string, ttl time.Duration, p Prompter) (EnrollmentRequest, error)
 func (v *Vault) PendingEnrollments() ([]PendingRequest, error)
 func (v *Vault) OpenEnrollment(codes []string) ([]OpenedRequest, error)
-func (v *Vault) ApproveEnrollments(reqs []OpenedRequest, ident *Identity) (RecipientChange, error)
+func (v *Vault) ApproveEnrollments(approvals []Approval, ident *Identity) (ApprovalResult, error)
 func (v *Vault) DenyEnrollment(id string) error
 ```
 
-`ApproveEnrollments` returns the existing `RecipientChange` rather than a
-new type — approval *is* a recipient change, and the caller wants the
-same "what moved, how many entries re-encrypted, which commit" answer
-`AddRecipient` already gives it.
+`ApproveEnrollments` returns `ApprovalResult` rather than the existing
+`RecipientChange`. An earlier draft reused `RecipientChange` on the
+grounds that approval *is* a recipient change — true, but that type
+describes exactly one device (`Device`, `Pubkey`), and batch approval
+resolves N requests under one commit, each of which may have been
+relabeled or turned out to be a no-op. Reusing it would have forced the
+caller to reconstruct per-request outcomes it no longer had. The shared
+facts — how many entries were re-encrypted, which commit — stay on the
+result once, where they belong, since they are properties of the batch
+rather than of any one device.
 
 Typed errors at the boundary, so `cmd/gage` owns retry and exit-code
 policy exactly as it does for `Unlock`:
@@ -1140,6 +1274,11 @@ var ErrEnrollmentIDMismatch = errors.New("gage: this request's sealed id does no
 // is an unauthenticated hint and is deliberately not part of the check.)
 var ErrEnrollmentNoRemote   = errors.New("gage: publishing an enrollment request needs a writable remote")
 
+// Raised when a request's device name — the one it was sealed with — now
+// labels a different recipient. Recoverable by the approver alone, via
+// --device; the key was authenticated, the label was not.
+var ErrEnrollmentNameTaken = errors.New("gage: another recipient of this vault already uses this request's device name")
+
 // Raised before the write lock and before any confirmation, so a
 // partially-admitted approver learns why rather than hitting a
 // decryption failure on an opaque entry UUID mid-operation.
@@ -1148,6 +1287,14 @@ var ErrCannotGrantFullAccess = errors.New("gage: this device cannot read every e
 
 `ApproveEnrollments` takes no `reencrypt` parameter — there is nothing
 to decide. See "Approval always re-encrypts".
+
+**Collisions are checked twice, on purpose.** `cmd/gage` checks the
+recipient list as soon as a request is opened, so a name clash is
+reported before the confirmation and before any unlock — the same
+fail-early posture as `ErrCannotGrantFullAccess`. `AddRecipient` checks
+again under the write lock, which is the authoritative one: the first
+check is UX, the second is correctness, and only the second can be
+trusted against a concurrent writer.
 
 **`Prompter` is unchanged — no new method, no new `UnlockKind`** (see
 D-ENROLL-PROMPTER). The approver's code is an argument to
@@ -1257,12 +1404,22 @@ system.
 
 **One genuinely new piece of information leaks**, and it should be
 recorded rather than discovered: a reader of the vault can now see *that*
-someone is enrolling, and how many requests are outstanding, from the
-existence of files in `.gage/pending/`. Device names and public keys stay
-sealed, so what leaks is "activity is happening," not who. The commit
-history already leaked comparable timing information, so this is a small
-increment on an existing exposure — but it is not zero, and a vault where
-that matters should use the `--print-only` path instead.
+someone is enrolling, how many requests are outstanding, and when each
+one expires, from the files in `.gage/pending/`. Device names and public
+keys stay sealed, so what leaks is "activity is happening," not who. The
+commit history already leaked comparable timing information, so this is a
+small increment on an existing exposure — but it is not zero.
+
+**There is no way to opt out of that leak in v1, and that is a real
+narrowing.** An earlier draft offered `--print-only` here — publish
+nothing, hand-carry the sealed request — which is now cut
+(D-ENROLL-PRINT-ONLY). A vault where the existence of enrollment
+activity is itself sensitive therefore falls back to the manual path:
+`gage identity add`, carry the public key, `gage recipient add`
+elsewhere. That path leaks nothing until the moment access is granted,
+and it gives up precisely the authentication this feature exists to
+provide. Stating the trade plainly is better than implying a private
+option exists.
 
 ---
 
@@ -1279,6 +1436,13 @@ that matters should use the `--print-only` path instead.
   → old machine, versus new machine → old machine) and the common case is
   one person setting up their own second device. Worth revisiting if
   multi-person vaults turn out to dominate.
+- **`--print-only` / `--request-file`** — publishing nothing and
+  hand-carrying the sealed request, for a read-only remote or an
+  air-gapped transfer. Cut from v1 (D-ENROLL-PRINT-ONLY): it forks four
+  separate rules in this document — armor format, the filename scheme,
+  pruning, and one-shot deletion — while its use cases already have the
+  supported manual path. Additive later without redesign, since the
+  sealed blob is unchanged and a file is just a second input source.
 - **Auto-approval of any kind.** No policy, no allowlist, no "trust
   requests from this device name." The human decision is the feature.
 - **Enrollment for methods other than `passphrase`.** The payload carries
@@ -1371,8 +1535,8 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   the newly approved device can read entries written long before it
   existed. There is no flag, and no code path, that produces a
   partially-readable recipient.
-- Approval, the re-encryption, and the request-file deletion land in
-  **one** commit.
+- Approval, the re-encryption, and removal of the pending request's file
+  land in **one** commit.
 - Batch approval of N requests performs **one** re-encryption pass and
   produces **one** commit.
 - An injected failure partway through the re-encryption leaves HEAD
@@ -1384,6 +1548,27 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   state by adding a recipient without re-encryption (or by hand-editing
   `.age-recipients`) and then approving from that device.
 - `deny` removes the file, grants nothing, and needs no code.
+
+**Collisions and duplicates (D-ENROLL-COLLISIONS):**
+- `enroll` whose device name already labels a recipient fails with
+  `ErrDeviceNameTaken`, **writes no identity file**, and the message
+  names `--device`.
+- A request whose device name became taken between enroll and approve is
+  refused with `ErrEnrollmentNameTaken` **before the confirmation and
+  before any unlock** — passphrase prompt count zero.
+- `approve --device <other-name>` applies that same request, recording
+  the approver's label rather than the sealed one. The recipient's
+  pubkey is the sealed one, unchanged: relabeling changes the name and
+  nothing else.
+- Approving a request whose **pubkey is already a recipient** succeeds
+  with no work — request cleared, zero entries re-encrypted, no new
+  recipient, and the outcome reports `Added: false`.
+- Re-running `enroll` produces a **different request id and a different
+  code** from the first run, and both requests remain independently
+  openable by their own codes.
+- Approving one of two duplicate requests for the same device, then the
+  other, leaves exactly one recipient — the second approval is the
+  no-op above rather than an error.
 
 **The approver's unlock:**
 - Approval prompts for the approver's passphrase — a git-writer holding
