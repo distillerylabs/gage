@@ -316,8 +316,9 @@ method, and public keys, never secret material):
 ```toml
 [vault]
 name = "myvault"
+id = "9f3a1c2e-7b41-4d58-a0c6-2e5f81b3d497"   # minted once by init; never changes
 type = "git"              # the only type today — see "Vault types"
-format_version = 1
+format_version = 2
 created = "2026-08-29"
 
 [method]
@@ -499,8 +500,10 @@ current = "personal"
 
 [vaults.personal]
 path = "$GAGE_DATA/vaults/personal"
+id = "9f3a1c2e-7b41-4d58-a0c6-2e5f81b3d497"   # copied from the vault's own config
 type = "git"
 device = "laptop-1"       # this device's identity name in that vault
+pubkey = "age1qz8x2..."   # this device's public key for that vault
 method = "passphrase"     # how THIS device unlocks it — see "Decryption
                           # methods are per-device"
 
@@ -509,6 +512,7 @@ origin = "https://github.com/you/personal-vault.git"
 
 [vaults.work]
 path = "$GAGE_DATA/vaults/work"
+id = "c41d8e07-52b9-4a36-9f18-7d0ae6c25b83"
 type = "git"
 device = "laptop-1"
 method = "passphrase"
@@ -522,6 +526,20 @@ idle_timeout = "10m"                 # auto re-lock a session vault after inacti
 history_file = "$GAGE_STATE/history"   # command names/paths only, never values
 clipboard_timeout = "45s"            # how long `show -c` leaves a value on the clipboard
 ```
+
+`id` is copied from the vault's own committed config so this machine can
+find that vault's identities directory without reading the vault at all
+— which matters when the vault's files have moved or been removed, the
+situation A20 exists to make safe.
+
+`pubkey` is this device's own public key for that vault, recorded when
+the identity is created. It exists so a question like "is the key I hold
+locally still a recipient here?" can be answered by comparing *keys*
+rather than device names — the name is a label, and a label is not proof
+of which key it refers to. Deriving the public key from the wrapped
+identity file would need an unlock, so it is captured at the one moment
+gage holds the key anyway. It is public, and already committed inside
+the vault, so a local plaintext copy discloses nothing new.
 
 `device` and `method` are this machine's answers to "who am I in that
 vault, and how do I unlock it." They're per-vault because both can
@@ -559,9 +577,13 @@ flat directory buys two things a single root can't:
 Within each root the substructure is unchanged in spirit from the old
 single-root design: `$GAGE_DATA/vaults/` holds actual vaults (git repos,
 today), `$GAGE_STATE/` holds local-only, never-synced device state (the
-history file and, per-vault, `$GAGE_STATE/<vault>/known-config.toml` —
+history file and, per-vault, `$GAGE_STATE/<vault-id>/known-config.toml` —
 the trust cache used to detect unreviewed recipient changes, see "Local
-trust cache").
+trust cache"). Both per-vault roots — identities under `$GAGE_DATA` and
+the trust cache under `$GAGE_STATE` — are keyed by the vault's `id`
+rather than its local registration name, for the reason given under
+"Local identity storage": a local name is chosen at clone time and can
+be reused for a different vault.
 
 ### Local identity storage
 
@@ -577,7 +599,7 @@ anything to check against.
 That something is a per-device, per-vault identity file:
 
 ```
-$GAGE_DATA/identities/<vault>/<device>.age
+$GAGE_DATA/identities/<vault-id>/<device>.age
 ```
 
 — an age-encrypted file wrapping this device's X25519 private key (for
@@ -585,7 +607,28 @@ $GAGE_DATA/identities/<vault>/<device>.age
 `age-key`, the file *is* the raw key material, protected only by
 filesystem permissions). `<device>` is the same identity name registered
 via `gage identity add` and listed under `[[recipients]]` in
-`.gage/config.toml` — e.g. `$GAGE_DATA/identities/personal/laptop-1.age`.
+`.gage/config.toml`. `<vault-id>` is that vault's `[vault].id` — **not**
+its local registration name, for reasons worth stating because the
+obvious choice is wrong (see A20).
+
+A vault's local name is chosen at clone time and tied to the remote by
+nothing, so two unrelated vaults can be registered under one name in
+sequence — and then share an identities directory. That produces two
+failures: a second vault silently reusing the first's keypair, and
+`vault remove` deleting a key belonging to a vault it is not removing.
+The second is unrecoverable. Keying by an id that travels *inside* the
+vault makes the collision unreachable: every clone of a vault agrees on
+its id however it was named locally, and two vaults never share one.
+
+Hashing the origin URL would not do: a URL has many spellings for one
+remote, `git set-remote` legitimately changes it, and a local-only vault
+has none. An id is assigned rather than derived, so it is stable by
+construction.
+
+For human findability — the design permits backing up an identity file
+by hand — the directory carries a small plaintext marker naming the
+vault. Nothing reads it to make a decision.
+
 The directory is created `0700`, the file `0600`.
 
 **Where the device name comes from.** `gage init` and `gage identity add`
@@ -604,16 +647,19 @@ vault can read. That's usually fine — the people who can read a vault
 generally know whose devices are on it — but `--device` is there for
 when it isn't, and shared vaults are exactly where it's worth using.
 
-**Device names are validated before they're ever used as a path.** The
-name is a filename component, and it arrives from
+**Device names — and the vault id — are validated before they're ever
+used as a path.** Both are filename components, and both arrive from
 `.gage/config.toml` — a committed file that, per "Trust boundaries,"
 anyone with git write access can edit. A recipient entry reading
 `device = "../../../../etc/cron.d/x"` must be rejected on read, not
 helpfully resolved. `gage` therefore validates every device name against
 the same character allowlist above, on the way in *and* on the way out,
-and refuses to construct a path from one that doesn't match. This is the
-one place a vault's plaintext metadata reaches the local filesystem, so
-it gets checked like the untrusted input it is.
+and refuses to construct a path from one that doesn't match. The vault
+id gets the identical treatment against the UUID form: a config whose
+`id` does not parse is refused rather than helpfully coerced. This is
+the one place a vault's plaintext metadata reaches the local
+filesystem, so both components get checked like the untrusted input
+they are.
 
 **This file always has exactly one recipient.** age refuses to encrypt to
 a scrypt passphrase recipient combined with any other recipient, so a
@@ -965,7 +1011,7 @@ That collides with "every write is a commit." A write is a
 read-modify-commit sequence against a single git working tree — decrypt,
 modify, re-encrypt, stage, commit — and two of those interleaving can
 produce a commit containing another process's half-written state, or lose
-one of the two writes entirely. The dirty-`entries/` reset described
+one of the two writes entirely. The dirty-working-tree reset described
 under "Recipient / access management" makes it sharper still: run
 concurrently, one process's cleanup would discard another's in-flight
 work, which is exactly the "silently discard a just-rotated password"
@@ -988,8 +1034,10 @@ sequence, and released on every exit path including error paths:
   released by the OS if a process is killed, so there's no stale lock
   file to clean up by hand — the same property that makes "process
   lifetime is the boundary" work for key material.
-- **`--reencrypt` holds it for its whole run** (see "Recipient / access
-  management"), which on a large vault can be a while. That's the right
+- **A re-encryption pass holds it for its whole run** — `recipient add`,
+  which always re-encrypts, and `recipient remove --reencrypt` alike
+  (see "Recipient / access management") — which on a large vault can be
+  a while. That's the right
   trade: the operation's all-or-nothing guarantee is worth more than
   letting an unrelated write slip in beside it.
 - **Cross-vault `mv`/`cp` take two locks**, one per vault, acquired in a
@@ -1255,7 +1303,7 @@ The mechanism behind "change detection" above:
 
 - **What's cached.** The first time a device successfully uses a vault,
   `gage` writes a verbatim copy of `.gage/config.toml` to
-  `$GAGE_STATE/<vault>/known-config.toml`, plus the content hash of
+  `$GAGE_STATE/<vault-id>/known-config.toml`, plus the content hash of
   `.age-recipients` at that same moment, both local, uncommitted, never
   synced. `config.toml` is the file diffed and shown to the user (device
   names alongside pubkeys make for a legible warning; a bare `age1...`
@@ -1441,32 +1489,46 @@ gage identity list [--use NAME]
 ### Recipient / access management
 
 ```
-gage recipient add <pubkey-or-name> [--use NAME] [--reencrypt]
+gage recipient add <pubkey-or-name> [--use NAME]
 gage recipient remove <pubkey-or-name> [--use NAME] --reencrypt
 gage recipient list [--use NAME]
 gage recipient verify [--use NAME]
 
-    Adding a recipient only affects future encryptions unless --reencrypt
-    is passed, which decrypts and re-writes every entry in the vault so the
-    new recipient can read history too. Removing a recipient REQUIRES
-    --reencrypt (gage refuses to silently leave old ciphertext readable by
-    a removed party) and prints a clear warning that this revokes future
-    access only — anything already read can't be unread.
+    Adding a recipient ALWAYS decrypts and re-writes every entry in the
+    vault, so the new recipient can read everything in it — there is no
+    flag, and no way, to add a recipient who can read only part of a
+    vault. See "Why adding a recipient always re-encrypts" below.
+    Removing a recipient REQUIRES --reencrypt (gage refuses to silently
+    leave old ciphertext readable by a removed party) and prints a clear
+    warning that this revokes future access only — anything already read
+    can't be unread.
 
-    --reencrypt is all-or-nothing: every entry is re-encrypted in the
+    Because adding grants access to the whole vault, it can only be done
+    by someone who already has access to the whole vault. An actor who
+    cannot decrypt every entry is refused before the vault lock is taken
+    and before any confirmation is shown, with an error naming how many
+    entries it cannot read — never a bare decryption failure on an
+    opaque entry UUID partway through a write.
+
+    Re-encryption is all-or-nothing: every entry is re-encrypted in the
     working tree first, and the recipient-list files
     (.age-recipients/config.toml) and every touched entry land in exactly
     one commit together — nothing commits until all of it succeeds. If
     the process is interrupted partway (crash, kill, power loss), HEAD is
     untouched; the vault is exactly as it was before the command ran, and
     re-running --reencrypt picks up cleanly from scratch. gage also
-    refuses to start any write against a dirty entries/ working tree it
-    didn't just create itself — the only thing that could leave one is an
-    interrupted --reencrypt, so gage warns once (naming the untracked/
-    modified paths it found) and resets entries/ to HEAD before the new
-    operation proceeds, rather than either silently discarding whatever it
-    found or risking an unrelated write folding a stale partial reencrypt
-    into its own commit. The warning, not the reset itself, is what's load-
+    refuses to start any write against a dirty working tree it didn't just
+    create itself — the likeliest thing to leave one is an interrupted
+    --reencrypt, so gage warns once (naming the untracked/modified paths
+    it found) and resets the whole tree to HEAD, discarding untracked
+    files along with modified ones, before the new operation proceeds,
+    rather than either silently discarding whatever it found or risking an
+    unrelated write folding a stale partial reencrypt into its own commit.
+    The reset covers the whole tree rather than only entries/ because a
+    crash in the window after --reencrypt writes the recipient files but
+    before it commits dirties those two as well, and a reset that skipped
+    them would leave exactly the half-migrated state --reencrypt exists to
+    rule out. The warning, not the reset itself, is what's load-
     bearing here: the interrupted-reencrypt assumption is strong but not
     provable in general, so a change that's actually a hand-edit gage
     didn't cause still gets surfaced, even though gage doesn't stop to ask
@@ -1482,6 +1544,51 @@ gage recipient verify [--use NAME]
     cache runs automatically before every encrypt (see "Local trust
     cache") — `verify` just exposes it as something you can run any time.
 ```
+
+#### Why adding a recipient always re-encrypts
+
+An earlier version of this design made re-encryption opt-in on `add`, so
+a recipient could be admitted for future writes only. That produced a
+recipient who could read entries written after their admission but not
+before — and that state is wrong in three compounding ways.
+
+**It contradicts principle 1.** "A vault is the unit of trust. Each
+vault has its own set of recipients, and that list — nothing
+finer-grained — is who can read it." A partially-readable recipient *is*
+the finer-grained tier that principle rules out. The answer this design
+gives to "these people should see less" is a second vault and
+`mv --to-vault` (see "Why no per-directory sharing"), not a
+half-admitted recipient of one vault. Partial access was never a tier
+anyone chose; it was `age` baking recipients into each file at
+encryption time, leaking into the user-facing model.
+
+**It is undiagnosable from the interface.** The new device runs `ls`,
+sees every entry, and gets decryption failures on what looks like an
+arbitrary subset. The dividing line — written before or after
+admission — is not the title, not the age, not anything `ls` displays.
+
+**It is contagious and unrepairable, which is what settles it.**
+Re-encryption decrypts every entry with the acting identity and fails on
+the first one it cannot read. So a partially-admitted device cannot
+repair its own access *and cannot grant full access to anyone else*: its
+re-encryption pass dies partway through, after the trust-cache prompt
+and inside the write lock, naming an opaque entry UUID. Partial access
+therefore propagates to every recipient admitted by a partial recipient,
+each generation harder to diagnose than the last. A default able to
+quietly produce that is the wrong default, and an opt-out flag would
+keep the vector open.
+
+The cost is real and accepted: every `recipient add` rewrites every
+entry, which grows the repository over time and puts a
+no-plaintext-change revision into each entry's history for
+`history --decrypt` to walk. Vaults are small, the operation is rare,
+and the all-or-nothing machinery already exists — whereas the
+alternative is an access model users cannot predict.
+
+`remove` keeps its flag, and keeps it mandatory, because it means
+something different there: not "grant access to history" but "stop
+handing a removed party readable copies," which the next bullet in "A
+few decisions worth calling out" explains.
 
 ### Entry CRUD
 
@@ -1769,10 +1876,23 @@ here" — by construction, nothing would replace it.
   `--value-stdin` instead, and it's mutually exclusive with `-m` and
   `-e`/`--edit` — `gage` rejects more than one being set before doing any
   I/O.
+- **Adding a recipient always re-encrypts; there is no flag.** A
+  recipient who can read entries written after their admission but not
+  before is the finer-grained access tier principle 1 rules out — and
+  worse, the state is contagious: a partially-admitted device cannot
+  repair itself or grant full access to anyone else, because its own
+  re-encryption pass dies on the first entry it cannot read. An opt-out
+  flag would keep that vector open, so there isn't one. The cost — every
+  add rewrites every entry — is accepted. See "Why adding a recipient
+  always re-encrypts."
 - **`--reencrypt` is mandatory, not default-on, for recipient removal.**
-  Silently leaving stale ciphertext readable by a removed recipient is a
-  worse failure mode than forcing the user to explicitly opt into the
-  (slower) re-encryption pass.
+  It survives on `remove` alone, and means something different there:
+  not "grant access to history" but "stop handing a removed party
+  readable copies." Silently leaving stale ciphertext readable by a
+  removed recipient is a worse failure mode than forcing the user to
+  explicitly opt into the (slower) re-encryption pass. It stays explicit
+  rather than implicit because removal, unlike addition, has a genuinely
+  destructive edge the operator should have to name.
 - **`--reencrypt` is all-or-nothing, on purpose, not incrementally
   committed.** Re-encrypting hundreds of entries one commit at a time
   (with a resumable progress marker) would handle huge vaults more

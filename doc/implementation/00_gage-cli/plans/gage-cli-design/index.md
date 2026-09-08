@@ -19,12 +19,15 @@ by being "handled later" without an entry there.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
-**All twelve milestones are complete** — M0 through M12 are implemented,
-their full test lists are green, and `make lint`/`make test` pass on the
-Linux/macOS/Windows matrix. Behavior that shipped *after* the plan was
-finished is recorded under "Post-plan changes" below, so this file stays
-an accurate account of the tool as built rather than as originally
-scheduled.
+**All twelve milestones were built and shipped** — M0 through M12 are
+implemented, and `make lint`/`make test` pass on the Linux/macOS/Windows
+matrix. Two things qualify that, and both are recorded below rather than
+left to be discovered: behavior that shipped *after* the plan was
+finished is under "Post-plan changes," and three milestones (M1, M2, M9)
+have since had their contracts amended, so they carry work that is
+decided but not yet built — see "Accepted, not yet implemented." The aim
+is for this file to describe the tool as it actually is, including where
+it currently disagrees with the design doc.
 
 ---
 
@@ -33,8 +36,8 @@ scheduled.
 | # | Milestone | Status | Model | Theme |
 |---|---|---|---|---|
 | M0 | [Scaffolding](m0-scaffolding.md) | `[x]` | Sonnet ⚑ | Toolchain, layout, CI, primitives — no crypto, no vaults |
-| M1 | [Vault lifecycle & config](m1-vault-lifecycle.md) | `[x]` | Sonnet | On-disk vault structure and the vault registry — still no crypto |
-| M2 | [Identity & memory protection](m2-identity-and-crypto.md) | `[x]` | **Opus** ⚑ | age primitives, identity generation, `Unlock`/`Close`, page-locking |
+| M1 | [Vault lifecycle & config](m1-vault-lifecycle.md) | `[x]`† | Sonnet | On-disk vault structure and the vault registry — still no crypto |
+| M2 | [Identity & memory protection](m2-identity-and-crypto.md) | `[x]`† | **Opus** ⚑ | age primitives, identity generation, `Unlock`/`Close`, page-locking |
 | M3 | [Entry format](m3-entry-format.md) | `[x]` | Sonnet | Entry YAML + per-entry encrypt/decrypt round-trip |
 | M4 | [CRUD (one-shot)](m4-crud.md) | `[x]` | Sonnet | `insert`/`cat`/`rm`/`ls`, commit-per-write |
 | M5 | [Query resolution](m5-query-resolution.md) | `[x]` | Sonnet | title-then-UUID, exact/substring/ambiguous; `show`/`edit`/`rename`/`generate` |
@@ -42,10 +45,20 @@ scheduled.
 | M7 | [Metadata index](m7-metadata-index.md) | `[x]` | Sonnet | Decrypt-once cache, `search`/`grep`, `reindex` |
 | M8a | [Sync: transport & detection](m8a-sync-transport.md) | `[x]` | **Opus** | Auth, auto fetch/pull/push, `clone`, divergence detection |
 | M8b | [Sync: conflict resolution](m8b-sync-conflicts.md) | `[x]` | **Opus** | `gage sync` — keep local/remote/both, merge commit |
-| M9 | [Identity & recipient management](m9-recipients.md) | `[x]` | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
+| M9 | [Identity & recipient management](m9-recipients.md) | `[x]`† | **Opus** | Multi-device, `recipient add/remove`, atomic `--reencrypt` |
 | M10 | [Local trust cache](m10-trust-cache.md) | `[x]` | Sonnet* | `known-config.toml`, recipient-change detection |
 | M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[x]` | Sonnet | `mv`/`cp --to-vault` |
 | M12 | [Polish / output modes](m12-polish.md) | `[x]` | Sonnet | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
+
+**† These milestones shipped complete, then had their contracts
+amended.** [A19](open-questions.md#a19) makes re-encryption
+unconditional on `gage recipient add` (M9). [A20](open-questions.md#a20)
+keys the identities directory by a vault id rather than by the local
+vault name (M1's config schema and `format_version`, M2's identity
+paths). Both are applied to the design doc; neither is in the code. See
+"Accepted, not yet implemented" below — **A20 should be done before
+anything ships**, since its migration is only free while there is no
+installed base.
 
 **Model column.** `⚑` marks a milestone worth an Opus review pass over
 its *tests* before moving on, even where Sonnet wrote them. `*` marks a
@@ -270,6 +283,12 @@ milestone whose surface it touches rather than in a suite of their own.
   ciphertext, and `vault remove` never touches the store. `gage init`
   and `identity add` reusing an existing identity file rather than
   overwriting it is the other half of the same guarantee.
+  **Being revised:** the "no longer lists this device" test compares
+  device *names*, which A20's follow-on changes to a public-key
+  comparison behind a confirmation. A20 also removes most of this
+  cleanup's original motivation, since keying identities by vault id
+  makes the silent-reuse case it guarded against structurally
+  impossible.
 - **`make reset-local-state`** (`scripts/resetlocalstate`) — a
   development helper that deletes this machine's
   `$GAGE_CONFIG`/`$GAGE_DATA`/`$GAGE_STATE` so the fresh-install path can
@@ -278,6 +297,101 @@ milestone whose surface it touches rather than in a suite of their own.
   `main` under `scripts/` rather than a `gage` subcommand: destroying a
   user's vaults and identities has no place in the CLI's own command
   surface, and keeping it out means it can't be reached by accident.
+
+---
+
+## Accepted, not yet implemented
+
+Decided and written into the design doc, but the code does not do it
+yet. This section exists so that gap is visible rather than inferred
+from a mismatch between the TDD and the binary — and it should be empty
+most of the time.
+
+**Both items below are sequenced in their own plan.** A20 is `E0` and
+A19 is `E1a` in
+[plans/gage-cli-init-design/](../gage-cli-init-design/index.md), which
+also covers the device-enrollment feature that raised them. The
+summaries here are the standing record; the milestone docs carry the
+test lists.
+
+### A19 — `gage recipient add` always re-encrypts
+
+Full reasoning in [open-questions.md](open-questions.md#a19) and in the
+design doc's "Why adding a recipient always re-encrypts". Short version:
+a recipient who can read entries written after their admission but not
+before is the finer-grained access tier principle 1 rules out, it's
+undiagnosable from the interface, and — because `reencryptTo` fails on
+the first entry the acting identity can't read — it's contagious and
+unrepairable. A partially-admitted device can't fix itself or grant full
+access to anyone else.
+
+Work remaining, all in M9's surface:
+
+- `Vault.AddRecipient` drops its `reencrypt bool` parameter and always
+  re-encrypts. `RemoveRecipient` is untouched — its flag stays mandatory
+  and means something different.
+- A pre-flight check that the acting identity can decrypt every entry,
+  failing with a new `ErrCannotGrantFullAccess` **before** the vault lock
+  and **before** the trust-cache confirmation, naming the count of
+  unreadable entries.
+- `cmd/gage`'s `recipient add` loses `--reencrypt`; passing it becomes a
+  usage error rather than being silently accepted.
+- M9's three A19 test bullets go green, and the existing tests pinning
+  the old behavior (`add` without re-encryption leaving entries
+  unreadable) are replaced rather than deleted — the replacement asserts
+  no invocation of `add` can produce a partial recipient.
+
+Device enrollment ([gage-cli-init-design.md](../../tdds/gage-cli-init-design.md))
+already specifies `recipient approve` this way, so implementing A19 first
+keeps the two doors consistent rather than letting `add` remain the
+vector that creates partial recipients.
+
+### A20 — the identities directory is keyed by a vault id
+
+Full reasoning in [open-questions.md](open-questions.md#q-identity-vault-name).
+Short version: identity files are keyed by the *local* vault name, which
+is chosen at clone time and tied to the remote by nothing — so two
+vaults registered under one name in sequence share a directory. Two
+failures follow, and the second is unrecoverable: a vault silently
+reusing another's keypair, and `vault remove` deleting a private key
+belonging to a vault it is not removing.
+
+Work remaining, spanning M1 and M2:
+
+- `[vault].id` (UUIDv4) minted by `init` and written to
+  `.gage/config.toml`; `format_version` to 2, with a v1 vault refused by
+  the check that already exists.
+- The identity path becomes `$GAGE_DATA/identities/<vault-id>/<device>.age`,
+  with a plaintext marker in the directory naming the vault so a
+  hand-managed backup is still findable.
+- The id copied into global config's `[vaults.<name>]`, so `vault remove`
+  can identify a vault's identities directory without reading the vault.
+- The id validated as untrusted input before any path is built from it,
+  the same rule device names already get (Q-DEVICE-NAME).
+- The trust cache moved to `$GAGE_STATE/<vault-id>/known-config.toml` —
+  the same keying flaw, far milder (it fails safe, producing a spurious
+  recipient-change warning rather than suppressing a real one), fixed
+  here because the id exists anyway.
+- `pubkey` added to `[vaults.<name>]`, and `removeOrphanedIdentity`
+  changed to compare public keys rather than device names **and to
+  `Confirm` before deleting, defaulting to keep**
+  ([Q-ORPHAN-BY-NAME](open-questions.md#q-orphan-by-name)). Today that
+  function decides whether to delete the only copy of a private key by
+  comparing labels, which is wrong in both directions; the false-delete
+  direction is unrecoverable, and `recipient approve --device` makes it
+  newly reachable.
+
+**Do this before shipping anything.** Migration is "re-create the
+vault," which is only tolerable because there is no installed base;
+`make reset-local-state` already exists for exactly this. Every day this
+waits makes it more expensive, and it is the only item here with that
+property.
+
+**Ordering against enrollment.** A20's keying half should land first —
+it is the only item here that gets more expensive with time. The
+`removeOrphanedIdentity` half should land with device enrollment, since
+`recipient approve --device` is what makes its unrecoverable case
+reachable.
 
 ---
 

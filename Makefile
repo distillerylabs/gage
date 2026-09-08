@@ -93,3 +93,12 @@ clean:
 .PHONY: clean-tools
 clean-tools:
 	rm -rf bin/
+
+# Wipes every directory gage owns on this machine ($GAGE_CONFIG, $GAGE_DATA,
+# $GAGE_STATE) so you can test the tool from a fresh-install state. Deletes
+# real vaults, identities, and tokens if you have any registered — the
+# underlying script prints exactly what it resolved and requires typing
+# "yes" before deleting anything, precisely because this is unrecoverable.
+.PHONY: reset-local-state
+reset-local-state:
+	go run ./scripts/resetlocalstate

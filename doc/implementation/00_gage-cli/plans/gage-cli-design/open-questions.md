@@ -466,6 +466,332 @@ is answered the other way.
 
 ---
 
+### `[x]` Q-ENROLL-VERBS — What are the device-enrollment commands called? {#q-enroll-verbs}
+
+**Resolved: `gage identity enroll` joining, `gage recipient
+pending`/`approve`/`deny` approving.** Full reasoning and the rendered
+help listing are in D-ENROLL-VERBS in
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md); the short
+version is below. No new top-level noun, no new help group, and
+`groupOrder` untouched.
+
+**What decided it, and it wasn't taxonomy.** `enroll` turned out to be
+`identity add` *plus publishing* — literally the same `CreateIdentity`
+call with the same create-or-reuse behavior, differing only in what
+happens once the key exists. A command belongs next to the command it is
+a superset of. Neither option originally on the table could express that,
+because both put the two verbs in different namespaces.
+
+An earlier draft of the enrollment doc asserted a behavioral difference
+between the two (that `identity add` refused to overwrite where `enroll`
+reused). That was wrong — both reuse — and finding it is what produced
+the answer.
+
+The feature has two actors with two different mental models — a device
+asking to join, and a device that already has access deciding whether to
+let it — and the naming question is whether that split should be visible
+in the command surface.
+
+- **Split, top-level `gage enroll`** (the draft's provisional
+  spelling). Rejected: puts a superset command in a different namespace
+  from its own base command, and adds a fourth top-level noun beside
+  `vault`/`identity`/`recipient` whose only member is this feature.
+- **Unified `gage enroll request/list/approve/deny`.** Rejected despite
+  reading best in isolation: it moves a recipient-list write out of
+  `recipient`, and needs a new `groupOrder` entry or the group sorts
+  after Git-specific.
+- **Chosen: `identity enroll` + `recipient pending/approve/deny`.**
+  Joining lives with the other key-creating verb; approval lives where
+  every one of its effects lands.
+
+**Accepted cost:** the feature spans two help groups and never renders
+as one story. Judged minor, because the approving side is discovered
+from the joining device's own output — which prints the exact command to
+run — rather than by scanning `gage help`.
+
+**Follow-on for whoever implements it.** All six commands register with a
+`Short`, a `Group`, and an availability, or M0's completeness test fails;
+all are session-available, since none creates a vault the way
+`init`/`clone` do. `recipient add`'s description also needs rewording for
+A19 ("Authorize a public key and re-encrypt the vault to include it"),
+which is A19's work rather than this decision's.
+
+---
+
+### `[x]` Q-IDENTITY-VAULT-NAME — an identity file is keyed by vault *name*, which is not unique {#q-identity-vault-name}
+
+**Resolved: key the identities directory by a vault id minted at `init`
+and committed to `.gage/config.toml`.** Applied to the design doc as
+[A20](#a20); not yet implemented. The full reasoning is below, after the
+problem statement it answers.
+
+**Blocks:** nothing formally, but it should be treated as a live bug
+rather than a design tidiness question — one branch **silently destroys
+the only copy of a private key**, and reaching it needs no new feature.
+Found while tracing `identity enroll`'s reuse path for
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md); the
+data-loss branch was found on a second pass and is not caused by
+enrollment at all.
+
+**The severity was understated when this entry was first filed.** It was
+originally recorded as "two vaults share a keypair," which is real but
+recoverable. The second harm below is not.
+
+Identity files live at `$GAGE_DATA/identities/<vault>/<device>.age`,
+where `<vault>` is the *local registration name* — which is chosen at
+clone time (inferred from the URL, or `--name`) and is not tied to the
+remote in any way. Two unrelated vaults can therefore share a directory
+of identities on one machine.
+
+The sequence that goes wrong:
+
+1. `gage vault remove personal` — which, per #39, **keeps** the identity
+   file when this device is still a listed recipient.
+2. `gage clone <a-different-remote> --name personal`.
+3. `gage enroll` — `CreateIdentity` finds the surviving file and reuses
+   it, so the request published to the *new* vault names a keypair that
+   belongs to the *old* one.
+
+Nothing is leaked and nothing is stolen — it's the user's own key — but
+it silently binds two unrelated vaults to a single keypair, which is
+exactly what the per-device, per-vault identity model exists to avoid.
+Revoking access to one vault then can't be done without affecting the
+other, and the design doc's "Local identity storage" section reads as
+though that can't happen.
+
+**The second harm is worse, and needs no enrollment.** `vault remove`'s
+orphan cleanup can delete a key that belongs to a *different* vault:
+
+1. Vault A is registered as `personal`; `laptop-1` is a recipient; the
+   key is at `identities/personal/laptop-1.age`.
+2. `gage vault remove personal` — the key is **kept**, because
+   `laptop-1` is still a recipient of A. #39 working as intended.
+3. `gage clone <remote-B> --name personal` — allowed, the name is free.
+   `clone` records `Device: laptop-1` in global config from the hostname
+   default (`cmd/gage/clone.go`), even though no identity was created
+   for B.
+4. `gage vault remove personal` — now removing **B**.
+   `removeOrphanedIdentity` finds `identities/personal/laptop-1.age`,
+   reads **B's** recipient list, does not find `laptop-1`, and deletes
+   the file.
+
+That file was vault A's only key. A's repository still exists and
+nothing can read it. No confirmation, no warning, unrecoverable. Steps
+3–4 are just "cloned the wrong repo, then removed it."
+
+**Root cause is one the enrollment work already named.**
+`removeOrphanedIdentity` decides whether to delete a private key by
+comparing `r.Device == entry.Device` — a *name* comparison. That is the
+same mistake `D-ENROLL-COLLISIONS` resolves for enrollment: the device
+name is a label, not an identity. Here it is load-bearing for a
+destructive, irreversible operation.
+
+Options, roughly in order of cost:
+
+- **A marker file in `identities/<vault>/` recording the origin URL.**
+  Plaintext, non-secret, entirely under `$GAGE_DATA`, so no vault-format
+  change and no `format_version` bump. `clone` consults it before
+  reusing anything; `vault remove` consults it before deleting. It goes
+  stale if `git set-remote` repoints a vault, so it should warn rather
+  than refuse — unlike the public-key sidecar rejected in the enrollment
+  doc, a stale answer here causes a needless prompt rather than a wrong
+  key being published.
+- **Key the identities directory by something stable** (a vault id
+  minted at `init` and committed to `.gage/config.toml`) rather than by
+  the local name. Correct, but touches M1's on-disk contract.
+- **Have `vault remove` never delete an identity**, reverting #39's
+  cleanup. Closes the data-loss branch outright at the cost of the
+  clutter #39 set out to fix — a strictly safe direction, and the right
+  stopgap if the real fix is going to take a while.
+- **Refuse `clone --name X` when `identities/X/` is non-empty.** Closes
+  it at the entry point, but breaks the legitimate re-clone-the-same-
+  vault flow (`TestReinitAfterVaultRemoveReusesTheKeptIdentity`) unless
+  it can distinguish same from different — which needs one of the first
+  two options anyway.
+
+**"Accept and document it" is not on this list**, which it would have
+been for the key-coupling harm alone. Silently destroying the only copy
+of a private key is not something to write down and live with.
+
+## The answer: an assigned id, not a derived one
+
+**`$GAGE_DATA/identities/<vault-id>/<device>.age`**, where `<vault-id>`
+is a UUIDv4 minted once by `gage init` and written to `.gage/config.toml`
+as `[vault].id`. Because it lives in the committed config, it clones with
+the vault: every clone of the same vault agrees on it, and two different
+vaults can never collide however they are named locally.
+
+**Hashing the origin URL was considered and rejected.** It is the same
+instinct — key by something belonging to the vault rather than to a local
+nickname — applied to a value that cannot carry it:
+
+- **A remote URL is not canonical.** `https://host/you/v.git`,
+  `https://host/you/v`, a trailing slash, an scp-style `git@host:you/v`,
+  an embedded `user@`, host casing — one remote, many spellings, each
+  hashing differently. Two clones of the *same* vault spelled two ways
+  would get separate identity directories, and the second would generate
+  a fresh keypair instead of reusing the good one. Avoiding that means
+  canonicalizing URLs, which is never complete — the same open-ended
+  parsing trap this project already refused when it declined to
+  interpret `~/.ssh/config` (Q-GIT-AUTH).
+- **`git set-remote` legitimately changes it**, orphaning every identity
+  under the old hash. And "start local-only, gain a remote later" is a
+  documented lifecycle, so that migration would be the normal path
+  rather than an edge case.
+- **Local-only vaults have no origin at all.** They are not exempt from
+  the bug — they can be the vault whose key gets deleted, and two of
+  them collide with each other through `init`/`remove`/`init` — so a
+  URL-derived scheme leaves them with no key to derive from.
+
+An id has none of these properties: it is assigned rather than derived,
+so it is stable by construction and independent of transport.
+
+**The cost is a `.gage/config.toml` schema change, and this is the
+cheapest it will ever be.** Nothing has shipped — Q-RELEASE is still
+open and there is no distribution — so there is no installed base to
+migrate. `format_version` goes to 2, and a v1 vault is refused by the
+check that already exists, with "re-create this vault" as the migration.
+That is only acceptable because the population of affected vaults is
+developer machines, and `make reset-local-state` already exists to clear
+them. Deferring this decision makes it strictly more expensive.
+
+**Details that are part of the decision, not follow-up:**
+
+- **The id is untrusted input.** It arrives from a committed file any
+  git-writer can edit and is used as a filesystem path component —
+  exactly the condition Q-DEVICE-NAME imposed validation for. It is
+  validated as a UUID before any path is built from it, on the way in
+  *and* on the way out, and a config whose `id` does not parse is
+  refused rather than helpfully coerced.
+- **Global config records the id too**, under `[vaults.<name>]`. Without
+  it, `vault remove` could not identify which identities directory a
+  vault owns once that vault's own files are gone or moved — which is
+  precisely the situation the destructive branch above arises in.
+- **The directory carries a plaintext marker naming the vault.** An
+  opaque UUID directory would otherwise break the "a user is free to
+  back up a device's wrapped identity file themselves" story the design
+  doc explicitly permits. The marker is advisory — nothing reads it to
+  make a decision.
+
+**This does not close the whole bug, and the remainder should not be
+folded into it.** Correct keying removes the cross-vault collision,
+which is the destructive half. But `removeOrphanedIdentity` still
+decides whether to delete a private key by comparing device *names*
+(`r.Device == entry.Device`) — the same label-versus-identity confusion
+`D-ENROLL-COLLISIONS` settled for enrollment. That comparison deserves
+fixing on its own terms rather than being declared safe because
+collisions got rarer.
+
+Related: the enrollment doc's "Enrolling with an identity you already
+have" explains why the reuse path exists and why it cannot cheaply
+verify what it is reusing.
+
+---
+
+### `[x]` Q-ORPHAN-BY-NAME — `vault remove` deletes a private key based on a name comparison {#q-orphan-by-name}
+
+**Resolved: compare public keys, and never delete without asking.** The
+`pubkey` field this needs is folded into [A20](#a20), which is already
+changing the same config table. Full reasoning after the problem
+statement.
+
+**Blocks:** nothing, but it is the unfixed remainder of
+[Q-IDENTITY-VAULT-NAME](#q-identity-vault-name), and it is filed
+separately on purpose. That entry is marked resolved, and an unresolved
+remainder living inside a resolved entry is exactly the silent deferral
+this register exists to prevent.
+
+`removeOrphanedIdentity` (`cmd/gage/vault.go`) decides whether to delete
+this device's wrapped private key by comparing device **names**:
+
+```go
+for _, r := range recipients {
+    if r.Device == entry.Device { /* keep */ }
+}
+// ...otherwise delete the key file
+```
+
+That is the same label-versus-identity confusion `D-ENROLL-COLLISIONS`
+settled for enrollment — the device name is a label the vault happens to
+store, not proof of which key it refers to. Here it gates an
+irreversible destructive operation on the only copy of a private key.
+
+**A20 makes this much harder to trigger and does not fix it.** Keying the
+identities directory by vault id removes the cross-vault collision, which
+is what made the wrong comparison catastrophic. What remains is a
+within-vault version: a recipient entry relabeled, or a device name
+reused after a `recipient remove`, can make the comparison answer
+"not a recipient" about a key that is one.
+
+The honest fix is to compare public keys rather than names — which needs
+the local key's public half, which needs an unlock (see the enrollment
+doc's "Enrolling with an identity you already have"). Options: prompt
+before deleting (turning a silent side effect into a deliberate act),
+never delete and accept the clutter, or delete only when the vault's
+recipient list is empty of *any* plausible match and say what it did.
+
+**Do not close this by declaring it rare.** It was already rare; the
+severity comes from being unrecoverable, not from being frequent.
+
+**It is wrong in both directions**, which is the clearest evidence the
+comparison isn't measuring what it claims:
+
+- **False delete, unrecoverable.** The vault lists this device's key
+  under a label other than the one local config records — global config
+  says `laptop-1`, the vault says `laptop-1-work`, same public key. No
+  name match, so `vault remove` deletes a key that is an *active
+  recipient*. Nothing warns beforehand: the device works normally until
+  then, because `Unlock` locates the identity file by the *local* name,
+  which is still correct.
+- **False keep, harmless.** `recipient remove laptop-1 --reencrypt`,
+  then some other device is added under that label with a different key.
+  The stale local file now matches by name and is kept. Clutter only.
+
+**`recipient approve --device` made the dangerous direction newly
+reachable.** D-ENROLL-COLLISIONS lets an approver relabel an incoming
+request — correctly, since the code authenticates the key and not the
+label — but that produces precisely the false-delete state: the joining
+device recorded one name at enroll time, the approver stored the key
+under another. So this fix belongs with device enrollment rather than
+after it.
+
+## The answer
+
+**The obvious repair is blocked.** Comparing public keys means deriving
+this device's public key, which lives *inside* the encrypted identity
+file, which needs an unlock — and prompting for a passphrase to decide a
+cleanup side effect on a vault being removed is the same "exactly
+backwards" pattern `clone.go` already refuses.
+
+So the public key is recorded where it can be read without one:
+
+1. **Record `pubkey` in global config**, beside `device` under
+   `[vaults.<name>]`, written when the identity is created (`init`,
+   `identity add`, `identity enroll`) — the moment gage holds the key
+   anyway. It is public, and already sits in the vault's committed
+   config, so there is no secrecy cost to a local plaintext copy. The
+   comparison becomes `r.Pubkey == entry.Pubkey`: an identity
+   comparison, no unlock. Folded into A20, which is already editing this
+   table.
+2. **Never delete without a `Confirm`, defaulting to keep.** This is the
+   load-bearing half. Step 1 makes the *suggestion* accurate, but a
+   stale record — someone swaps the `.age` file by hand — would make it
+   confidently wrong, which is worse than uncertain. A prompt turns any
+   wrong answer into a wrong suggestion a human reads, with the path in
+   front of them. `app.Prompter` is already on the struct, so there is
+   no plumbing, and `Confirm` defaults to no, which means a scripted
+   `vault remove` keeps the file by construction.
+3. **When the pubkey is unknown, say so and keep.** Missing field,
+   hand-edited config, older install — do not guess.
+
+**A20 also removes most of what this cleanup was for.** #39 deleted
+orphans largely so that `vault remove` followed by `init` under the same
+name wouldn't silently reuse the old key. Keying by vault id makes that
+structurally impossible, so the deletion is doing less work than it was
+designed for — which further favors asking over assuming.
+
+---
+
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}
 
 **Blocks:** nothing; needed before a first public release.
@@ -485,10 +811,23 @@ Changes [gage-cli-design.md](../../tdds/gage-cli-design.md) needs. `[x]`
 means applied to the design doc; entries are kept after application as a
 record of what changed and why.
 
-**Applied 2026-08-30:** A1, A2, A3, A5, A7, A8, A9, A10, A11, A12, A13,
-A14. **Still open:** A4 and A6 — both are blocked on unresolved questions
-(Q-DEVICE-NAME and Q-GIT-AUTH respectively) and can't be written until
-those are answered.
+**Applied:** A1–A18 — A1, A2, A3, A5, A7, A8, A9, A10, A11, A12, A13,
+A14 on 2026-08-30; A4 and A6 once Q-DEVICE-NAME and Q-GIT-AUTH were
+answered; A15–A18 alongside the milestones that needed them.
+
+A19 and A20 are applied to the design doc but **not yet implemented** —
+they are the only amendments here that change shipped behavior rather
+than describing it. `[x]` in this section has always meant "the TDD says
+this," never "the code does"; that distinction matters for exactly those
+two entries. The outstanding work is listed under "Accepted, not yet
+implemented" in [index.md](index.md), and sequenced as E0/E1a in
+[plans/gage-cli-init-design/](../gage-cli-init-design/index.md).
+
+A21 runs the other way: the code was right and the doc was wrong, so
+applying it changed nothing but prose. A22 is the one entry deliberately
+**not** applied yet — the layout it describes does not exist until E3
+ships, and a design doc that describes a directory no build creates is
+the failure mode this register exists to prevent.
 
 ### `[x]` A1 — Add a concurrency section
 
@@ -687,7 +1026,266 @@ being no per-vault spelling.
 
 ---
 
+### `[x]` A19 — Make re-encryption unconditional on `recipient add` {#a19}
+
+**Accepted and applied to the design doc.** Per this section's
+convention, `[x]` means the TDD now says this — it does **not** mean the
+code does. This is the one amendment here that changes shipped behavior
+rather than documenting it, so it carries an implementation gap until
+the work below lands; that gap is tracked under "Accepted, not yet
+implemented" in [index.md](index.md).
+
+**Applied to the design doc as:** `--reencrypt` removed from
+`gage recipient add` in "Recipient / access management"; a new
+"Why adding a recipient always re-encrypts" subsection; and the
+`--reencrypt` bullets under "A few decisions worth calling out" split
+into one for `add` (no flag) and one for `remove` (flag stays
+mandatory).
+
+Raised while designing device enrollment
+([gage-cli-init-design.md](../../tdds/gage-cli-init-design.md)), which
+had already settled the same question the same way for `recipient
+approve`: approval always re-encrypts and has no flag.
+
+**The proposal:** `gage recipient add` re-encrypts every entry always.
+`--reencrypt` is removed from `add` (it stays mandatory on `remove`,
+where it means something different and is already required).
+
+**Why.** Adding a recipient without re-encrypting produces a recipient
+who can read entries written after their admission and not before, and
+that state is a problem in three compounding ways:
+
+1. **It contradicts design principle 1.** "A vault is the unit of trust.
+   Each vault has its own set of recipients, and that list — nothing
+   finer-grained — is who can read it." A partially-readable recipient
+   *is* the finer-grained tier the principle rules out. The design's own
+   answer to "these people should see less" is a second vault plus
+   `mv --to-vault`, not a half-admitted recipient.
+2. **It's undiagnosable from the interface.** The new device runs `ls`,
+   sees every entry, and gets decryption failures on an arbitrary-looking
+   subset. The dividing line — written before or after admission — is not
+   the title, the age, or anything `ls` shows.
+3. **It's contagious and unrepairable.** `reencryptTo`
+   (`internal/gage/recipient.go:409`) decrypts every entry with the
+   acting identity and hard-fails on the first one it can't read. So a
+   partially-admitted device cannot repair itself *and cannot grant full
+   access to anyone else* — its re-encryption pass dies partway, after
+   the trust-cache prompt and inside the write lock, with an error naming
+   an opaque entry UUID. Each generation is harder to diagnose than the
+   last.
+
+**What it costs.** Every `recipient add` rewrites every entry: a larger
+repo over time, and a no-op-plaintext revision in each entry's history
+that `history --decrypt` walks. Judged worth it — vaults are small, the
+operation is rare, and the all-or-nothing machinery already exists.
+
+**What it requires.** A typed refusal for the case that can no longer be
+worked around: an actor who can't read every entry can no longer add a
+recipient at all. That must fail before the lock and before any
+confirmation, naming the count of unreadable entries rather than
+surfacing a decryption error — `ErrCannotGrantFullAccess` in the
+enrollment doc's spelling.
+
+**If this is declined**, the enrollment doc should be revisited too:
+`approve` having no flag while `add` has one is defensible (the new door
+picks the better default) but leaves `add` as the vector that keeps
+creating partial recipients, so most of the benefit is lost.
+
+**Affected:** design doc "Recipient / access management" and the
+`--reencrypt` bullets under "A few decisions worth calling out"; M9's
+test list, which currently pins the opposite behavior.
+
+---
+
+### `[x]` A20 — Key the identities directory by a vault id {#a20}
+
+**Applied to the design doc; not yet implemented.** Resolves
+[Q-IDENTITY-VAULT-NAME](#q-identity-vault-name), whose second harm is a
+live path that silently deletes the only copy of a private key.
+
+**Applied as:** `[vault].id` added to `.gage/config.toml` (a UUIDv4
+minted by `init`); `format_version` raised to 2; the identity path in
+"Local identity storage" becomes
+`$GAGE_DATA/identities/<vault-id>/<device>.age`; the **trust cache** path
+becomes `$GAGE_STATE/<vault-id>/known-config.toml`; the id added to
+global config's `[vaults.<name>]`; and the id folded into the
+untrusted-input validation rule that already covers device names.
+
+**`pubkey` is added to `[vaults.<name>]` in the same change**, per
+[Q-ORPHAN-BY-NAME](#q-orphan-by-name): this device's public key for that
+vault, recorded when the identity is created, so `vault remove` can tell
+whether a local key is genuinely orphaned by comparing keys instead of
+names. Bundled here because both fields land in the same table and both
+exist for the same reason — a name was being used where an identity was
+meant.
+
+**The trust cache had the same flaw and is fixed in the same change.**
+`TrustCacheDir(vault string)` keyed `$GAGE_STATE/<vault>/` by the local
+name, so two vaults registered under one name in sequence shared a
+cache. It is far less serious than the identity case — it fails safe (an
+inherited cache produces a *spurious* recipient-change warning rather
+than suppressing a real one) and the design already calls the cache
+disposable — but there is no reason to leave one keying scheme correct
+and its neighbour wrong when the id exists anyway.
+
+**Affects:** M1 (config schema, `format_version`, global config), M2
+(identity file paths), and the enrollment doc's references to the
+identity path. Migration is "re-create the vault", which is only
+acceptable because nothing has shipped — see the resolution for why
+deferring makes this strictly more expensive.
+
+**Does not close the whole bug.** `removeOrphanedIdentity` still decides
+deletions by comparing device names; correct keying removes the
+cross-vault collision but not the label-versus-identity confusion
+underneath it.
+
+---
+
+### `[x]` A21 — the dirty-tree reset covers the whole working tree, not `entries/` {#a21}
+
+**Applied to the design doc. No code change — this is the doc catching up
+to what shipped.**
+
+The design doc said in two places that gage "refuses to start any write
+against a dirty `entries/` working tree" and "resets `entries/` to HEAD".
+The shipped implementation resets the **whole** working tree and
+**deletes untracked files** while doing it — `resetDirtyWorkTree`
+(`internal/gage/vault.go`) calls `gitrepo.ResetHard`, whose own doc
+comment states the reason: a crash in the window after `--reencrypt`
+writes the recipient files but before it commits dirties those two as
+well, and a reset scoped to `entries/` would leave exactly the
+half-migrated state `--reencrypt` exists to rule out.
+
+**Found while reviewing the enrollment plan**, which inherited the stale
+claim and built a crash-safety story on it — a stray `.gage/pending/`
+file was described as surviving to expire on its own epoch, when in fact
+the next write on that machine discards it. Recorded here rather than
+fixed silently because two documents and one milestone's test list were
+reasoning from it, and because "what does a write do to a tree it didn't
+expect" is a property worth being able to look up.
+
+**Applied as:** both passages in
+["Recipient / access management"](../../tdds/gage-cli-design.md) and the
+concurrency section now say "dirty working tree", name the untracked-file
+deletion, and carry the reason the scope is what it is. The enrollment
+doc's "Clock skew" section and E3's test list are corrected to match.
+
+---
+
+### `[x]` A22 — the vault layout gains `.gage/pending/` {#a22}
+
+**Accepted; applies to the design doc when E3 lands**, since that is the
+first release in which a vault can actually grow the directory.
+
+The base design's on-disk layout enumerates `.gage/`, `.age-recipients`,
+`entries/`, `.gitattributes`, `.gitignore`. Device enrollment adds
+`.gage/pending/`, holding one sealed request per file. The layout diagram
+gains it with a one-line pointer to
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md) rather than
+a restatement of the scheme, which lives there.
+
+**Two properties belong in the base doc rather than only the enhancement
+doc**, because they constrain readers of the layout who never read the
+enrollment feature:
+
+- **The directory is created lazily**, on the first enroll. Git does not
+  track empty directories, so its absence is the normal state and means
+  "no pending requests", never an error.
+- **`pending/` is inert.** Nothing in it is read at encryption time. This
+  is the invariant that keeps the directory from widening the trust
+  boundary, and it is stated where someone auditing the layout will see
+  it.
+
+`.gitattributes` deliberately does **not** cover `pending/` — a union of
+two devices' pending requests is the correct merge outcome, unlike a
+union of two recipient lists. The reasoning is in the enrollment doc's
+"`.gitattributes` deliberately does *not* cover `pending/`".
+
+---
+
 ## Accepted risks
+
+### Batch enrollment approval costs one scrypt run per code per pending request
+
+`gage recipient approve` tries each supplied code against each pending
+request, and each attempt is a deliberately slow scrypt KDF. Approving
+3 devices with 10 requests outstanding is 30 runs.
+
+**Knowingly not optimized for the benign case.** Pending requests expire
+in 24h by default and are deleted on approval, so more than a handful
+outstanding at once means something unusual is already happening.
+Malformed codes are rejected on length and alphabet before any
+decryption, so the common typo costs nothing.
+
+**Two things this entry originally got wrong**, both found reviewing the
+enrollment plan and both now resolved in the TDD as
+`D-ENROLL-SEAL-COST`:
+
+- **The benign case was slower than "30 runs" makes it sound**, because
+  the entry assumed the identity file's work factor. Seals are now
+  written at 14 rather than 19 — roughly 60ms a run instead of 2s —
+  licensed by the code being 80 bits from `crypto/rand`, where the
+  entropy is doing all the work the KDF was being paid for. That example
+  is now a couple of seconds rather than a minute.
+- **Neither multiplicand was bounded by anything gage controls.** The
+  count comes from a directory any git-writer can fill, and the
+  per-attempt cost comes from a work factor each blob *claims*. Both are
+  now bounded: the open path caps a claimed factor the way `unlock.go`
+  already does for identity files, and a code-trying run attempts at most
+  32 live requests.
+
+So the accepted risk is narrower than it was. A stuffed `pending/` is a
+bounded refusal naming `approve <ID>`, which resolves from the filename
+and is O(1) in directory size. That it is *possible* to make approval
+briefly inconvenient is accepted, and is the same class as the filename
+section's "anyone who can rename the file can equally delete it."
+
+What is still ruled out is the shortcut this entry originally described:
+adding unsealed hints about which code opens which request leaks who is
+enrolling, which is the thing the filename scheme exists to prevent.
+
+Recorded so a future reader doesn't mistake it for an oversight.
+
+
+### The enrollment code reaches command history on the approving device {#enrollment-code-history}
+
+`gage recipient approve --code GAGE-…` puts the code on a command line.
+In a session that line is recorded verbatim — `history.add` writes the
+typed line and nothing filters arguments (`cmd/gage/history.go`) — and in
+a one-shot run it lands in the user's own shell history, which `gage`
+cannot see at all.
+
+**The enrollment doc originally claimed the code "exists nowhere else…
+not in the session history file (which already refuses to record
+values)".** That claim is true of the *joining* device, which generates
+the code and never takes one as input, and it was read across to the
+approving device, which does. The history file's guarantee is narrower
+than the parenthetical suggested: it never contains a decrypted value
+because no command ever puts one on a line, not because it filters
+anything.
+
+**Accepted rather than fixed**, and the exposure is genuinely small:
+
+- The file is `0600` and device-local; `gage` tightens the mode on every
+  open rather than trusting an existing file.
+- The code is dead in 24 hours by default and the request it opens is
+  deleted on approval, so what a recovered code can do is nothing.
+- Cracking the seal was never the interesting attack anyway — what a code
+  buys is the ability to forge a *request*, which still has to be
+  approved by a human.
+
+**And there is an escape hatch that costs nothing.** Omitting `--code`
+makes `cmd/gage` ask through `Prompter.Value`, which is masked and never
+recorded. An approver who cares reaches for the prompt, which is already
+the specified fallback rather than something added for this.
+
+Filtering `--code` out of `history.add` was considered and not taken: it
+would make the history writer argument-aware for the first time, for a
+partial fix that leaves the shell-history half — the larger half —
+untouched. Recorded here so the narrowed claim in
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md)'s
+D-ENROLL-CODE-FORMAT has somewhere to point.
+
 
 ### A hostname device name discloses whose machine it is
 
