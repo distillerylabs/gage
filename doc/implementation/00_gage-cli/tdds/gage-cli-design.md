@@ -316,8 +316,9 @@ method, and public keys, never secret material):
 ```toml
 [vault]
 name = "myvault"
+id = "9f3a1c2e-7b41-4d58-a0c6-2e5f81b3d497"   # minted once by init; never changes
 type = "git"              # the only type today — see "Vault types"
-format_version = 1
+format_version = 2
 created = "2026-08-29"
 
 [method]
@@ -499,6 +500,7 @@ current = "personal"
 
 [vaults.personal]
 path = "$GAGE_DATA/vaults/personal"
+id = "9f3a1c2e-7b41-4d58-a0c6-2e5f81b3d497"   # copied from the vault's own config
 type = "git"
 device = "laptop-1"       # this device's identity name in that vault
 method = "passphrase"     # how THIS device unlocks it — see "Decryption
@@ -509,6 +511,7 @@ origin = "https://github.com/you/personal-vault.git"
 
 [vaults.work]
 path = "$GAGE_DATA/vaults/work"
+id = "c41d8e07-52b9-4a36-9f18-7d0ae6c25b83"
 type = "git"
 device = "laptop-1"
 method = "passphrase"
@@ -522,6 +525,11 @@ idle_timeout = "10m"                 # auto re-lock a session vault after inacti
 history_file = "$GAGE_STATE/history"   # command names/paths only, never values
 clipboard_timeout = "45s"            # how long `show -c` leaves a value on the clipboard
 ```
+
+`id` is copied from the vault's own committed config so this machine can
+find that vault's identities directory without reading the vault at all
+— which matters when the vault's files have moved or been removed, the
+situation A20 exists to make safe.
 
 `device` and `method` are this machine's answers to "who am I in that
 vault, and how do I unlock it." They're per-vault because both can
@@ -577,7 +585,7 @@ anything to check against.
 That something is a per-device, per-vault identity file:
 
 ```
-$GAGE_DATA/identities/<vault>/<device>.age
+$GAGE_DATA/identities/<vault-id>/<device>.age
 ```
 
 — an age-encrypted file wrapping this device's X25519 private key (for
@@ -585,7 +593,28 @@ $GAGE_DATA/identities/<vault>/<device>.age
 `age-key`, the file *is* the raw key material, protected only by
 filesystem permissions). `<device>` is the same identity name registered
 via `gage identity add` and listed under `[[recipients]]` in
-`.gage/config.toml` — e.g. `$GAGE_DATA/identities/personal/laptop-1.age`.
+`.gage/config.toml`. `<vault-id>` is that vault's `[vault].id` — **not**
+its local registration name, for reasons worth stating because the
+obvious choice is wrong (see A20).
+
+A vault's local name is chosen at clone time and tied to the remote by
+nothing, so two unrelated vaults can be registered under one name in
+sequence — and then share an identities directory. That produces two
+failures: a second vault silently reusing the first's keypair, and
+`vault remove` deleting a key belonging to a vault it is not removing.
+The second is unrecoverable. Keying by an id that travels *inside* the
+vault makes the collision unreachable: every clone of a vault agrees on
+its id however it was named locally, and two vaults never share one.
+
+Hashing the origin URL would not do: a URL has many spellings for one
+remote, `git set-remote` legitimately changes it, and a local-only vault
+has none. An id is assigned rather than derived, so it is stable by
+construction.
+
+For human findability — the design permits backing up an identity file
+by hand — the directory carries a small plaintext marker naming the
+vault. Nothing reads it to make a decision.
+
 The directory is created `0700`, the file `0600`.
 
 **Where the device name comes from.** `gage init` and `gage identity add`
@@ -604,16 +633,19 @@ vault can read. That's usually fine — the people who can read a vault
 generally know whose devices are on it — but `--device` is there for
 when it isn't, and shared vaults are exactly where it's worth using.
 
-**Device names are validated before they're ever used as a path.** The
-name is a filename component, and it arrives from
+**Device names — and the vault id — are validated before they're ever
+used as a path.** Both are filename components, and both arrive from
 `.gage/config.toml` — a committed file that, per "Trust boundaries,"
 anyone with git write access can edit. A recipient entry reading
 `device = "../../../../etc/cron.d/x"` must be rejected on read, not
 helpfully resolved. `gage` therefore validates every device name against
 the same character allowlist above, on the way in *and* on the way out,
-and refuses to construct a path from one that doesn't match. This is the
-one place a vault's plaintext metadata reaches the local filesystem, so
-it gets checked like the untrusted input it is.
+and refuses to construct a path from one that doesn't match. The vault
+id gets the identical treatment against the UUID form: a config whose
+`id` does not parse is refused rather than helpfully coerced. This is
+the one place a vault's plaintext metadata reaches the local
+filesystem, so both components get checked like the untrusted input
+they are.
 
 **This file always has exactly one recipient.** age refuses to encrypt to
 a scrypt passphrase recipient combined with any other recipient, so a

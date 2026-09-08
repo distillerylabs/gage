@@ -518,13 +518,24 @@ which is A19's work rather than this decision's.
 
 ---
 
-### `[ ]` Q-IDENTITY-VAULT-NAME — an identity file is keyed by vault *name*, which is not unique {#q-identity-vault-name}
+### `[x]` Q-IDENTITY-VAULT-NAME — an identity file is keyed by vault *name*, which is not unique {#q-identity-vault-name}
 
-**Blocks:** nothing today; found while tracing `gage enroll`'s
-identity-reuse path for
-[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md). Worth
-deciding before device enrollment ships, because enrollment makes the
-bad path substantially easier to reach.
+**Resolved: key the identities directory by a vault id minted at `init`
+and committed to `.gage/config.toml`.** Applied to the design doc as
+[A20](#a20); not yet implemented. The full reasoning is below, after the
+problem statement it answers.
+
+**Blocks:** nothing formally, but it should be treated as a live bug
+rather than a design tidiness question — one branch **silently destroys
+the only copy of a private key**, and reaching it needs no new feature.
+Found while tracing `identity enroll`'s reuse path for
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md); the
+data-loss branch was found on a second pass and is not caused by
+enrollment at all.
+
+**The severity was understated when this entry was first filed.** It was
+originally recorded as "two vaults share a keypair," which is real but
+recoverable. The second harm below is not.
 
 Identity files live at `$GAGE_DATA/identities/<vault>/<device>.age`,
 where `<vault>` is the *local registration name* — which is chosen at
@@ -548,22 +559,128 @@ Revoking access to one vault then can't be done without affecting the
 other, and the design doc's "Local identity storage" section reads as
 though that can't happen.
 
+**The second harm is worse, and needs no enrollment.** `vault remove`'s
+orphan cleanup can delete a key that belongs to a *different* vault:
+
+1. Vault A is registered as `personal`; `laptop-1` is a recipient; the
+   key is at `identities/personal/laptop-1.age`.
+2. `gage vault remove personal` — the key is **kept**, because
+   `laptop-1` is still a recipient of A. #39 working as intended.
+3. `gage clone <remote-B> --name personal` — allowed, the name is free.
+   `clone` records `Device: laptop-1` in global config from the hostname
+   default (`cmd/gage/clone.go`), even though no identity was created
+   for B.
+4. `gage vault remove personal` — now removing **B**.
+   `removeOrphanedIdentity` finds `identities/personal/laptop-1.age`,
+   reads **B's** recipient list, does not find `laptop-1`, and deletes
+   the file.
+
+That file was vault A's only key. A's repository still exists and
+nothing can read it. No confirmation, no warning, unrecoverable. Steps
+3–4 are just "cloned the wrong repo, then removed it."
+
+**Root cause is one the enrollment work already named.**
+`removeOrphanedIdentity` decides whether to delete a private key by
+comparing `r.Device == entry.Device` — a *name* comparison. That is the
+same mistake `D-ENROLL-COLLISIONS` resolves for enrollment: the device
+name is a label, not an identity. Here it is load-bearing for a
+destructive, irreversible operation.
+
 Options, roughly in order of cost:
 
-- **Record which remote an identity belongs to** and refuse to reuse one
-  whose remote doesn't match the vault now registered under that name.
-  Cheap, but needs somewhere to put the fact — a sidecar has the drift
-  problem described in the enrollment doc, and the identity file itself
-  can't be read without an unlock.
+- **A marker file in `identities/<vault>/` recording the origin URL.**
+  Plaintext, non-secret, entirely under `$GAGE_DATA`, so no vault-format
+  change and no `format_version` bump. `clone` consults it before
+  reusing anything; `vault remove` consults it before deleting. It goes
+  stale if `git set-remote` repoints a vault, so it should warn rather
+  than refuse — unlike the public-key sidecar rejected in the enrollment
+  doc, a stale answer here causes a needless prompt rather than a wrong
+  key being published.
 - **Key the identities directory by something stable** (a vault id
   minted at `init` and committed to `.gage/config.toml`) rather than by
   the local name. Correct, but touches M1's on-disk contract.
-- **Have `vault remove` always delete the identity**, making the collision
-  unreachable — rejected already by #39's reasoning: the file is the only
-  copy of a private key, and deleting it when the device is still a
-  recipient strands access permanently.
-- **Accept and document it**, on the grounds that reusing a removed
-  vault's name for a different remote is rare and self-inflicted.
+- **Have `vault remove` never delete an identity**, reverting #39's
+  cleanup. Closes the data-loss branch outright at the cost of the
+  clutter #39 set out to fix — a strictly safe direction, and the right
+  stopgap if the real fix is going to take a while.
+- **Refuse `clone --name X` when `identities/X/` is non-empty.** Closes
+  it at the entry point, but breaks the legitimate re-clone-the-same-
+  vault flow (`TestReinitAfterVaultRemoveReusesTheKeptIdentity`) unless
+  it can distinguish same from different — which needs one of the first
+  two options anyway.
+
+**"Accept and document it" is not on this list**, which it would have
+been for the key-coupling harm alone. Silently destroying the only copy
+of a private key is not something to write down and live with.
+
+## The answer: an assigned id, not a derived one
+
+**`$GAGE_DATA/identities/<vault-id>/<device>.age`**, where `<vault-id>`
+is a UUIDv4 minted once by `gage init` and written to `.gage/config.toml`
+as `[vault].id`. Because it lives in the committed config, it clones with
+the vault: every clone of the same vault agrees on it, and two different
+vaults can never collide however they are named locally.
+
+**Hashing the origin URL was considered and rejected.** It is the same
+instinct — key by something belonging to the vault rather than to a local
+nickname — applied to a value that cannot carry it:
+
+- **A remote URL is not canonical.** `https://host/you/v.git`,
+  `https://host/you/v`, a trailing slash, an scp-style `git@host:you/v`,
+  an embedded `user@`, host casing — one remote, many spellings, each
+  hashing differently. Two clones of the *same* vault spelled two ways
+  would get separate identity directories, and the second would generate
+  a fresh keypair instead of reusing the good one. Avoiding that means
+  canonicalizing URLs, which is never complete — the same open-ended
+  parsing trap this project already refused when it declined to
+  interpret `~/.ssh/config` (Q-GIT-AUTH).
+- **`git set-remote` legitimately changes it**, orphaning every identity
+  under the old hash. And "start local-only, gain a remote later" is a
+  documented lifecycle, so that migration would be the normal path
+  rather than an edge case.
+- **Local-only vaults have no origin at all.** They are not exempt from
+  the bug — they can be the vault whose key gets deleted, and two of
+  them collide with each other through `init`/`remove`/`init` — so a
+  URL-derived scheme leaves them with no key to derive from.
+
+An id has none of these properties: it is assigned rather than derived,
+so it is stable by construction and independent of transport.
+
+**The cost is a `.gage/config.toml` schema change, and this is the
+cheapest it will ever be.** Nothing has shipped — Q-RELEASE is still
+open and there is no distribution — so there is no installed base to
+migrate. `format_version` goes to 2, and a v1 vault is refused by the
+check that already exists, with "re-create this vault" as the migration.
+That is only acceptable because the population of affected vaults is
+developer machines, and `make reset-local-state` already exists to clear
+them. Deferring this decision makes it strictly more expensive.
+
+**Details that are part of the decision, not follow-up:**
+
+- **The id is untrusted input.** It arrives from a committed file any
+  git-writer can edit and is used as a filesystem path component —
+  exactly the condition Q-DEVICE-NAME imposed validation for. It is
+  validated as a UUID before any path is built from it, on the way in
+  *and* on the way out, and a config whose `id` does not parse is
+  refused rather than helpfully coerced.
+- **Global config records the id too**, under `[vaults.<name>]`. Without
+  it, `vault remove` could not identify which identities directory a
+  vault owns once that vault's own files are gone or moved — which is
+  precisely the situation the destructive branch above arises in.
+- **The directory carries a plaintext marker naming the vault.** An
+  opaque UUID directory would otherwise break the "a user is free to
+  back up a device's wrapped identity file themselves" story the design
+  doc explicitly permits. The marker is advisory — nothing reads it to
+  make a decision.
+
+**This does not close the whole bug, and the remainder should not be
+folded into it.** Correct keying removes the cross-vault collision,
+which is the destructive half. But `removeOrphanedIdentity` still
+decides whether to delete a private key by comparing device *names*
+(`r.Device == entry.Device`) — the same label-versus-identity confusion
+`D-ENROLL-COLLISIONS` settled for enrollment. That comparison deserves
+fixing on its own terms rather than being declared safe because
+collisions got rarer.
 
 Related: the enrollment doc's "Enrolling with an identity you already
 have" explains why the reuse path exists and why it cannot cheaply
@@ -866,6 +983,32 @@ creating partial recipients, so most of the benefit is lost.
 **Affected:** design doc "Recipient / access management" and the
 `--reencrypt` bullets under "A few decisions worth calling out"; M9's
 test list, which currently pins the opposite behavior.
+
+---
+
+### `[x]` A20 — Key the identities directory by a vault id {#a20}
+
+**Applied to the design doc; not yet implemented.** Resolves
+[Q-IDENTITY-VAULT-NAME](#q-identity-vault-name), whose second harm is a
+live path that silently deletes the only copy of a private key.
+
+**Applied as:** `[vault].id` added to `.gage/config.toml` (a UUIDv4
+minted by `init`); `format_version` raised to 2; the identity path in
+"Local identity storage" becomes
+`$GAGE_DATA/identities/<vault-id>/<device>.age`; the id added to global
+config's `[vaults.<name>]`; and the id folded into the untrusted-input
+validation rule that already covers device names.
+
+**Affects:** M1 (config schema, `format_version`, global config), M2
+(identity file paths), and the enrollment doc's references to the
+identity path. Migration is "re-create the vault", which is only
+acceptable because nothing has shipped — see the resolution for why
+deferring makes this strictly more expensive.
+
+**Does not close the whole bug.** `removeOrphanedIdentity` still decides
+deletions by comparing device names; correct keying removes the
+cross-vault collision but not the label-versus-identity confusion
+underneath it.
 
 ---
 

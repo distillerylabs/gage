@@ -18,7 +18,7 @@ and the awkward one is in the middle:
    it's a git clone.
 2. `gage identity add --use <vault>` on the new device. Generates a
    keypair, writes the wrapped private half to
-   `$GAGE_DATA/identities/<vault>/<device>.age`, prints the public half.
+   `$GAGE_DATA/identities/<vault-id>/<device>.age`, prints the public half.
 3. **Carry that public key to a device that already has access.** By
    hand. A 62-character `age1...` string, moved between two machines
    over whatever channel the user improvises — a chat message, an email
@@ -633,7 +633,7 @@ leaving to inference:
 
 1. **The identity passphrase** — the one prompted for above. It protects
    this device's newly generated private key at
-   `$GAGE_DATA/identities/<vault>/<device>.age`. The *user* chooses it,
+   `$GAGE_DATA/identities/<vault-id>/<device>.age`. The *user* chooses it,
    it never leaves this machine, it is never transmitted to anyone, and
    it is what this device will be asked for on every future unlock. It's
    confirmed twice because this is the existing `PurposeCreate`
@@ -798,7 +798,7 @@ that *don't* change are the interesting ones.
 **The one thing that needs care, and it is a trap this document set for
 itself.** The clone prompt above is driven by `HasIdentity(vault,
 device)`, which is a pure file-existence check on
-`$GAGE_DATA/identities/<vault>/<device>.age`. Hardware-backed methods
+`$GAGE_DATA/identities/<vault-id>/<device>.age`. Hardware-backed methods
 **never write that file** — "ssh/yubikey/secure-enclave write nothing
 here, since the private key never leaves external hardware, an agent, or
 the OS keychain." So a fully working YubiKey-backed device would report
