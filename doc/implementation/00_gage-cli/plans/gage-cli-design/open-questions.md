@@ -466,38 +466,55 @@ is answered the other way.
 
 ---
 
-### `[ ]` Q-ENROLL-VERBS — What are the device-enrollment commands called? {#q-enroll-verbs}
+### `[x]` Q-ENROLL-VERBS — What are the device-enrollment commands called? {#q-enroll-verbs}
 
-**Blocks:** implementation of device enrollment
-([gage-cli-init-design.md](../../tdds/gage-cli-init-design.md)). Every
-other decision in that document is settled; this one is deliberately
-held open while the UX is iterated on. Nothing should be built against
-the provisional names until it's answered.
+**Resolved: `gage identity enroll` joining, `gage recipient
+pending`/`approve`/`deny` approving.** Full reasoning and the rendered
+help listing are in D-ENROLL-VERBS in
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md); the short
+version is below. No new top-level noun, no new help group, and
+`groupOrder` untouched.
+
+**What decided it, and it wasn't taxonomy.** `enroll` turned out to be
+`identity add` *plus publishing* — literally the same `CreateIdentity`
+call with the same create-or-reuse behavior, differing only in what
+happens once the key exists. A command belongs next to the command it is
+a superset of. Neither option originally on the table could express that,
+because both put the two verbs in different namespaces.
+
+An earlier draft of the enrollment doc asserted a behavioral difference
+between the two (that `identity add` refused to overwrite where `enroll`
+reused). That was wrong — both reuse — and finding it is what produced
+the answer.
 
 The feature has two actors with two different mental models — a device
 asking to join, and a device that already has access deciding whether to
 let it — and the naming question is whether that split should be visible
 in the command surface.
 
-- **Split (the draft's provisional spelling):** `gage enroll` on the
-  joining side, `gage recipient pending/approve/deny` on the approving
-  side. Argues that approval genuinely *is* a recipient mutation — it
-  writes `.age-recipients` and `config.toml` together, shares
-  `--reencrypt`, regenerates the trust cache, and is what `recipient
-  verify` checks afterward — so it belongs where every other
-  recipient-list write already lives.
-- **Unified:** one `gage enroll request/list/approve/deny` group. Keeps
-  the whole feature findable under one word, which matters for something
-  a user meets exactly twice (once per new device) and has no chance to
-  build muscle memory for. Costs putting a recipient-list write
-  somewhere other than `recipient`.
+- **Split, top-level `gage enroll`** (the draft's provisional
+  spelling). Rejected: puts a superset command in a different namespace
+  from its own base command, and adds a fourth top-level noun beside
+  `vault`/`identity`/`recipient` whose only member is this feature.
+- **Unified `gage enroll request/list/approve/deny`.** Rejected despite
+  reading best in isolation: it moves a recipient-list write out of
+  `recipient`, and needs a new `groupOrder` entry or the group sorts
+  after Git-specific.
+- **Chosen: `identity enroll` + `recipient pending/approve/deny`.**
+  Joining lives with the other key-creating verb; approval lives where
+  every one of its effects lands.
 
-Worth deciding alongside the rest of the enrollment UX rather than in
-isolation, since the answer likely follows from how the flow reads
-end-to-end rather than from taxonomy. Whatever wins, the command
-registry (M0) is what keeps `gage help` and in-session `help` honest
-about it, and any new command must be registered there or M0's
-completeness test fails.
+**Accepted cost:** the feature spans two help groups and never renders
+as one story. Judged minor, because the approving side is discovered
+from the joining device's own output — which prints the exact command to
+run — rather than by scanning `gage help`.
+
+**Follow-on for whoever implements it.** All six commands register with a
+`Short`, a `Group`, and an availability, or M0's completeness test fails;
+all are session-available, since none creates a vault the way
+`init`/`clone` do. `recipient add`'s description also needs rewording for
+A19 ("Authorize a public key and re-encrypt the vault to include it"),
+which is A19's work rather than this decision's.
 
 ---
 

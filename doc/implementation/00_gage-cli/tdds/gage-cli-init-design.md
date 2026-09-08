@@ -223,7 +223,7 @@ rare double-collision case, which is the right trade against inventing a
 per-request flag syntax for something that needs two devices to collide
 simultaneously.
 
-**Re-running `enroll` mints a fresh request and a fresh code**, never
+**Re-running `identity enroll` mints a fresh request and a fresh code**, never
 reusing the pending one. Reuse would force gage either to persist the
 code — which D-ENROLL-CODE-FORMAT forbids — or to re-seal under a new
 code and leave two live ids for one device. Duplicates are harmless
@@ -273,17 +273,83 @@ answer becomes the manual path — which means giving up the
 authentication this feature exists to provide. That narrowing is stated
 where the leak is described rather than dropped.
 
-### `[ ]` D-ENROLL-VERBS — command naming (deferred)
+### `[x]` D-ENROLL-VERBS — command naming
 
-**Deliberately open.** Tracked as `Q-ENROLL-VERBS` in
-[open-questions.md](../plans/gage-cli-design/open-questions.md), since
-that register is the single place a deferred decision is allowed to live.
+**Resolved: `gage identity enroll` on the joining side, `gage recipient
+pending` / `approve` / `deny` on the approving side.** No new top-level
+noun, no new help group.
 
-**Every command name in this document is therefore provisional.** The
-shapes are settled — what the joining side does, what the approving side
-does, which flags each takes, what lands in one commit — and none of
-that depends on the spelling. Nothing should be implemented against
-these names until this is resolved.
+```
+Identity:
+  identity add              Register this device's identity and print its public key
+  identity enroll           Register this device's identity and publish a request to join
+  identity list             List the keys this machine holds for a vault
+
+Recipients:
+  recipient add             Authorize a public key and re-encrypt the vault to include it
+  recipient remove          Revoke a recipient and re-encrypt the vault without its key
+  recipient list            List the keys this vault is encrypted to
+  recipient pending         List enrollment requests waiting for approval
+  recipient approve         Authorize a device from its enrollment request
+  recipient deny            Discard an enrollment request without authorizing it
+  recipient verify          Check .age-recipients and config.toml still agree
+```
+
+**What decided it: `enroll` *is* `identity add` plus publishing.** Not
+approximately — `AddIdentity` calls `CreateIdentity`, the same function,
+with the same create-or-reuse behavior
+(`TestCreateIdentityReusesAnExistingFile`). The only difference is what
+happens once the key exists. A command should live next to the command it
+is a superset of, and putting it anywhere else hides a relationship the
+implementation makes literal.
+
+The two descriptions are deliberately identical up to their second
+clause, so the listing shows that relationship without prose:
+"Register this device's identity and **print its public key**" against
+"Register this device's identity and **publish a request to join**."
+
+**A bare top-level `gage enroll` was rejected**, though it reads better
+in isolation. It would put a superset command in a different namespace
+from its own base command, and introduce a fourth top-level noun beside
+`vault`/`identity`/`recipient` whose only member is this one feature. A
+unified `gage enroll request/list/approve/deny` group has the further
+cost of moving a recipient-list write out of `recipient`, and needs a new
+entry in the registry's `groupOrder` or it sorts after Git-specific.
+
+**Approval stays under `recipient` because that is what it does**: it
+writes `.age-recipients` and `config.toml` together, runs the
+re-encryption, regenerates the trust cache, and is what `recipient
+verify` checks afterward. Every effect it has is a recipient-list effect.
+
+**The known cost, stated rather than glossed:** the feature spans two
+help groups and never appears as one story. That matters less than it
+first seems, because nobody discovers the approving side by reading
+`gage help` — they discover it because the joining device printed the
+exact command to run. The help listing is where you go once you already
+know roughly what you want.
+
+**Two list commands sit close enough to be confused, and their
+descriptions do the disambiguating.** `identity list` answers "what can
+this machine open," `recipient list` answers "who does this vault
+trust." They diverge constantly — empty versus populated right after a
+clone, and on an N-device vault every machine sees N recipients but one
+identity. The wording puts the contrast in the grammatical subject
+("this machine holds" / "this vault is encrypted to") rather than
+leaving it to be inferred.
+
+There is a sharper hazard underneath that wording, recorded here because
+it is not fixable by naming: **the two lists are joined on the device
+name, which `D-ENROLL-COLLISIONS` establishes is a label rather than an
+identity** — and `identity list` cannot show public keys without an
+unlock. So when both show `laptop-1`, nothing tells you whether they are
+the same key. See `Q-IDENTITY-VAULT-NAME`.
+
+**Registry consequences** (M0 enforces these, so they are part of the
+decision, not follow-up): every command above is registered with a
+`Short`, a `Group`, and an availability; all of them are available in a
+session as well as one-shot, since none of them creates a vault the way
+`init`/`clone` do; `groupOrder` is untouched. `recipient add`'s
+description changes as part of A19 rather than this decision.
 
 ---
 
@@ -601,17 +667,23 @@ code, and the code is printed with an explicit "safe to send, not your
 passphrase." This is cheap, and it's the only place in `gage` where two
 different secrets are on screen at once.
 
-`gage enroll --use personal` does the same thing against a vault that's
+`gage identity enroll --use personal` does the same thing against a vault that's
 already cloned, and is what someone reaches for when they cloned first
 and decided to join second, or answered `n` above. It **creates the
 identity only if one does not already exist**: a device that has run
 `gage identity add`, or that already holds a wrapped identity file for
 this vault from an earlier attempt, reuses that key rather than
-generating a second one and orphaning the first. This is the one
-behavioral difference from `identity add`, which refuses to overwrite.
-The distinction is deliberate — `identity add`'s refusal protects "the
-only copy of a private key"; `enroll`'s reuse is what makes it safe to
-run twice after a failed push.
+generating a second one and orphaning the first.
+
+**This is not a difference from `identity add` — it is the same code.**
+An earlier draft of this document claimed `identity enroll` reused where
+`identity add` refused to overwrite. That was simply wrong:
+`AddIdentity` calls `CreateIdentity`, which reuses an existing file
+(`TestCreateIdentityReusesAnExistingFile`), so both verbs behave
+identically here. Never overwriting is a property of the private key
+being the only copy there is, and it belongs to both. The reuse is what
+makes `identity enroll` safe to run twice after a failed push, but it is inherited
+rather than special.
 
 ### Enrolling with an identity you already have
 
@@ -620,7 +692,7 @@ it prompts differently — worth showing rather than leaving a reader to
 discover that the "reuses that key" convenience above is not free:
 
 ```
-$ gage enroll --use personal
+$ gage identity enroll --use personal
 gage: reusing the existing local identity file for "personal" (device andrews-macbook-pro)
 
 Unlock it so gage can read this device's public key — the request has to
@@ -679,7 +751,7 @@ methods — which write no `.age` file at all — a home for the same fact.
 Three problems, one change. It is still wrong, for a reason that isn't
 obvious until you look for it: a sidecar can drift from the file it
 describes (an identity restored from backup, one of the two files
-copied and not the other), and a drifted sidecar makes `enroll` publish
+copied and not the other), and a drifted sidecar makes `identity enroll` publish
 a public key whose private half this device no longer holds. Approval
 then succeeds, the vault is re-encrypted to a key nobody has, and the
 damage surfaces at first decrypt. Verifying the sidecar against the real
@@ -832,7 +904,7 @@ keeps an identity file (#39), and the state a re-clone after
 *would* be checkable without an unlock, but it proves less than it looks
 like it does — the listed key under that name may be a different key
 than the one this machine holds — so it isn't worth acting on
-automatically. Anyone in that state runs `gage enroll` explicitly, which
+automatically. Anyone in that state runs `gage identity enroll` explicitly, which
 reuses the existing key rather than generating a second one.
 
 ### Approving device
@@ -1054,7 +1126,7 @@ Removed pending request e4f88b21. Nothing was granted; nothing to re-encrypt.
 
 ## Expiry, revocation, and pruning
 
-- **Default lifetime is 24 hours** (`--ttl` on `gage enroll` to change),
+- **Default lifetime is 24 hours** (`--ttl` on `gage identity enroll` to change),
   with a hard ceiling of 7 days that `gage` refuses to exceed.
 - **Approval checks the sealed `expires` and refuses a stale request**,
   regardless of what the filename or the listing said. This is the only
@@ -1139,7 +1211,7 @@ make it legible rather than baffling:
 ## Command reference (additions)
 
 ```
-gage enroll [--use NAME] [--device NAME] [--ttl DURATION]
+gage identity enroll [--use NAME] [--device NAME] [--ttl DURATION]
 
     Publishes an enrollment request for this device: creates a local
     identity if one does not already exist for this vault (reusing it if
@@ -1166,7 +1238,7 @@ gage clone <remote-url> [--name NAME] [--dir PATH]
 
     Unchanged, except for what happens after a successful clone when this
     device can't read the vault. Interactively, clone offers to enroll
-    ([Y/n]) and runs the same path `gage enroll` does on yes. With no
+    ([Y/n]) and runs the same path `gage identity enroll` does on yes. With no
     TTY, or on no, it prints the message it prints today and exits 0.
 
     No flag gates this — see "Why there is no --enroll flag". The
@@ -1384,7 +1456,7 @@ middle. That is the one place this feature departs from the shape of an
 existing command, and it departs toward `sync`'s lazy-unlock behavior
 rather than inventing anything.
 
-**`enroll` takes the per-vault write lock** for its commit, like every
+**`identity enroll` takes the per-vault write lock** for its commit, like every
 other write. **`approve` holds it across the whole re-encryption
 sequence**, exactly as `recipient add --reencrypt` does today — and
 re-reads each sealed request under that lock before trusting what it
@@ -1483,7 +1555,7 @@ option exists.
 
 ## Deliberately out of scope
 
-- **`gage enroll --wait`**, polling until approval lands. Pleasant, but
+- **`gage identity enroll --wait`**, polling until approval lands. Pleasant, but
   it's a second control flow to get right (and to test without a network)
   for something `gage sync` already answers. Additive later.
 - **Approver-initiated invites** — the existing device generates a code
@@ -1595,7 +1667,7 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   (a slow-clock device) is refused with a message naming clock skew,
   distinguishable from an ordinary expired request that simply sat too
   long.
-- `enroll` warns, and proceeds, when local time is behind the vault's
+- `identity enroll` warns, and proceeds, when local time is behind the vault's
   HEAD committer timestamp.
 - `--device` with a run that resolves to more than one request is a
   usage error naming the ID form; with exactly one request it applies.
@@ -1622,7 +1694,7 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - `deny` removes the file, grants nothing, and needs no code.
 
 **Collisions and duplicates (D-ENROLL-COLLISIONS):**
-- `enroll` whose device name already labels a recipient fails with
+- `identity enroll` whose device name already labels a recipient fails with
   `ErrDeviceNameTaken`, **writes no identity file**, and the message
   names `--device`.
 - A request whose device name became taken between enroll and approve is
@@ -1635,7 +1707,7 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - Approving a request whose **pubkey is already a recipient** succeeds
   with no work — request cleared, zero entries re-encrypted, no new
   recipient, and the outcome reports `Added: false`.
-- Re-running `enroll` produces a **different request id and a different
+- Re-running `identity enroll` produces a **different request id and a different
   code** from the first run, and both requests remain independently
   openable by their own codes.
 - Approving one of two duplicate requests for the same device, then the
@@ -1660,9 +1732,9 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   what was displayed.
 
 **Enroll-side behavior:**
-- `enroll` on a device with no identity creates one, via a
+- `identity enroll` on a device with no identity creates one, via a
   `PurposeCreate` exchange (asked twice).
-- `enroll` on a device that already holds an identity **reuses it and
+- `identity enroll` on a device that already holds an identity **reuses it and
   does not write a second identity file** — and prompts **once**, with
   `Purpose: PurposeUnlock`. Assert the purpose and the prompt count, not
   just the end state: the whole point is that these are two different
@@ -1670,28 +1742,28 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - A **wrong passphrase on the reuse path** surfaces `ErrWrongPassphrase`
   at `exitcode.LockedOrAuth`, writes nothing to `.gage/pending/`, and
   pushes nothing — a failure mode the create path cannot produce at all.
-- Re-running `enroll` after an injected push failure succeeds on the
+- Re-running `identity enroll` after an injected push failure succeeds on the
   second attempt (the documented "safe to run twice" property), reusing
   the identity written by the first attempt rather than generating a
   second one.
 - The public key sealed into the request equals the public key derived
   from the identity file this device actually holds — the invariant that
   rules out caching the pubkey in a sidecar that could drift.
-- `enroll` against a vault with no writable remote fails with
+- `identity enroll` against a vault with no writable remote fails with
   `ErrEnrollmentNoRemote` and names the manual path, via an injected fake
   `RemoteSyncer` rather than a real timeout.
 - An interactive `clone` of a vault this device can't read offers to
   enroll, and answering yes produces the same end state as `clone`
-  followed by `enroll`.
+  followed by `identity enroll`.
 - Answering `n` leaves the vault cloned, no identity written, and
-  nothing pushed — and a later `gage enroll` still works.
+  nothing pushed — and a later `gage identity enroll` still works.
 - A **non-interactive** `clone` (no TTY) never prompts, never writes an
-  identity, never pushes, exits 0, and prints the run-`gage enroll`
+  identity, never pushes, exits 0, and prints the run-`gage identity enroll`
   message — the behavior a scripted clone has today.
 - A `clone` whose device already holds an identity for that vault name
   is **not** prompted at all, and no unlock is attempted during the
   clone — the passphrase prompt count for that run is zero.
-- `gage enroll` run explicitly in that state reuses the existing
+- `gage identity enroll` run explicitly in that state reuses the existing
   identity rather than generating a second one.
 - **The two secrets never cross.** The identity passphrase appears in no
   output stream and in nothing committed; the enrollment code appears in
