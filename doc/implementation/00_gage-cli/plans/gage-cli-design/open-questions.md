@@ -501,6 +501,59 @@ completeness test fails.
 
 ---
 
+### `[ ]` Q-IDENTITY-VAULT-NAME — an identity file is keyed by vault *name*, which is not unique {#q-identity-vault-name}
+
+**Blocks:** nothing today; found while tracing `gage enroll`'s
+identity-reuse path for
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md). Worth
+deciding before device enrollment ships, because enrollment makes the
+bad path substantially easier to reach.
+
+Identity files live at `$GAGE_DATA/identities/<vault>/<device>.age`,
+where `<vault>` is the *local registration name* — which is chosen at
+clone time (inferred from the URL, or `--name`) and is not tied to the
+remote in any way. Two unrelated vaults can therefore share a directory
+of identities on one machine.
+
+The sequence that goes wrong:
+
+1. `gage vault remove personal` — which, per #39, **keeps** the identity
+   file when this device is still a listed recipient.
+2. `gage clone <a-different-remote> --name personal`.
+3. `gage enroll` — `CreateIdentity` finds the surviving file and reuses
+   it, so the request published to the *new* vault names a keypair that
+   belongs to the *old* one.
+
+Nothing is leaked and nothing is stolen — it's the user's own key — but
+it silently binds two unrelated vaults to a single keypair, which is
+exactly what the per-device, per-vault identity model exists to avoid.
+Revoking access to one vault then can't be done without affecting the
+other, and the design doc's "Local identity storage" section reads as
+though that can't happen.
+
+Options, roughly in order of cost:
+
+- **Record which remote an identity belongs to** and refuse to reuse one
+  whose remote doesn't match the vault now registered under that name.
+  Cheap, but needs somewhere to put the fact — a sidecar has the drift
+  problem described in the enrollment doc, and the identity file itself
+  can't be read without an unlock.
+- **Key the identities directory by something stable** (a vault id
+  minted at `init` and committed to `.gage/config.toml`) rather than by
+  the local name. Correct, but touches M1's on-disk contract.
+- **Have `vault remove` always delete the identity**, making the collision
+  unreachable — rejected already by #39's reasoning: the file is the only
+  copy of a private key, and deleting it when the device is still a
+  recipient strands access permanently.
+- **Accept and document it**, on the grounds that reusing a removed
+  vault's name for a different remote is rare and self-inflicted.
+
+Related: the enrollment doc's "Enrolling with an identity you already
+have" explains why the reuse path exists and why it cannot cheaply
+verify what it is reusing.
+
+---
+
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}
 
 **Blocks:** nothing; needed before a first public release.

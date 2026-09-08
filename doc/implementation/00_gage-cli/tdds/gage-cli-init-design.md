@@ -131,20 +131,48 @@ format is "a passphrase string," and nothing else depends on its shape.
   timezone and approved the next morning in another — without leaving
   blobs around for weeks. The common case (one person, two machines,
   minutes apart) is unaffected by any value in this range.
-- **The 7-day ceiling is load-bearing, not a round number.** It is what
-  makes pruning sound without opening anything: a request committed
-  longer ago than the ceiling is definitely expired, whatever its sealed
-  `expires` claims, so `gage` can garbage-collect blobs it has no code
-  for. Without a ceiling, an unopenable blob could never be safely
-  pruned.
+- **The 7-day ceiling is load-bearing, not a round number**, though what
+  it does changed once the expiry moved into the filename (see
+  D-ENROLL-EXPIRY-IN-NAME). It now does two jobs: it bounds `--ttl` at
+  creation, and it bounds the *filename* value gage will honor — an
+  epoch more than the ceiling beyond now is treated as already expired
+  and pruned, which is the only thing stopping a forged far-future name
+  from parking a blob in the tree permanently.
 - **`--ttl` is validated at the boundary** — positive and no greater
   than the ceiling — and rejected with a usage error before anything is
   generated or written, the same treatment `--type` and `--method`
   already get.
 - **Expiry is always enforced from the sealed copy**, never from the
-  filename, the listing, or the commit date. The unauthenticated
-  timestamps are housekeeping hints only; see "Expiry, revocation, and
-  pruning".
+  filename or the listing. The filename's epoch is a housekeeping hint
+  only; see "Expiry, revocation, and pruning".
+
+### `[x]` D-ENROLL-EXPIRY-IN-NAME — the expiry is in the filename
+
+**Resolved: a pending request is named
+`<request-id>-<expires-epoch>.age`, with the expiry as UTC seconds since
+the epoch in the clear.**
+
+This replaces an earlier draft that kept the filename a bare UUID and
+tried to recover timing from git. That draft had two defects, and this
+change removes both rather than solving either:
+
+- **It displayed an expiry it could not compute.** `recipient pending`
+  showed "expires in 22h" while `PendingRequest.Expires` was specified as
+  the *ceiling*-derived bound — so a 24h request would have rendered
+  "expires in 6d 22h". The real expiry is sealed. Outside the seal there
+  was simply no honest value to print.
+- **It needed a git history walk that gage has nowhere else.** Deriving
+  "when was this requested" from the introducing commit means a
+  first-appearance search through history, per request, in go-git. With
+  the epoch in the name, the question disappears: `PendingRequest` drops
+  `Requested` entirely, and pruning becomes a parse and a comparison.
+
+The cost is a small, deliberate exception to the "filenames encode
+nothing" rule — justified under "The filename" above, along with the
+disagreement cases and why none of them are unsafe. The short version:
+the existence of pending requests already leaks, the commit already
+reveals roughly when, and what's added is the TTL, which is the 24h
+default nearly always.
 
 ### `[ ]` D-ENROLL-VERBS — command naming (deferred)
 
@@ -222,8 +250,8 @@ myvault/
 ├── .gage/
 │   ├── config.toml
 │   └── pending/                                        # new
-│       ├── 7c1e4a90-3b52-4f18-9d6a-8e2f10b4c3d7.age
-│       └── e4f88b21-0a77-4c39-b512-6d90a1e2f345.age
+│       ├── 7c1e4a90-3b52-4f18-9d6a-8e2f10b4c3d7-1788862320.age
+│       └── e4f88b21-0a77-4c39-b512-6d90a1e2f345-1788816000.age
 ├── .age-recipients
 ├── entries/
 ├── .gitattributes
@@ -242,28 +270,71 @@ created    = "2026-09-07T10:12:00Z"
 expires    = "2026-09-08T10:12:00Z"
 ```
 
-**Filenames are opaque UUIDs, and the device name lives inside the
-seal.** This follows the same rule as `entries/`: a filename never
-encodes content. Naming the file `andrews-macbook-pro.age` would hand
-every reader of the vault a free "Andrew is setting up a new laptop"
-signal before anyone has approved anything. The device name becomes
-public on approval — it's a recipient label in `config.toml` — but there
-is no reason to leak it *before*, and no reason at all if the request is
-denied or expires.
+### The filename: `<request-id>-<expires-epoch>.age`
 
-**`request_id` is repeated inside the seal, matching the filename.** The
-filename is unauthenticated (anyone with git write access can rename a
-file); the copy under the seal is not. Approval compares the two and
-refuses a mismatch, so a blob cannot be renamed onto a different slot or
-replayed into a fresh one.
+```
+7c1e4a90-3b52-4f18-9d6a-8e2f10b4c3d7-1788862320.age
+└──────────── UUIDv4 (36 chars) ────┘ └─ epoch ─┘
+```
 
-**`expires` is enforced from inside the seal, never from the filename or
-the commit date.** Both of those are attacker-controlled — git commit
-timestamps are whatever the committer says they are. The authenticated
-copy is what approval checks. Unauthenticated timestamps are used for
-housekeeping only, where the worst case of a lie is a blob that gets
-pruned early or lingers past its usefulness while still being
-un-approvable.
+**The device name lives inside the seal, and the filename carries no
+identity.** Naming the file `andrews-macbook-pro.age` would hand every
+reader of the vault a free "Andrew is setting up a new laptop" signal
+before anyone approved anything. The device name becomes public on
+approval — it's a recipient label in `config.toml` — but there is no
+reason to leak it *before*, and no reason at all if the request is denied
+or expires.
+
+**The expiry, however, is deliberately in the clear, and that is an
+exception to `entries/`'s "a filename never encodes content" rule.** The
+exception is narrow and worth justifying rather than slipping past.
+Under `entries/`, the *set of entries* is itself the secret, so a
+filename must reveal nothing at all. Under `pending/`, the existence and
+count of requests is already unavoidably visible to any reader, and what
+the epoch encodes is not *what* or *who* but *when this stops mattering*
+— operational housekeeping, not vault content.
+
+What it buys is disproportionate to what it costs:
+
+- **`recipient pending` can show a real expiry**, in the approver's own
+  local timezone, without opening anything. Epoch seconds are
+  timezone-free by construction, so there is nothing to normalize.
+- **Pruning needs no git history walk.** The alternative was deriving a
+  request's age from the commit that introduced it, which means a
+  first-appearance search (`--diff-filter=A`-equivalent) through history
+  per request — O(history), and machinery gage has nowhere else. With the
+  epoch in the name, pruning is a string parse and a comparison, and the
+  concept of "when was this requested" disappears from the outside of the
+  seal entirely.
+
+What it costs: a reader learns each request's TTL. In practice that is
+the 24h default, and the commit that added the file already reveals
+roughly when it appeared, so the genuinely new signal is only a
+*non-default* TTL — and a distinctive one used repeatedly is a weak
+correlator across requests. Judged acceptable against removing an
+O(history) lookup and a display gage otherwise could not honestly
+produce.
+
+**`request_id` is repeated inside the seal, matching the filename's UUID
+portion.** The filename is unauthenticated — anyone with git write access
+can rename a file — while the copy under the seal is not. Approval
+compares the two and refuses a mismatch, so a blob cannot be renamed onto
+a different slot or replayed into a fresh one. The epoch portion is
+deliberately *not* part of that comparison; see below.
+
+**`expires` is enforced from inside the seal, never from the filename.**
+The filename's epoch is a hint for display and pruning only. The two can
+disagree, and both directions are safe:
+
+- **Filename says expired, seal says valid** — gage prunes a request that
+  was still live. A denial of service, but not a new one: anyone who can
+  rename the file can equally delete it.
+- **Filename says valid, seal says expired** — the listing shows it, and
+  approval refuses it with `ErrEnrollmentExpired`. Mildly confusing,
+  never unsafe.
+
+Because approval reads only the authenticated copy, no lie in a filename
+can extend a request's real life by a second.
 
 ### `.gitattributes` deliberately does *not* cover `pending/`
 
@@ -443,6 +514,85 @@ The distinction is deliberate — `identity add`'s refusal protects "the
 only copy of a private key"; `enroll`'s reuse is what makes it safe to
 run twice after a failed push.
 
+### Enrolling with an identity you already have
+
+The transcript above shows the *create* path. There is a second one, and
+it prompts differently — worth showing rather than leaving a reader to
+discover that the "reuses that key" convenience above is not free:
+
+```
+$ gage enroll --use personal
+gage: reusing the existing local identity file for "personal" (device andrews-macbook-pro)
+
+Unlock it so gage can read this device's public key — the request has to
+name it. This is the passphrase you chose when the key was created.
+Enter passphrase: ****
+
+gage: this device is "andrews-macbook-pro", public key age1qz8x2...
+
+Enrollment request published (expires in 24h).
+
+  Enrollment code:  GAGE-2NPT-6J8K-QR40-XZ71
+...
+```
+
+**Why it unlocks at all.** `formatIdentityFile` writes `# public key:
+…` into the plaintext buffer, and that whole buffer is then encrypted —
+there is no plaintext copy of the public key anywhere on disk. The
+vault's own `.age-recipients` and `config.toml` can't supply it either:
+if this device's key were listed there, it would already be a recipient
+and would have nothing to enroll. So the rule is unavoidable and worth
+stating in one line: **you cannot say "here is my public key" without
+first opening the file that holds it.** Deriving a public key needs the
+private key, and the private key is at rest under a passphrase.
+
+Mechanically this is `CreateIdentity` finding the file and handing off to
+`reuseIdentity`, which runs `decryptIdentityFile` — the ordinary
+`PurposeUnlock` exchange, retry loop and all. It differs from the create
+path in every way that matters to a caller:
+
+| | create path | reuse path |
+|---|---|---|
+| Purpose | `PurposeCreate` | `PurposeUnlock` |
+| Prompts | enter + confirm | enter once |
+| A wrong answer | impossible — nothing to check against | retries, then `ErrWrongPassphrase` |
+| Exit code | — | `exitcode.LockedOrAuth` is reachable |
+
+**This is not a corner case.** It is the path behind this document's own
+retry story — "safe to run twice after a failed push" means the second
+run unlocks. It is also what a device hits after cloning, declining the
+prompt, running `gage identity add`, and then enrolling; and after the
+`vault remove` case that deliberately keeps an identity file (#39),
+which is the most surprising of the three because the user may not
+remember the file survived.
+
+**The clone flow is unaffected.** A `clone` that finds an existing
+identity doesn't prompt at all (see "What 'not a recipient yet' actually
+means"), so this exchange is only ever reached from an explicit `gage
+enroll`. The joining transcript above stays accurate for the path it
+draws.
+
+**Do not optimize this away with a cached public key.** The obvious
+improvement is a plaintext `<device>.pub` sidecar next to the wrapped
+file, which would remove this unlock, let `clone` answer "am I already a
+recipient?" precisely instead of conservatively, and give hardware
+methods — which write no `.age` file at all — a home for the same fact.
+Three problems, one change. It is still wrong, for a reason that isn't
+obvious until you look for it: a sidecar can drift from the file it
+describes (an identity restored from backup, one of the two files
+copied and not the other), and a drifted sidecar makes `enroll` publish
+a public key whose private half this device no longer holds. Approval
+then succeeds, the vault is re-encrypted to a key nobody has, and the
+damage surfaces at first decrypt. Verifying the sidecar against the real
+file to prevent that requires — an unlock.
+
+So the unlock is load-bearing rather than incidental: it is what
+guarantees the public key a request names matches the private key the
+requester holds. It is also why gage's own enrollment path is immune to
+the proof-of-possession gap described under "What the code does not
+prove" — that gap is real, but only for a hand-crafted blob, never for a
+request gage produced.
+
 ### What changes when a method other than `passphrase` exists
 
 Yes, the flow adjusts — but only in one place, and it's the place that's
@@ -592,20 +742,27 @@ reuses the existing key rather than generating a second one.
 $ gage recipient pending --use personal
 2 pending enrollment requests for "personal":
 
-  7c1e4a90   requested 2026-09-07 10:12   expires in 22h
-  e4f88b21   requested 2026-09-06 18:40   expires in 6h
+  7c1e4a90   expires 2026-09-08 06:12 EDT  (in 22h)
+  e4f88b21   expires 2026-09-07 14:40 EDT  (in 6h)
 
 Nothing here can decrypt anything until it is approved.
 Run `gage recipient approve --code <code>` with a code you received
 out-of-band.
 ```
 
-The listing shows what can be known without a code: an ID, an
-unauthenticated timestamp, and a derived expiry. It does not show device
-names, because they're under the seal. That is a mild UX cost — an
-approver with several pending requests can't tell them apart at a glance
-— and it is the right trade: the alternative leaks who is joining to
-everyone with read access, in exchange for saving one scrypt run.
+The listing shows exactly what is knowable without a code: an ID and the
+expiry from the filename, rendered in the approver's own local timezone.
+It does not show device names, because those are under the seal. That is
+a mild UX cost — an approver with several pending requests can't tell
+them apart at a glance — and it is the right trade: the alternative
+leaks who is joining to everyone with read access, in exchange for
+saving one scrypt run.
+
+It deliberately does *not* show a "requested at" time. That would have
+to come from the introducing commit, which is both an O(history) lookup
+and no more trustworthy than the filename; the expiry is the only
+timestamp an approver acts on, and `created` is right there in the seal
+once a code opens it.
 
 ```
 $ gage recipient approve --code GAGE-7K4M-9QX2-P3RH-8WVN
@@ -801,18 +958,31 @@ Removed pending request e4f88b21. Nothing was granted; nothing to re-encrypt.
 - **Default lifetime is 24 hours** (`--ttl` on `gage enroll` to change),
   with a hard ceiling of 7 days that `gage` refuses to exceed.
 - **Approval checks the sealed `expires` and refuses a stale request**,
-  regardless of what any filename, commit date, or listing said. This is
-  the only expiry check that is load-bearing.
+  regardless of what the filename or the listing said. This is the only
+  expiry check that is load-bearing.
 - **Approval deletes the request file in the same commit** as the
   recipient change. A request is one-shot by construction: there is
   nothing left to replay.
-- **Pruning is best-effort and uses the unauthenticated commit date**,
-  which is safe precisely because the hard ceiling exists — anything
-  committed longer ago than 7 days is definitely expired, whatever its
-  sealed `expires` says. `gage` prunes opportunistically when it's
-  already writing (on approve, deny, or the next recipient change) rather
-  than taking a lock to do housekeeping alone. A forged-future commit
-  date keeps a dead blob in the tree; it does not make it approvable.
+- **Pruning reads the filename's epoch** — no history walk, no unlock, no
+  code. A file whose epoch is in the past is removed. `gage` prunes
+  opportunistically when it is already writing (on approve, deny, or the
+  next recipient change) rather than taking the lock to do housekeeping
+  alone.
+- **A filename claiming an expiry more than the ceiling beyond *now* is
+  treated as already expired**, and pruned. This is what keeps the
+  7-day ceiling load-bearing now that pruning no longer depends on
+  commit dates: a legitimate request is created with an expiry at most
+  `now + 7d`, so at any later moment its epoch is at most 7d in the
+  future. Anything claiming more was forged or written by a badly-skewed
+  clock, and either way is not something to keep forever. Without this
+  clamp a hostile git-writer could park `<uuid>-99999999999.age` in the
+  tree permanently. Only clock skew beyond roughly six days trips it,
+  which is well outside what a working git remote tolerates anyway.
+- **A file whose name doesn't parse is left alone, not deleted.** An
+  unparseable name is by definition not something gage wrote, so gage
+  skips it — the same posture `ListIdentities` takes toward strays, and
+  the conservative direction: refusing to delete a file it doesn't
+  understand.
 - **Replay within the TTL is accepted, not defended against.** Someone
   with read and write access could copy a pending blob and re-commit it.
   They still cannot open it, and approval still requires a human with the
@@ -830,6 +1000,13 @@ gage enroll [--use NAME] [--device NAME] [--ttl DURATION] [--print-only]
     identity if one does not already exist for this vault (reusing it if
     it does), seals device name and public key to a freshly generated
     code, commits it to .gage/pending/, pushes, and prints the code.
+
+    The two paths prompt differently. Creating a key asks for a new
+    passphrase twice; reusing an existing one asks for that key's
+    existing passphrase once, because the public key the request has to
+    name can only be derived by opening the private key. A wrong
+    passphrase on the reuse path fails with ErrWrongPassphrase and
+    publishes nothing. See "Enrolling with an identity you already have".
 
     Requires git write access to the remote. A device with read-only
     access gets a message saying so and pointing at the manual path
@@ -853,10 +1030,10 @@ gage clone <remote-url> [--name NAME] [--dir PATH]
 
 gage recipient pending [--use NAME]
 
-    Lists pending enrollment requests: ID, unauthenticated request time,
-    derived expiry. Needs no unlock and no code — everything shown is
-    outside the seal. Exits 0 with "no pending requests" when there are
-    none.
+    Lists pending enrollment requests: ID and expiry, the latter parsed
+    from the filename and rendered in the local timezone. Needs no
+    unlock, no code, and no history walk — everything shown comes from
+    the filename. Exits 0 with "no pending requests" when there are none.
 
 gage recipient approve [ID...] --code CODE [--code CODE ...]
                        [--use NAME] [--request-file PATH]
@@ -878,7 +1055,8 @@ gage recipient approve [ID...] --code CODE [--code CODE ...]
     for nothing.
 
     Refuses an expired request, a request whose sealed request_id does
-    not match its filename, a code that opens nothing, and — before
+    not match its filename's UUID portion, a code that opens nothing,
+    and — before
     taking the lock or asking anything — an approver who cannot itself
     read every entry.
 
@@ -918,13 +1096,14 @@ type EnrollmentRequest struct {
     Code    string
 }
 
-// PendingRequest is one unopened request, built entirely from what is
-// visible outside the seal.
+// PendingRequest is one unopened request, built entirely from its
+// filename — no git history walk, no unlock, no code.
 type PendingRequest struct {
-    ID        string
-    Path      string
-    Requested time.Time // unauthenticated; from the commit
-    Expires   time.Time // derived from Requested + the TTL ceiling
+    ID      string
+    Path    string
+    Expires time.Time // unauthenticated; parsed from the filename's epoch.
+                      // Display and pruning only — approval reads the
+                      // sealed copy. See D-ENROLL-EXPIRY-IN-NAME.
 }
 
 // OpenedRequest is a PendingRequest whose seal a code has opened. Every
@@ -957,6 +1136,8 @@ policy exactly as it does for `Unlock`:
 var ErrEnrollmentExpired    = errors.New("gage: this enrollment request has expired")
 var ErrEnrollmentCodeWrong  = errors.New("gage: no pending request opened with that code")
 var ErrEnrollmentIDMismatch = errors.New("gage: this request's sealed id does not match its filename")
+// (compared against the filename's UUID portion only — the epoch portion
+// is an unauthenticated hint and is deliberately not part of the check.)
 var ErrEnrollmentNoRemote   = errors.New("gage: publishing an enrollment request needs a writable remote")
 
 // Raised before the write lock and before any confirmation, so a
@@ -1124,9 +1305,9 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   key K is pending is **not** decryptable by K.
 - `recipient list` omits pending requests; `recipient verify` reports "in
   sync" on a vault with pending requests.
-- Garbage files, non-age files, and files with invalid UUID names in
-  `.gage/pending/` are skipped, not fatal — the same posture
-  `ListIdentities` takes toward strays.
+- Garbage files, non-age files, and files whose names don't match
+  `<uuid>-<epoch>.age` in `.gage/pending/` are skipped, not fatal — the
+  same posture `ListIdentities` takes toward strays.
 
 **Seal and code:**
 - Round trip: `Enroll` then `OpenEnrollment` with the returned code
@@ -1150,19 +1331,38 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   file.
 - A request whose sealed `request_id` disagrees with its filename is
   refused with `ErrEnrollmentIDMismatch` (write the file under a
-  different name to produce this).
+  different UUID to produce this). Changing only the *epoch* portion is
+  **not** a mismatch — it is an unauthenticated hint by design, and the
+  sealed `expires` is what approval checks.
 - A tampered sealed blob fails to open rather than opening with altered
   contents.
 
-**Expiry:**
+**Expiry and the filename:**
+- `Enroll` names the file `<request-id>-<expires-epoch>.age`, and the
+  epoch parses back to the same instant as the sealed `expires`.
 - A request past its sealed `expires` is refused with
-  `ErrEnrollmentExpired`, **even when its commit date is recent** — this
-  is the test that proves expiry is read from the authenticated copy.
+  `ErrEnrollmentExpired` **even when its filename claims a far-future
+  epoch** — the test that proves expiry is read from the authenticated
+  copy, not the name.
+- The converse is safe too: a filename claiming an already-past epoch on
+  a request whose seal is still valid gets pruned rather than approved,
+  and nothing about that grants access.
+- `PendingEnrollments` performs **no git history traversal** — assert by
+  running it against a vault with a long history and a bare-remote
+  harness, or by instrumenting the git layer. This is the property the
+  whole filename scheme exists to buy.
+- `recipient pending` renders the expiry in the local timezone, and the
+  same request renders differently under two different `TZ` values while
+  naming the same instant.
 - `--ttl` beyond the 7-day ceiling, zero, and negative are each rejected
   at the boundary with a usage error, before anything is generated,
   written, or committed.
-- A blob whose commit date is older than the ceiling is prunable without
-  being openable — the property the ceiling exists to provide.
+- **A filename whose epoch is more than the ceiling beyond now is pruned
+  as already expired**, so a forged `<uuid>-99999999999.age` cannot
+  linger — the clamp that keeps the ceiling load-bearing.
+- A file in `pending/` whose name does not parse (bad UUID, non-numeric
+  epoch, missing epoch) is **skipped, not deleted** — gage never removes
+  a file it cannot account for.
 
 **Approval:**
 - Approving adds exactly one recipient to both `.age-recipients` and
@@ -1203,9 +1403,23 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   what was displayed.
 
 **Enroll-side behavior:**
-- `enroll` on a device with no identity creates one; `enroll` on a device
-  that already holds one reuses it and does not write a second identity
-  file.
+- `enroll` on a device with no identity creates one, via a
+  `PurposeCreate` exchange (asked twice).
+- `enroll` on a device that already holds an identity **reuses it and
+  does not write a second identity file** — and prompts **once**, with
+  `Purpose: PurposeUnlock`. Assert the purpose and the prompt count, not
+  just the end state: the whole point is that these are two different
+  exchanges and the fake `Prompter` can tell them apart.
+- A **wrong passphrase on the reuse path** surfaces `ErrWrongPassphrase`
+  at `exitcode.LockedOrAuth`, writes nothing to `.gage/pending/`, and
+  pushes nothing — a failure mode the create path cannot produce at all.
+- Re-running `enroll` after an injected push failure succeeds on the
+  second attempt (the documented "safe to run twice" property), reusing
+  the identity written by the first attempt rather than generating a
+  second one.
+- The public key sealed into the request equals the public key derived
+  from the identity file this device actually holds — the invariant that
+  rules out caching the pubkey in a sidecar that could drift.
 - `enroll` against a vault with no writable remote fails with
   `ErrEnrollmentNoRemote` and names the manual path, via an injected fake
   `RemoteSyncer` rather than a real timeout.
