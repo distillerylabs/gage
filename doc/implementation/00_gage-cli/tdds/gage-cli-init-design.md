@@ -1,7 +1,11 @@
 # Device enrollment — joining a vault without hand-carrying a public key
 
-*Status: **draft, for review.** An enhancement to
-[gage-cli-design.md](gage-cli-design.md), not a replacement. Everything
+*Status: **design settled; not implemented.** An enhancement to
+[gage-cli-design.md](gage-cli-design.md), not a replacement.
+Implementation is planned in
+[plans/gage-cli-init-design/](../plans/gage-cli-init-design/index.md).*
+
+*All eight `D-ENROLL-*` decisions below are resolved.* Everything
 that document says about vaults, identities, recipients, and the trust
 boundary still holds; this adds one new path on top of it and changes no
 existing invariant. Sections below reference the base document by its
@@ -1748,231 +1752,19 @@ option exists.
   getting the predicate wrong now would force a rework later.
 
 ---
+## Implementation plan
 
-## Test list (definition of done)
+The milestone breakdown, the per-milestone test lists that used to live
+here, and the sequencing live in
+[plans/gage-cli-init-design/](../plans/gage-cli-init-design/index.md) —
+the same split the core design uses, where the TDD holds the *why* and
+the plan holds the *how* and the definition of done.
 
-Not exhaustive, but these are the ones a milestone is not done without.
-Following the project convention: written before the implementation they
-cover, driven in-process through `rootCmd.Execute()` with an injected
-`Prompter`, against ephemeral bare repos via `gittest`.
+Five milestones: **E0** and **E1** are prerequisites this design raised
+against already-shipped work (`A20` and `A19`), **E2** proves the sealed
+request in isolation, and **E3**/**E4** are the joining and approving
+sides.
 
-**Inertness — the invariant that makes the feature safe:**
-- An entry written while a valid, in-date, correctly-sealed request for
-  key K is pending is **not** decryptable by K.
-- `recipient list` omits pending requests; `recipient verify` reports "in
-  sync" on a vault with pending requests.
-- Garbage files, non-age files, and files whose names don't match
-  `<uuid>-<epoch>.age` in `.gage/pending/` are skipped, not fatal — the
-  same posture `ListIdentities` takes toward strays.
-
-**Seal and code:**
-- Round trip: `Enroll` then `OpenEnrollment` with the returned code
-  yields the same device, pubkey, and method.
-- A wrong code opens nothing and returns `ErrEnrollmentCodeWrong`.
-- Codes normalize: lowercase, spaces-for-hyphens, and a missing `GAGE-`
-  prefix all open the same request.
-- Crockford substitutions open the same request: `I` and `L` typed for
-  `1`, `O` typed for `0`.
-- Generated codes never contain `I`, `L`, `O`, or `U` — asserted over
-  many generations, not one.
-- Two successive `Enroll` calls produce different codes (the generator
-  is actually seeded from `crypto/rand`, not a fixed or time-derived
-  source).
-- A code failing length or alphabet validation is rejected **before any
-  decryption is attempted** — assert via decrypt call-count
-  instrumentation, the same technique M7 uses for the index, so a typo
-  can't cost N scrypt runs.
-- The generated code appears in `Enroll`'s return value and nowhere
-  else: not in the vault, not in local state, not in the session history
-  file.
-- A request whose sealed `request_id` disagrees with its filename is
-  refused with `ErrEnrollmentIDMismatch` (write the file under a
-  different UUID to produce this). Changing only the *epoch* portion is
-  **not** a mismatch — it is an unauthenticated hint by design, and the
-  sealed `expires` is what approval checks.
-- A tampered sealed blob fails to open rather than opening with altered
-  contents.
-
-**Expiry and the filename:**
-- `Enroll` names the file `<request-id>-<expires-epoch>.age`, and the
-  epoch parses back to the same instant as the sealed `expires`.
-- A request past its sealed `expires` is refused with
-  `ErrEnrollmentExpired` **even when its filename claims a far-future
-  epoch** — the test that proves expiry is read from the authenticated
-  copy, not the name.
-- The converse is safe too: a filename claiming an already-past epoch on
-  a request whose seal is still valid gets pruned rather than approved,
-  and nothing about that grants access.
-- `PendingEnrollments` performs **no git history traversal** — assert by
-  running it against a vault with a long history and a bare-remote
-  harness, or by instrumenting the git layer. This is the property the
-  whole filename scheme exists to buy.
-- `recipient pending` renders the expiry in the local timezone, and the
-  same request renders differently under two different `TZ` values while
-  naming the same instant.
-- `--ttl` beyond the 7-day ceiling, zero, and negative are each rejected
-  at the boundary with a usage error, before anything is generated,
-  written, or committed.
-- **A filename whose epoch is more than the ceiling beyond now is pruned
-  as already expired**, so a forged `<uuid>-99999999999.age` cannot
-  linger — the clamp that keeps the ceiling load-bearing.
-- A file in `pending/` whose name does not parse (bad UUID, non-numeric
-  epoch, missing epoch) is **skipped, not deleted** — gage never removes
-  a file it cannot account for.
-- **An ID matches the UUID portion only.** Construct a vault where one
-  request's expiry epoch contains another request's short id as a
-  substring, then assert `deny <that id>` removes the request whose
-  *UUID* matches and never the one whose *epoch* does.
-- An id that appears only inside an epoch, and in no UUID, matches
-  nothing rather than matching by accident.
-- A request sealed with an `expires` already in the past at `created`
-  (a slow-clock device) is refused with a message naming clock skew,
-  distinguishable from an ordinary expired request that simply sat too
-  long.
-- `identity enroll` warns, and proceeds, when local time is behind the vault's
-  HEAD committer timestamp.
-- `--device` with a run that resolves to more than one request is a
-  usage error naming the ID form; with exactly one request it applies.
-
-**Approval:**
-- Approving adds exactly one recipient to both `.age-recipients` and
-  `config.toml`, and `verify` still passes afterward.
-- **Approval makes every pre-existing entry readable by the new key** —
-  the newly approved device can read entries written long before it
-  existed. There is no flag, and no code path, that produces a
-  partially-readable recipient.
-- Approval, the re-encryption, and removal of the pending request's file
-  land in **one** commit.
-- Batch approval of N requests performs **one** re-encryption pass and
-  produces **one** commit.
-- An injected failure partway through the re-encryption leaves HEAD
-  untouched and every request still pending.
-- **An approver who cannot read every entry is refused with
-  `ErrCannotGrantFullAccess` before the write lock is taken and before
-  any confirmation is shown** — the error names the count of unreadable
-  entries, never a bare decryption failure on a UUID. Construct the
-  state by adding a recipient without re-encryption (or by hand-editing
-  `.age-recipients`) and then approving from that device.
-- `deny` removes the file, grants nothing, and needs no code.
-- **`deny` warns when its push fails** rather than reporting plain
-  success — injected fake `RemoteSyncer`, and assert the warning reached
-  the `Prompter`. A silent failed deny would leave the request live for
-  every other device.
-
-**Crash-safety of a partial enroll:**
-- A file written into `pending/` by an enroll that died before
-  committing is **inert**: an entry written afterwards is not decryptable
-  by the key it names.
-- That stray is **pruned on its own epoch** like any other expired
-  request, without special handling.
-- **No commit ever stages the `pending/` directory wholesale.** Construct
-  a stray, then run an unrelated write (`insert`, `recipient approve` for
-  a different request) and assert the stray is absent from the resulting
-  commit. This is the bullet that keeps a local artifact from becoming
-  something other devices see.
-- `recipient pending` on the machine that failed lists the stray;
-  on any other machine it does not exist.
-
-**Collisions and duplicates (D-ENROLL-COLLISIONS):**
-- `identity enroll` whose device name already labels a recipient fails with
-  `ErrDeviceNameTaken`, **writes no identity file**, and the message
-  names `--device`.
-- A request whose device name became taken between enroll and approve is
-  refused with `ErrEnrollmentNameTaken` **before the confirmation and
-  before any unlock** — passphrase prompt count zero.
-- `approve --device <other-name>` applies that same request, recording
-  the approver's label rather than the sealed one. The recipient's
-  pubkey is the sealed one, unchanged: relabeling changes the name and
-  nothing else.
-- Approving a request whose **pubkey is already a recipient** succeeds
-  with no work — request cleared, zero entries re-encrypted, no new
-  recipient, and the outcome reports `Added: false`.
-- Re-running `identity enroll` produces a **different request id and a different
-  code** from the first run, and both requests remain independently
-  openable by their own codes.
-- Approving one of two duplicate requests for the same device, then the
-  other, leaves exactly one recipient — the second approval is the
-  no-op above rather than an error.
-
-**The approver's unlock:**
-- Approval prompts for the approver's passphrase — a git-writer holding
-  no key of this vault cannot approve an enrollment.
-- **A wrong code costs no unlock**: the passphrase prompt count is zero
-  when `--code` opens nothing. Same for an expired request.
-- **Declining the `[y/N]` costs no unlock**, and leaves the request
-  pending and nothing committed.
-- In a session with the vault already unlocked, approval prompts for no
-  passphrase at all and reuses the cached `Identity`.
-- When another device changed the recipient list first, the approver
-  answers *two* distinct prompts — the approve confirmation and M10's
-  recipient-change warning — and declining the second aborts with
-  nothing committed and the request still pending.
-- A sealed request swapped between `OpenEnrollment` and the commit is
-  caught: what gets written is what was verified under the lock, not
-  what was displayed.
-
-**Enroll-side behavior:**
-- `identity enroll` on a device with no identity creates one, via a
-  `PurposeCreate` exchange (asked twice).
-- `identity enroll` on a device that already holds an identity **reuses it and
-  does not write a second identity file** — and prompts **once**, with
-  `Purpose: PurposeUnlock`. Assert the purpose and the prompt count, not
-  just the end state: the whole point is that these are two different
-  exchanges and the fake `Prompter` can tell them apart.
-- A **wrong passphrase on the reuse path** surfaces `ErrWrongPassphrase`
-  at `exitcode.LockedOrAuth`, writes nothing to `.gage/pending/`, and
-  pushes nothing — a failure mode the create path cannot produce at all.
-- Re-running `identity enroll` after an injected push failure succeeds on the
-  second attempt (the documented "safe to run twice" property), reusing
-  the identity written by the first attempt rather than generating a
-  second one.
-- The public key sealed into the request equals the public key derived
-  from the identity file this device actually holds — the invariant that
-  rules out caching the pubkey in a sidecar that could drift.
-- `identity enroll` against a vault with no writable remote fails with
-  `ErrEnrollmentNoRemote` and names the manual path, via an injected fake
-  `RemoteSyncer` rather than a real timeout.
-- **`identity enroll` fetches before it commits** — assert against a
-  bare remote that moved ahead, and confirm the resulting push is a
-  fast-forward rather than a divergence.
-- An **unreachable remote fails the command before any identity file is
-  written and before any prompt** — `ErrEnrollmentRemoteUnreachable`,
-  passphrase prompt count zero, no new file under
-  `$GAGE_DATA/identities/`, nothing committed. Injected fake
-  `RemoteSyncer`, not a real timeout.
-- A vault with **no remote configured** fails with the *different* error
-  `ErrEnrollmentNoRemote`; the two are distinguishable by the caller.
-- **The vault write lock is held across the pull, not taken after it** —
-  assert a second process cannot move HEAD between enroll's catch-up and
-  its commit, in the same style as M4's concurrent-write tests.
-- A **push rejected for lack of write access** leaves the identity and
-  the local commit in place, and the error names both what happened and
-  `gage auth login` — never a bare transport error.
-- Re-running after such a failure reuses the existing identity, mints a
-  fresh request and code, and succeeds once the push is allowed.
-- An interactive `clone` of a vault this device can't read offers to
-  enroll, and answering yes produces the same end state as `clone`
-  followed by `identity enroll`.
-- Answering `n` leaves the vault cloned, no identity written, and
-  nothing pushed — and a later `gage identity enroll` still works.
-- A **non-interactive** `clone` (no TTY) never prompts, never writes an
-  identity, never pushes, exits 0, and prints the run-`gage identity enroll`
-  message — the behavior a scripted clone has today.
-- A `clone` whose device already holds an identity for that vault name
-  is **not** prompted at all, and no unlock is attempted during the
-  clone — the passphrase prompt count for that run is zero.
-- `gage identity enroll` run explicitly in that state reuses the existing
-  identity rather than generating a second one.
-- **The two secrets never cross.** The identity passphrase appears in no
-  output stream and in nothing committed; the enrollment code appears in
-  no identity file and in no committed plaintext. One test asserting
-  both, since the whole risk is that they get confused for each other.
-- The passphrase prompt and the printed code each carry their
-  disambiguating label ("stays on this device" / "safe to send"), so a
-  reader of the transcript alone can tell them apart.
-
-**Trust cache:**
-- A second already-authorized device gets the ordinary
-  recipient-change warning after someone else approves an enrollment.
-- The approving device does not warn itself about its own approval.
-- A pending request alone triggers no warning on any device.
+**E0 should be done first and soon.** Its migration is free only while
+there is no installed base, which makes it the one piece of work in
+either plan that gets more expensive with time.

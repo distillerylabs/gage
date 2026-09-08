@@ -307,6 +307,13 @@ yet. This section exists so that gap is visible rather than inferred
 from a mismatch between the TDD and the binary — and it should be empty
 most of the time.
 
+**Both items below are sequenced in their own plan.** A20 is `E0` and
+A19 is `E1` in
+[plans/gage-cli-init-design/](../gage-cli-init-design/index.md), which
+also covers the device-enrollment feature that raised them. The
+summaries here are the standing record; the milestone docs carry the
+test lists.
+
 ### A19 — `gage recipient add` always re-encrypts
 
 Full reasoning in [open-questions.md](open-questions.md#a19) and in the
