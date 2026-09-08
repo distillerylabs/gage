@@ -42,8 +42,102 @@ Nothing new. Amends **M1** (config schema, global config) and **M2**
 
 ## Decisions
 
-All settled; see the two register entries above. Nothing to resolve
-before starting.
+The keying itself and the pubkey comparison are settled in the two
+register entries above. Five further decisions were settled during
+review of this plan: three are scope this milestone turned out to
+include and never named, one is a correction, and one is a question an
+earlier draft left open inside its own implementation checklist while
+this section said "all settled" — which is the thing the project's
+milestone convention exists to prevent, so it is resolved here rather
+than at the keyboard.
+
+### `Vault` carries the id, and it comes from global config
+
+`IdentityFilePath` and `TrustCacheDir` stop taking a name and start
+taking an id, but `loadTrustCache` and `storeTrustCache` are methods on
+`*Vault` — and `Vault` is built across `cmd/gage` as
+`&gage.Vault{Name: …, Path: …}` with nothing else in it. So the id has
+to reach the struct, and where it comes from is a decision rather than a
+detail:
+
+- **`Vault` gains an `ID` field**, and every construction site sets it.
+  This is the step an earlier draft left implicit, and it is the one with
+  a silent failure mode: a `Vault{}` whose `ID` was simply not set yields
+  `TrustCacheDir("")` rather than a compile error. `checkPathComponent`
+  rejects the empty string, so it fails loudly at runtime — but only on
+  the paths a test actually exercises.
+- **The value comes from global config's `[vaults.<name>].id`**, not
+  from reading the vault's own `.gage/config.toml`. That is exactly why
+  A20 puts the id in global config: `vault remove` needs to know which
+  identities directory a vault owns *after* its files may be gone or
+  moved, which is the situation the destructive branch arises in.
+
+### The two recorded ids are compared, and a mismatch is refused
+
+The id is now written in two places — the vault's committed
+`.gage/config.toml` and global config's `[vaults.<name>]`. Nothing in an
+earlier draft compared them, which reintroduces a thin version of the
+bug this milestone exists to kill: identity lookup would use one id and
+the recipient list would come from the vault the *other* id belongs to.
+
+They disagree in ordinary ways, not exotic ones — a vault re-created at
+the same path, a registration repointed by hand, a restored backup. So
+wherever a vault is resolved and its own config is readable, the two are
+compared, and a mismatch is refused with a message saying the
+registration points at a different vault than the one on disk and to
+re-register it. Where the vault's files are unreadable — the case
+`vault remove` is built for — global config's copy stands alone, which
+is what it is for.
+
+### The lock file is keyed by the id too
+
+`LockFilePath` builds `$GAGE_STATE/locks/<vault>.lock` from the local
+name (`internal/gage/paths.go`), and an earlier draft left it there while
+this milestone's own test list makes "one vault registered twice under
+two local names" a **supported** state. Those two facts do not compose:
+two registrations of one repository get two different lock files, and the
+per-vault advisory lock stops being mutual exclusion at exactly the
+moment this milestone blesses the configuration that needs it. Two
+`gage insert` runs, one per registration, would both take "their" lock
+and both write the same working tree.
+
+The lock protects a *repository*, so it is keyed by the thing that
+identifies a repository. `LockFilePath` takes the id, like the other two.
+Existing lock files under the old names are orphaned and harmless, and
+the migration is "re-create the vault" regardless.
+
+This is the last piece of per-vault local state keyed by the local name,
+which is worth saying plainly: after this milestone, the local name is a
+label for humans and nothing in `$GAGE_DATA` or `$GAGE_STATE` is
+addressed by it.
+
+### The marker is removed with the last identity, and the prune keeps working
+
+A20 settles that the identities directory carries a plaintext marker
+naming the vault, so an opaque UUID directory does not break the "back up
+your own wrapped identity file" story. What it does not settle is what
+that marker does to `RemoveIdentity`'s trailing
+`os.Remove(filepath.Dir(path))`, which succeeds only on an empty
+directory — "exactly the wanted semantics," per its own comment. A marker
+makes the directory never empty, so that call silently becomes a no-op
+and every removed vault leaves a directory behind holding one marker.
+
+**Resolved: `RemoveIdentity` removes the marker when it removes the last
+identity, and the prune keeps working.** The alternative — drop the prune
+and declare the leftover deliberate — trades a real behaviour for a
+comment, and the leftover is invisible, which is the property that makes
+it the wrong default. The existing comment stays true rather than being
+rewritten to describe something that no longer happens.
+
+### `clone` does not write `pubkey`
+
+An earlier draft of this milestone and of the TDD both listed `clone`
+among the writers of `[vaults.<name>].pubkey`. It cannot be one: a clone
+holds no identity, and it deliberately refuses to unlock in order to
+derive a public key — that refusal is the entire subject of the TDD's
+"What 'not a recipient yet' actually means". The writers are `init`,
+`identity add`, and E3's `enroll`. A clone that accepts E3's enroll offer
+records the field as *enroll*, at the point a key exists.
 
 ## Tests (write first)
 
@@ -63,6 +157,16 @@ before starting.
 - [ ] `gage clone` copies the id into global config's
       `[vaults.<name>]`, and `vault info` reports a vault whose id
       matches its own committed config.
+- [ ] **Global config's id and the vault's committed id are compared, and
+      a mismatch is refused** with a message naming re-registration —
+      not silently preferred one way or the other. Construct it by
+      hand-editing global config's `id` to another UUID and asserting an
+      ordinary read command refuses rather than reading the vault under
+      the wrong identities directory.
+- [ ] **An unreadable vault falls back to global config's id alone**, so
+      `vault remove` still knows which identities directory the vault
+      owned after its files are gone. This is the case the field exists
+      for and the one the check above must not break.
 
 **Paths**
 
@@ -100,6 +204,19 @@ before starting.
       resting on the single-failure case above.
 - [ ] The trust cache lands at
       `$GAGE_STATE/<vault-id>/known-config.toml`.
+- [ ] **The vault lock lands at `$GAGE_STATE/locks/<vault-id>.lock`**,
+      and — the point of it — **two registrations of one repository share
+      one lock**. Construct it: register the same path under two local
+      names, hold the lock through one of them, and assert a write
+      through the other contends rather than proceeding. Against
+      name-keying this test passes vacuously in the wrong direction:
+      both writes succeed, concurrently, on one working tree.
+- [ ] **A `Vault` built without an `ID` fails loudly**, on every path
+      that derives one — identity file, trust cache, lock. The empty
+      string is already refused by `checkPathComponent`; assert it rather
+      than trusting it, because the failure this rules out is a
+      construction site somewhere in `cmd/gage` that was missed and only
+      shows up on a path no test walks.
 - [ ] **Two vaults registered under the same local name in sequence do
       not share either directory** — the whole point. Construct it:
       `init` A, `vault remove`, `clone` B under the same name, and assert
@@ -108,15 +225,22 @@ before starting.
       vault, and nothing reads it to make a decision (delete it and
       assert every operation still behaves identically).
 - [ ] **Removing the last identity for a vault leaves no orphaned
-      directory** — whichever way the marker/prune question above is
-      settled, assert the end state rather than the mechanism. Without
-      this the marker quietly turns `RemoveIdentity`'s existing prune
-      into a no-op and nothing fails.
+      directory**: `RemoveIdentity` removes the marker alongside the last
+      identity and the existing prune still succeeds. Assert the end
+      state — no directory under `$GAGE_DATA/identities/` — rather than
+      the mechanism. Without this the marker quietly turns the prune into
+      a no-op and nothing fails.
+- [ ] **Removing a non-last identity leaves the marker in place**, so the
+      directory that still holds keys stays self-describing. The pair is
+      what makes the removal deliberate rather than incidental.
 
 **`removeOrphanedIdentity` — the destructive path**
 
 - [ ] `gage init` / `identity add` record this device's `pubkey` in
-      global config's `[vaults.<name>]`.
+      global config's `[vaults.<name>]`, and **`clone` does not** — it
+      holds no identity to derive one from. Assert the absence, since the
+      "pubkey missing, so keep the file and say why" branch below is the
+      one a freshly cloned vault legitimately lands in.
 - [ ] **The A20 regression, constructed end to end**: `init` A, `vault
       remove` A, `clone` B under A's old name, `vault remove` B — and
       assert **A's identity file still exists**. This is the sequence
@@ -189,25 +313,39 @@ before starting.
 - [ ] Validate the id as a UUID wherever a device name is validated
       today; both are path components arriving from a committed file
       any git-writer can edit.
-- [ ] `IdentityFilePath` and `TrustCacheDir` take the id rather than the
-      name. Grep for every caller — the compiler will not catch a
-      same-typed `string` swap, so this is the step to be deliberate
-      about.
-- [ ] `id` and `pubkey` added to `config.VaultEntry`; written by `init`,
-      `clone`, and `identity add`.
+- [ ] `IdentityFilePath`, `TrustCacheDir` **and `LockFilePath`** take the
+      id rather than the name. Grep for every caller — the compiler will
+      not catch a same-typed `string` swap, so this is the step to be
+      deliberate about. `LockFilePath` is the one an earlier draft
+      omitted; see "The lock file is keyed by the id too".
+- [ ] **`Vault` gains an `ID` field**, set at every construction site in
+      `cmd/gage` from global config's `[vaults.<name>].id`. This is a
+      mechanical change across roughly a dozen `&gage.Vault{…}` literals,
+      and it is the one place in this milestone where the compiler *does*
+      help: add the field, then let the build find the sites that need
+      it rather than grepping for them.
+- [ ] **Compare the two recorded ids wherever a vault is resolved and its
+      own config is readable**, refusing a mismatch with a re-register
+      message. Where the vault's files cannot be read, global config's
+      copy stands alone — do not turn `vault remove`'s whole reason for
+      recording the id into a failure.
+- [ ] `id` added to `config.VaultEntry`, written by `init` and `clone`.
+      `pubkey` added alongside it, written by `init` and `identity add`
+      — **not by `clone`**, which holds no identity and derives no public
+      key; see "`clone` does not write `pubkey`". E3's `enroll` is its
+      third writer.
 - [ ] Plaintext marker written into the identities directory at
       creation.
-- [ ] **Decide what the marker does to `RemoveIdentity`'s directory
-      prune, and do it deliberately.** `RemoveIdentity` currently ends
-      with `os.Remove(filepath.Dir(path))` and a comment explaining that
-      it succeeds only when the directory is empty, "which is exactly the
-      wanted semantics." A marker file makes it never empty, so that call
-      silently becomes a no-op and every vault ever removed leaves an
-      identities directory behind holding one marker. Nothing breaks, and
-      that is the problem — it is invisible. Either remove the marker
-      alongside the last identity and keep the prune working, or drop the
-      prune and say the directory is left behind on purpose. Do not leave
-      the existing comment describing behavior that no longer happens.
+- [ ] **`RemoveIdentity` removes the marker with the last identity**, so
+      its trailing `os.Remove(filepath.Dir(path))` — which succeeds only
+      on an empty directory, "which is exactly the wanted semantics" per
+      its own comment — keeps working. Settled in this milestone's
+      Decisions rather than at the keyboard: a marker file otherwise
+      makes the directory never empty, that call silently becomes a
+      no-op, and every vault ever removed leaves a directory behind
+      holding one marker. Nothing breaks, which is precisely the problem.
+      The existing comment stays accurate; do not leave it describing
+      behaviour that no longer happens.
 - [ ] `removeOrphanedIdentity` compares `r.Pubkey` against the recorded
       `pubkey`, and gates deletion behind `app.Prompter.Confirm` with a
       message naming the path. `app.Prompter` is already on the struct;
@@ -235,13 +373,18 @@ clear re-create message rather than misbehaving.
 
 ## Affects later milestones
 
+- **E2** now depends on this milestone, which it did not in an earlier
+  draft. The sealed enrollment payload carries `vault_id` and
+  `OpenEnrollment` refuses a request sealed for a different vault, so
+  the primitive needs `[vault].id` and `Vault.ID` to exist. See the
+  TDD's "The request names the vault it is for".
 - **E3** writes identity files at the new path and relies on the id
   being available from global config without reading the vault. It is
-  also a **fourth writer of `pubkey`** into `[vaults.<name>]`, alongside
-  `init`, `clone`, and `identity add` — an enrolled device that never
-  records its key lands in this milestone's "pubkey absent, so keep the
-  file and say why" branch, which would quietly disable this fix on
-  precisely the devices enrollment creates.
+  also the **third writer of `pubkey`** into `[vaults.<name>]`, alongside
+  `init` and `identity add` — an enrolled device that never records its
+  key lands in this milestone's "pubkey absent, so keep the file and say
+  why" branch, which would quietly disable this fix on precisely the
+  devices enrollment creates.
 - **E4** introduces `recipient approve --device`, which produces exactly
   the relabel case above. E0's `removeOrphanedIdentity` fix must be in
   before E4 ships, or approval creates a new route to an unrecoverable

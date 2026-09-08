@@ -28,6 +28,12 @@ introduced: enroll's name collision reuses `ErrDeviceNameTaken`, so the
 table now says which code that carries instead of leaving the one reused
 error as the only unlisted one.
 
+A third joined on the fourth pass: `ErrEnrollmentWrongVault`, also
+`Conflict`. It sits deliberately between two neighbours it must not be
+folded into — a wrong code (the code worked) and a malformed request (the
+payload is fine, it is simply for another vault) — because all three
+refuse the same command and send the human somewhere different.
+
 **There is still one open-questions register**, and it is the core
 plan's: [open-questions.md](../gage-cli-design/open-questions.md).
 Enrollment's decisions already live there (`Q-ENROLL-VERBS`,
@@ -94,13 +100,20 @@ in prose ambiguous about which plan it meant.
 ### Dependency graph
 
 ```
-E0 (A20) ──┬────────────────> E3 ───> E4
-           │                   ↑       ↑
-E2 (seal) ─┴───────────────────┴───────┤
-                                       │
-E1a (A19) ───> E1b (batch write) ──────┘
+E0 (A20) ──┬──> E2 (seal) ──┬──> E3 ───> E4
+           │                │     ↑       ↑
+           └────────────────┴─────┴───────┤
+                                          │
+E1a (A19) ───> E1b (batch write) ─────────┘
 ```
 
+- **E0 → E2** — **new on the fourth review pass.** The sealed payload
+  carries `vault_id` and the open path refuses a request sealed for a
+  different vault, so the seal cannot be built against a vault that has
+  no id. Only E0's keying half is needed, which is the half that should
+  land first anyway — so this costs no real parallelism, but it does
+  retire "E2 is independent of E0 and can be worked alongside it," which
+  earlier drafts of both documents said.
 - **E0 → E3** — enroll writes and reads identity files, so the path
   scheme has to be settled first. Re-keying them afterwards would mean
   migrating files this feature just created.
@@ -127,7 +140,8 @@ E1a (A19) ───> E1b (batch write) ──────┘
 
 **The E1 pair and E2 are mutually independent** and can be worked in
 either order, or in parallel by two people. E1a and E1b are sequential
-with respect to each other and are one person's work.
+with respect to each other and are one person's work. E2 is no longer
+independent of E0 — see the `E0 → E2` edge above.
 
 ### What this plan corrected after review
 
@@ -238,6 +252,74 @@ and `clone`'s can't-read-anything message is reworded to name `identity
 enroll` rather than only `identity add`, since E3's own test list was
 asserting text that did not exist.
 
+A fourth pass found eight more. Three of them made a milestone
+**unbuildable as written** — a test list asking for something the
+published signature could not express — which is a different failure from
+the previous three passes and worth naming as such: those were wrong
+premises a test would have confirmed, these are contracts that do not
+close.
+
+- **The ID-scoped open had no API.** `OpenEnrollment(codes []string)`
+  takes no requests, so there was no way to express "try this code
+  against *this* request" — which is the entire escape hatch from
+  `ErrEnrollmentTooManyPending`, and which E2 and E4 each have test
+  bullets requiring. The signature is now
+  `OpenEnrollment(requests []PendingRequest, codes []string)`: a broad
+  run passes `PendingEnrollments()`' result and can hit the bound, an
+  ID-scoped run passes one request and cannot. The bound becomes
+  recoverable **by construction** rather than by a flag or a second path.
+- **E1b's extraction could not carry approval's failed-push message.**
+  `commitRecipientList` ends in `pushAfterWrite`, which emits one fixed
+  sentence. E4 has a test requiring a different one — approval's
+  local-versus-remote split is the widest in the tool — and E1b, whose
+  correctness criterion is that nothing observable changes, had no
+  parameter for it. The clause is now E1b's third change, with today's
+  text as the default.
+- **E0 never plumbed the id to the code that needs it.** "Take the id
+  rather than the name" is a change to three path functions whose callers
+  are methods on `*Vault` — and `Vault` is built across `cmd/gage` with
+  no id in it. `Vault` gains an `ID` field, populated from global config.
+  The failure mode without it is the quiet one: a `Vault{}` missing the
+  field yields `TrustCacheDir("")` rather than a compile error.
+
+Two are security properties the design did not have, both cheap now and
+awkward later:
+
+- **A sealed request named no vault.** `request_id` stops a blob being
+  replayed onto another *slot*; nothing stopped it being replayed into
+  another *vault*, and that needs no attacker — one person with two
+  vaults and two codes on screen reaches it by typing the wrong one, and
+  what it grants is vault-wide access to a vault nobody asked for. The
+  payload now carries `vault_id`, compared against E0's `[vault].id`,
+  refused with `ErrEnrollmentWrongVault`. This is what added the
+  `E0 → E2` edge.
+- **Nothing bounded a pending file's size.** `D-ENROLL-SEAL-COST`
+  enumerated three cost inputs — count, claimed factor, written factor —
+  and treated the list as closed. A git writer also chooses how *large*
+  the file is. 16 KiB, checked from the directory entry before any read,
+  and again on the decrypted payload.
+
+And three where a rule existed but was applied in one place of two:
+
+- **The ceiling clamped the filename's expiry and not the seal's.** The
+  sealed copy is the one approval enforces, so the authoritative value
+  was the unbounded one. A sealed `expires` beyond the ceiling is now
+  treated as expired — `ErrEnrollmentExpired`, not a new error and not a
+  malformed payload, because that is exactly what it is.
+- **The vault lock stayed keyed by the local name.** A20 re-keys the
+  identities directory and the trust cache; E0's own test list then makes
+  "one vault registered twice under two local names" a supported state —
+  in which two registrations of one repository get two different lock
+  files, and the per-vault lock stops being mutual exclusion at the
+  moment the milestone blesses the configuration that needs it.
+  `LockFilePath` takes the id too.
+- **Approval committed onto whatever tip it happened to have.** Every
+  approval rewrites every entry, so a stale-tip approval conflicts on
+  *every* entry rather than one. Approval now fetches under its own lock
+  before it writes, refusing a divergence with the ordinary `gage sync`
+  advice — which, unlike on the joining side, is advice the approver can
+  actually act on.
+
 ### One ordering constraint that is easy to miss
 
 E0 has two halves, and they want different timing:
@@ -265,13 +347,21 @@ files.
 |---|---|---|
 | E0 | `[vault].id` in `.gage/config.toml`; `format_version = 2` | Every later reader of that file |
 | E0 | `$GAGE_DATA/identities/<vault-id>/<device>.age` | E3 (create/reuse). E4 never touches local identities — but it still **depends on E0**, for the `removeOrphanedIdentity` fix that `--device` makes reachable |
-| E0 | `pubkey` in global config's `[vaults.<name>]`, written by `init`, `clone`, `identity add` — and by E3's `enroll` | E0's own `removeOrphanedIdentity`; **E3's already-a-recipient check**, which is the second consumer of the same key-not-name comparison; anything else needing one |
+| E0 | `pubkey` in global config's `[vaults.<name>]`, written by `init` and `identity add` — and by E3's `enroll`. **Not by `clone`**, which holds no identity to derive one from | E0's own `removeOrphanedIdentity`; **E3's already-a-recipient check**, which is the second consumer of the same key-not-name comparison; anything else needing one |
+| E0 | `Vault.ID`, populated from global config; `IdentityFilePath`, `TrustCacheDir` **and `LockFilePath`** all keyed by it | Everything with a path or a lock. The lock is the one an earlier draft left name-keyed, which two registrations of one repository turn into two locks on one working tree |
+| E0 | `[vault].id` is comparable against global config's copy, and a mismatch is refused | E2's `vault_id` check, which needs an id it can trust to mean this vault |
 | E2 | `Vault.PendingEnrollments`, `OpenEnrollment`, `ResolveEnrollment` — **built here, not in E4** | E4 wires all three to commands and reimplements none of them |
+| E2 | `OpenEnrollment(requests, codes)` — the scope is a **parameter**, so a broad run and an ID-scoped run are one code path over different inputs | E4, whose `approve <ID>` is the escape hatch from `ErrEnrollmentTooManyPending`; it works because the human narrowed the question, not because a flag relaxed a rule |
+| E2 | `PendingEnrollments` returns **live requests only** — expired ones filtered on read, deleted only by pruning on the next write | `recipient pending` (never shows an expired request as pending) and the 32-request bound (counts live requests, with no write needed first) |
+| E2 | `vault_id` sealed in the payload and compared against `Vault.ID`; `ErrEnrollmentWrongVault` kept distinct from both a wrong code and a malformed payload | E3 seals it, E4 renders the refusal and keeps it out of the retry loop |
+| E2 | `maxPendingRequestBytes` (16 KiB), applied at listing and on the decrypted payload | Everything that reads `pending/`; the fourth cost input `D-ENROLL-SEAL-COST` did not have |
+| E2 | `shippedEnrollmentScryptWorkFactor` **plus a live copy and its own test setter**, mirroring M2's pattern in full rather than half of it | Every later milestone's suite. Independence from the identity factor is preserved by there being two of everything, not by there being no hook |
 | E3 | `Prompter.ConfirmDefaultYes` — the one default-yes question in `gage` | Nothing else today. Recorded because it is a compile-time break on every `Prompter` implementation, which is the point |
 | E1a | `recipient add` always re-encrypts; `ErrCannotGrantFullAccess` exposed as a **separately callable pre-flight pass**, not buried in `AddRecipient` | E4 reuses the error and the pass, but places it differently — after its own confirmation and unlock, still before the lock and M10's prompt |
-| E1b | The **N-recipient form** of `AddRecipient`'s body: a slice of recipients, and the extra paths to delete in the same commit. Unexported; `AddRecipient` becomes its one-recipient caller | E4's `ApproveEnrollments` — one lock, one trust question, one re-encryption pass, one commit, with the approved requests' files removed in it |
+| E1b | The **N-recipient form** of `AddRecipient`'s body: a slice of recipients, the extra paths to delete in the same commit, and the caller's **failed-push clause**. Unexported and **lock-held** — `AddRecipient` keeps its own `withVaultWrite` wrapper | E4's `ApproveEnrollments` — one lock, one trust question, one re-encryption pass, one commit, with the approved requests' files removed in it. Lock-held is what lets approval take the lock itself and fetch inside it; the clause is what lets it say the approval is local-only |
 | E2 | Payload validation on the open path — `device`, `pubkey`, `method`, `request_id` checked before `OpenedRequest` is returned; `ErrEnrollmentMalformedRequest` kept distinct from a wrong code | E4, which renders those fields to the approver directly above the `[y/N]` |
 | E3 | `Vault.Enroll(ctx, …)` — the one enrollment method that takes a context, because its fetch is a hard precondition rather than an opportunistic push | `cmd/gage`; the shape matches `Pull`/`Push`/`Sync` |
+| E3 | `Prompter.ConfirmDefaultYes` is **never answered yes without a human** — the wrapper prompters delegate rather than defaulting | E4's `--script` behaviour, and the "a script is never asked" property "Why there is no `--enroll` flag" rests on |
 | E2 | Enrollment code: generation, Crockford normalization, validation-before-decrypt | E3 displays one, E4 consumes one |
 | E2 | Sealed payload + `<request-id>-<expires-epoch>.age` filename scheme | E3 writes them, E4 reads and prunes them |
 | E2 | ID resolution — exact, substring, candidate list — over the UUID portion only | E4's `approve <ID>` and `deny <ID>` |

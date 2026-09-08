@@ -74,7 +74,7 @@ it was wrong, in two independent ways:
   caused — loud failure is the entire reason `UnlockRequest` is typed.
 
 Neither option is needed, because the code is just an argument.
-`OpenEnrollment(codes []string)` is a pure function of what it's handed,
+`OpenEnrollment(requests, codes)` is a pure function of what it's handed,
 the way `AddRecipient` takes a pubkey. `cmd/gage` collects codes from
 `--code` flags or, when none were given, by prompting with the existing
 `Prompter.Value` — masked, one line, carrying no vault/device/attempt
@@ -202,12 +202,37 @@ the factor is ever raised again.
 #### Seals are written at work factor 14, not 19
 
 ```go
-// enrollmentScryptWorkFactor is the log2 cost a sealed enrollment
+// shippedEnrollmentScryptWorkFactor is the log2 cost a sealed enrollment
 // request is written at. It is deliberately NOT
 // shippedScryptWorkFactor: the two protect different things and are
 // calibrated against different attacks. Do not collapse them.
-const enrollmentScryptWorkFactor = 14
+const shippedEnrollmentScryptWorkFactor = 14
+
+// enrollmentScryptWorkFactor is the live copy, lowered by the test
+// binary through SetEnrollmentWorkFactorForTests and by nothing else —
+// the same shape, and for the same reason, as scryptWorkFactor.
+var enrollmentScryptWorkFactor = shippedEnrollmentScryptWorkFactor
 ```
+
+**Both halves of that pattern are load-bearing, and taking only the first
+is a trap worth naming.** "Its own const, not the mutable hook" is two
+requirements that sound like one. The requirement that matters for
+*calibration* is that enrollment must never **read** `scryptWorkFactor`,
+or a suite lowering the identity factor silently lowers the seal's and
+hides exactly the decision being made here. The requirement that matters
+for *the suite* is that a security parameter deliberately set to two
+seconds of work cannot be paid per operation by a test binary — which is
+why `scryptWorkFactor` exists at all, and the arithmetic is no kinder
+here: E2's own fixtures are 32 seals, and E4 builds pending requests
+through `Enroll` across most of its list, on three platforms.
+
+So enrollment gets the whole pattern rather than half of it: two
+constants, two variables, two setters. Independence is preserved by there
+being two of everything, not by there being no hook — moving either
+factor leaves the other alone, which is a property worth a test in both
+directions. The "is deliberate" and "reaches age" tests assert the
+**shipped** constant, so the number that ships stays pinned however the
+live one is moved.
 
 **Why lower is correct here rather than merely convenient.** A work
 factor buys cost *per guess*, which is what a user-chosen passphrase
@@ -260,7 +285,10 @@ writer put in the directory.
   way through. That is a real escape hatch rather than a shrug:
   `ResolveEnrollment` narrows to one request from the filename alone, so
   an ID-scoped run is one scrypt run per code regardless of how many
-  files are in the directory.
+  files are in the directory. That is a property of `OpenEnrollment`
+  taking the requests to try rather than reading the directory itself:
+  the two runs are one code path over different scopes, so the escape
+  hatch needs no flag and cannot drift from the bounded path.
 - **`deny` and `recipient pending` need no bound.** Neither opens
   anything — deny requires no code, and listing is filename parsing —
   so both keep working normally on a stuffed directory, which is also
@@ -358,8 +386,16 @@ the name*. Three cases, three answers:
 
   **It is answerable without an unlock, which is the only reason it can
   come first.** `[vaults.<name>].pubkey` in global config records this
-  device's public key for this vault, written by `init`, `clone`,
-  `identity add`, and `enroll` itself (A20 / `Q-ORPHAN-BY-NAME`). The
+  device's public key for this vault, written by `init`, `identity add`,
+  and `enroll` itself (A20 / `Q-ORPHAN-BY-NAME`) — the three paths that
+  produce or open a key and therefore *have* one to record. **`clone` is
+  not among them**, and an earlier draft listing it there was wrong in a
+  way worth stating rather than quietly deleting: a clone holds no
+  identity and deliberately refuses to unlock in order to derive a public
+  key, which is the entire subject of "What 'not a recipient yet'
+  actually means". A clone that goes on to accept the enroll offer
+  records the field, but it records it *as enroll*, at the point a key
+  exists. The
   check is that key against the vault's recipient list — **keys, not
   names**, so it is also correct for a device an approver relabeled via
   `approve --device`, where no name collision fires at all and today's
@@ -831,12 +867,17 @@ scrypt (passphrase) recipient, whose plaintext is:
 
 ```toml
 request_id = "7c1e4a90-3b52-4f18-9d6a-8e2f10b4c3d7"
+vault_id   = "b0d4e7f2-91a3-4c60-8e15-3f7a26c8d904"
 device     = "andrews-macbook-pro"
 pubkey     = "age1qz8x2..."
 method     = "passphrase"
 created    = "2026-09-07T10:12:00Z"
 expires    = "2026-09-08T10:12:00Z"
 ```
+
+**`vault_id` binds the request to one vault**, and it is the reason the
+seal cannot be replayed sideways. See "The request names the vault it is
+for" below.
 
 ### The sealed payload is untrusted input
 
@@ -867,6 +908,14 @@ So every field is validated on the way out of `OpenEnrollment`, before
   the treatment `--type` and `--method` already get.
 - **`request_id`** as a UUID, before it is compared against the
   filename's UUID portion.
+- **`vault_id`** as a UUID, and then against this vault's own
+  `[vault].id`. A mismatch is `ErrEnrollmentWrongVault` rather than a
+  malformed payload — the file is well-formed, it is simply not for this
+  vault. See "The request names the vault it is for".
+- **`expires` and `created`** as RFC 3339 timestamps. An `expires` more
+  than the TTL ceiling beyond *now* is not rejected as malformed: it is
+  **treated as already expired**, exactly as the same claim in a filename
+  is. See "A sealed expiry beyond the ceiling is expired, not refused".
 
 A payload that fails any of these is `ErrEnrollmentMalformedRequest`,
 deliberately **not** `ErrEnrollmentCodeWrong`: the code worked. It opened
@@ -881,6 +930,111 @@ from the repository: `.gage/config.toml`'s device names are validated on
 read, filenames are parsed and skipped rather than trusted, and the
 sealed `expires` is preferred over the filename's. The payload is one
 more committed, git-writable surface, and it gets the same treatment.
+
+**A pending file is bounded in size, before it is opened at all.** A
+legitimate sealed request is a few hundred bytes; the payload is six
+short fields. Nothing in `D-ENROLL-SEAL-COST`'s three cost inputs bounds
+how *large* a file in `pending/` is, and a git writer chooses that
+freely. So there is a fourth bound, and it is the cheapest of the four:
+
+- **A file larger than `maxPendingRequestBytes` (16 KiB) is skipped at
+  listing time**, from the directory entry's size alone — before any
+  read, any KDF run, and any allocation. Skipped, not deleted: an
+  oversized file is by definition not something gage wrote, and the
+  conservative direction is the one the filename parser already takes
+  toward strays.
+- **The decrypted payload is read through a limit too**, at the same
+  ceiling, because age's plaintext is not bounded by the ciphertext's
+  size and the only party who can produce one is a code-holder — trusted
+  enough to be granted access, not trusted enough to be handed an
+  unbounded allocation.
+
+16 KiB is roughly fifty times the largest request gage can produce, which
+is the right shape for a bound whose only job is to keep a hostile file
+from being interesting.
+
+### The request names the vault it is for
+
+**`vault_id` is sealed alongside `request_id`, and it closes the one
+replay direction the filename scheme does not.** The `request_id`
+comparison stops a blob being renamed onto a different slot or replayed
+into a fresh one *within a vault*. It says nothing about a blob moved
+*between* vaults, and moving one costs an attacker nothing: the file is
+committed, world-readable to every reader of the vault, and inert
+wherever it lands.
+
+The scenario is not exotic, and it does not need an attacker at all:
+
+- **With one.** Someone with read access to vault X and git write access
+  to vault Y copies a pending request out of X and commits it into Y.
+  They still cannot open it — the code is not theirs — but the approver
+  who *does* hold the code now has a request for that device sitting in
+  two vaults.
+- **Without one.** One person, two vaults, two devices being set up in
+  the same afternoon: two codes on screen, and
+  `gage recipient approve --code …` run against whichever vault is
+  current. Nothing in the request stops the wrong code opening in the
+  wrong vault, and what is granted is vault-wide access to a vault
+  nobody asked for.
+
+The confirmation names the vault, so a careful human catches both. That
+is exactly the kind of load the rest of this document declines to put on
+a human when a field can carry it instead — the same argument that put
+the device name under the seal rather than in the filename.
+
+So `OpenEnrollment` compares the sealed `vault_id` against the opening
+vault's `[vault].id` (A20 / `Q-IDENTITY-VAULT-NAME`) and refuses a
+mismatch with `ErrEnrollmentWrongVault`, which is deliberately three
+things at once:
+
+- **Not `ErrEnrollmentCodeWrong`** — the code worked, and `cmd/gage`'s
+  retry loop must not re-prompt for a code that can never be right here.
+- **Not `ErrEnrollmentMalformedRequest`** — the payload is well-formed
+  and was produced by `gage`. Reporting it as corruption would send a
+  human to look for damage that isn't there.
+- **Its own message**, naming the vault the request *is* for, since that
+  is the whole content of the mistake and the user has the other vault
+  registered under a name gage can print.
+
+**This is the second consumer of A20's vault id**, after the identity and
+trust-cache paths, and it is the reason E2 depends on E0 rather than
+being independent of it: a request cannot name a vault that has no id.
+
+**A device relabeled by `approve --device` is unaffected**, as are every
+other case `D-ENROLL-COLLISIONS` covers. The label was never
+authenticated; the vault id is, and it is not a label — it is the one
+thing about a vault that does not change.
+
+### A sealed expiry beyond the ceiling is expired, not refused
+
+`D-ENROLL-TTL`'s ceiling does two jobs, and until now it did the second
+of them in one place only. It bounds `--ttl` at creation, and it bounds
+the *filename* epoch gage will honor — "an epoch more than the ceiling
+beyond now is treated as already expired and pruned," which is what stops
+a forged `<uuid>-99999999999.age` parking in the tree forever.
+
+The sealed `expires` is the copy approval actually enforces, and the same
+clamp applies to it for the same reason: a hand-sealed payload can claim
+any expiry at all, and the ceiling is the statement of what gage could
+have produced. A sealed `expires` more than the ceiling beyond now is
+therefore **treated as already expired** — `ErrEnrollmentExpired`, the
+error that already exists, because that is precisely what it is.
+
+Two things follow, and both are what makes this a one-line rule rather
+than a new category:
+
+- **It needs no trust in `created`.** The comparison is against *now*,
+  the same reference the filename clamp uses. `created` is
+  attacker-supplied too, so hanging the check on it would be checking one
+  unauthenticated claim against another.
+- **It is not a malformed payload.** Nothing about the file is
+  ill-formed; the claim is simply outside what gage honors, which is the
+  definition of expired. Minting a separate error would split one
+  outcome — "ask for a fresh request" — across two names.
+
+`ErrEnrollmentClockSkew` is unaffected and still covers the opposite
+direction: an expiry already in the past at `created`, which is a wrong
+clock rather than a stale request.
 
 ### The filename: `<request-id>-<expires-epoch>.age`
 
@@ -1588,7 +1742,8 @@ giving up exactly the property this section exists to preserve.
 
 So the order is:
 
-1. `OpenEnrollment(codes)` — no identity held.
+1. `OpenEnrollment(requests, codes)` — no identity held, over the scope
+   `PendingEnrollments` or `ResolveEnrollment` produced.
 2. Device-name collision pre-check (`ErrEnrollmentNameTaken`) — still no
    identity; it reads the recipient list, which is plaintext.
 3. Render what each request claims.
@@ -1600,7 +1755,8 @@ So the order is:
    is what that guarantee was always actually about: the refusal never
    arrives mid-write, on an opaque entry UUID, after a human has answered
    the question about trusting the list.
-7. Take the lock, re-verify each seal under it, then write.
+7. Take the lock, **fetch and fast-forward**, re-verify each seal under
+   it, then write. See "Approval fetches before it commits" below.
 
 The cost of this ordering, stated so it isn't rediscovered as a bug: a
 partially-admitted approver types their passphrase before learning they
@@ -1616,6 +1772,69 @@ report that the unlock was pointless. Concretely, `approve` cannot be a
 blanket `withUnlockedVault` wrapper the way `recipient add` is; it
 unlocks in the middle, after `OpenEnrollment` and the confirmation have
 both succeeded.
+
+### Approval fetches before it commits
+
+**Approval pulls under its own write lock, which `recipient add` does
+not do**, and the reason is a property of approval rather than a general
+improvement to recipient writes.
+
+Every approval rewrites **every entry** ("Approval always re-encrypts").
+A commit that touches every entry, made onto a stale tip, does not
+diverge in one place — it diverges in *all* of them, and every entry
+another device touched meanwhile becomes an entry conflict the approver
+resolves one `[l/r/b]` answer at a time through `gage sync`. That is a
+disproportionate outcome for a command whose whole job is to let one more
+device in, and it is entirely avoidable: catching up first costs one
+fetch.
+
+`recipient add --reencrypt` has the same shape and does not do this. The
+difference is frequency, not mechanism. `--reencrypt` is a rare
+deliberate act; approval is the ordinary way a device joins a vault, so
+its stale-tip case stops being a corner and starts being a Tuesday.
+
+Three constraints, all inherited rather than invented:
+
+- **It pulls inside the lock, via the unexported `v.pull`.** Same trap as
+  enroll, same reason: `Pull` takes the lock itself via `underWriteLock`
+  and `vaultlock` is not re-entrant, so calling it from inside approval's
+  lock blocks against itself until the acquisition times out and reports
+  contention against this very process. See D-ENROLL-REMOTE's "Which
+  means enroll cannot reach the network through the existing public sync
+  entry points" — the paragraph is about enroll and the mechanism is not.
+- **A divergence refuses before anything is written, with the *ordinary*
+  advice.** `v.pull` reports it with a nil error and `SyncReport.Diverged`
+  set, so it is checked for rather than caught. Unlike enroll, no new
+  error is needed and none should be minted: an approver can decrypt, so
+  `gage sync` is exactly the command that resolves this for them.
+  `ErrEnrollmentDiverged` exists because that advice is *wrong* for a
+  device with no key, which is not the situation here.
+- **An unreachable remote does not fail the command.** This is where
+  approval and enroll genuinely differ. An unpublished enrollment request
+  accomplishes nothing, so enroll refuses; an approval that lands locally
+  is real work — the vault is re-encrypted and the recipient is listed —
+  and refusing it because the network is down would be the "warn and
+  proceed" rule broken in the direction it exists to prevent. So a failed
+  fetch warns and the approval proceeds, and the existing failed-push
+  warning below covers what the human then has to do.
+
+**One consequence to expect rather than rediscover: the fetch can resolve
+the request out from under the run.** Another device may have approved or
+denied it in the window between `OpenEnrollment` and the lock. The
+re-verification under the lock finds no file and the run reports
+`ErrEnrollmentNoSuchRequest` — the request is genuinely no longer
+pending, which is what that error already says — with a message naming
+the likely cause rather than implying the ID was mistyped. Nothing is
+committed, and the state is correct in both directions: if it was
+approved elsewhere, the device already has access; if it was denied, it
+should not be granted any.
+
+Note this window pre-dates the fetch rather than being created by it —
+the same swap the re-verification under the lock already exists to catch
+("Otherwise a request could be swapped between the moment it was shown to
+the human and the moment its key was written"). What the fetch changes is
+how often it happens, which is the argument for naming the outcome
+instead of leaving it to be discovered as an internal error.
 
 One consequence to expect rather than be surprised by: the approver may
 answer **two** different `[y/N]` questions. The first is "approve this
@@ -1941,8 +2160,20 @@ gage recipient approve [ID...] --code CODE [--code CODE ...]
     request is cleared, nothing is re-encrypted, and gage reports that
     the device already had access.
 
-    Refuses an expired request, a request whose sealed request_id does
-    not match its filename's UUID portion, and a code that opens
+    Fetches and fast-forwards under its own write lock before it
+    re-verifies and writes, because an approval rewrites every entry and
+    one made onto a stale tip conflicts on every entry. A divergence
+    refuses before anything is written, with the ordinary `gage sync`
+    advice — correct here, unlike on the joining side. An unreachable
+    remote warns and proceeds, since an approval that lands locally is
+    real work. See "Approval fetches before it commits".
+
+    Refuses an expired request — including one whose sealed expires
+    claims more than the TTL ceiling beyond now, which is treated as
+    expired rather than as corruption — a request whose sealed request_id
+    does not match its filename's UUID portion, a request sealed for a
+    different vault (ErrEnrollmentWrongVault, naming the vault it is
+    actually for), and a code that opens
     nothing. A device-name collision is refused before the lock, before
     any unlock, and before the confirmation. An approver who cannot
     itself read every entry is refused before the lock and before M10's
@@ -2022,8 +2253,14 @@ type PendingRequest struct {
 // OpenedRequest is a PendingRequest whose seal a code has opened. Every
 // field here is authenticated — and validated: authenticated says the
 // bytes are unaltered, not that they are well-formed, so device, pubkey,
-// method and request_id are all checked before one of these is returned.
-// See "The sealed payload is untrusted input".
+// method, request_id, vault_id and the two timestamps are all checked
+// before one of these is returned.
+//
+// There is deliberately no VaultID field. The sealed value is compared
+// against this vault's own id and the request refused on a mismatch, so
+// every OpenedRequest that exists is one for this vault — a field would
+// be a constant the caller could only re-check. See "The sealed payload
+// is untrusted input" and "The request names the vault it is for".
 type OpenedRequest struct {
     ID      string
     Device  string
@@ -2077,6 +2314,18 @@ type AmbiguousRequestError struct {
 // want to cancel. Enroll's fetch is a hard precondition, which puts it
 // on the first list.
 func (v *Vault) Enroll(ctx context.Context, device string, ttl time.Duration, p Prompter) (EnrollmentRequest, error)
+//
+// PendingEnrollments returns the *live* requests: one whose filename
+// epoch is in the past, or more than the ceiling beyond now, is filtered
+// out rather than returned. Filtered, not deleted — listing is a read,
+// takes no lock and writes nothing, so removing the file is pruning's
+// job and rides the next write (see "Expiry, revocation, and pruning").
+//
+// That split is load-bearing in two places. `recipient pending` must not
+// present an expired request as pending, and `D-ENROLL-SEAL-COST`'s
+// 32-request bound counts what this returns — so ordinary neglect can
+// never look like an attack, whether or not a write has come along to
+// prune yet.
 func (v *Vault) PendingEnrollments() ([]PendingRequest, error)
 
 // ResolveEnrollment applies the resolution order in "An ID always means
@@ -2085,7 +2334,23 @@ func (v *Vault) PendingEnrollments() ([]PendingRequest, error)
 // ErrEnrollmentNoSuchRequest. Both approve and deny go through it, so
 // there is one resolution rule rather than one per verb.
 func (v *Vault) ResolveEnrollment(id string) (PendingRequest, error)
-func (v *Vault) OpenEnrollment(codes []string) ([]OpenedRequest, error)
+
+// OpenEnrollment tries each code against each request in the scope it is
+// handed, and returns the ones that opened.
+//
+// The scope is a parameter rather than "every pending request" because
+// that is what makes `ErrEnrollmentTooManyPending`'s escape hatch work
+// *by construction* rather than by a second code path. A broad run
+// passes PendingEnrollments()' result and is refused when that exceeds
+// the bound; an ID-scoped run passes the one PendingRequest that
+// ResolveEnrollment returned, and one request never exceeds it. Neither
+// caller opts into or out of the bound — they differ only in what they
+// ask about, which is the difference the human expressed by typing an ID.
+//
+// It takes no Identity: opening is keyed by the code. That signature is
+// what makes the late unlock possible, so it is fixed here rather than
+// arrived at in E4.
+func (v *Vault) OpenEnrollment(requests []PendingRequest, codes []string) ([]OpenedRequest, error)
 func (v *Vault) ApproveEnrollments(approvals []Approval, ident *Identity) (ApprovalResult, error)
 func (v *Vault) DenyEnrollment(id string, p Prompter) error
 ```
@@ -2151,6 +2416,18 @@ var ErrEnrollmentDiverged = errors.New("gage: this vault's local and remote hist
 // input".
 var ErrEnrollmentMalformedRequest = errors.New("gage: this enrollment request's sealed contents are malformed")
 
+// Raised when a code opens a well-formed request sealed for a *different*
+// vault — the sealed vault_id does not match this vault's [vault].id.
+//
+// Distinct from both its neighbours on purpose. Not ErrEnrollmentCodeWrong:
+// the code worked, and cmd/gage's retry loop would otherwise re-prompt for
+// a code that cannot be right here however carefully it is typed. Not
+// ErrEnrollmentMalformedRequest either: the payload is well-formed and gage
+// produced it, so reporting corruption would send a human looking for
+// damage that isn't there. The message names the vault the request is for.
+// See "The request names the vault it is for".
+var ErrEnrollmentWrongVault = errors.New("gage: this enrollment request is for a different vault")
+
 // Raised when a request's device name — the one it was sealed with — now
 // labels a different recipient. Recoverable by the approver alone, via
 // --device; the key was authenticated, the label was not.
@@ -2204,6 +2481,7 @@ a non-obvious home:
 | `ErrEnrollmentRemoteUnreachable` | `Unreachable` | The code that already exists for exactly this |
 | `ErrEnrollmentDiverged` | `Conflict` | Vault state a human resolves — the same answer the base design gives divergence everywhere else |
 | `ErrEnrollmentMalformedRequest` | `Conflict` | A file in the vault a human must look at; never a usage mistake, and never a retryable code |
+| `ErrEnrollmentWrongVault` | `Conflict` | Resolvable in place, by approving against the vault the request names — the same shape as `ErrEnrollmentNameTaken`'s `--device`, and never a retryable code |
 | `ErrDeviceNameTaken` (pre-existing) | `Conflict` | Enroll reuses `AddIdentity`'s error rather than minting a second one; listed so this feature's codes are all in one place |
 | `ErrEnrollmentNoSuchRequest` | `NotFound` | Matches the entry resolver's answer to the same question |
 | `ErrEnrollmentTooManyPending` | `Conflict` | Vault state a human resolves, in place, by naming an ID — the same shape as `ErrEnrollmentNameTaken`'s `--device`, and unlike the `Usage` rows, which reject a command line before anything is read |

@@ -53,7 +53,7 @@ validate → `withVaultWrite` (lock + dirty-tree reset) →
 append **one** recipient → `commitRecipientList` (one commit) →
 `noteRecipientsReviewed`.
 
-Two things change, and only two:
+Three things change, and only three:
 
 - **The append takes a slice**, and the duplicate check runs over all of
   them — including against each other, so a batch containing the same
@@ -61,6 +61,32 @@ Two things change, and only two:
 - **The commit takes extra paths to delete**, alongside the recipient
   files and the entries it rewrites. E4 passes the approved requests'
   files; nothing else has a use for it yet.
+- **The commit takes the failed-push clause its caller wants said.**
+  This is the third change, and an earlier draft of this milestone
+  omitted it — which would have left E4 unable to pass a test on its own
+  list. `commitRecipientList` ends by calling
+  `v.pushAfterWrite(ident.warnTo())`, which emits one fixed sentence:
+  *"the write is committed locally but not pushed."* That is right for
+  `recipient add` and much too thin for approval, whose local-versus-
+  remote split is the widest in the tool — locally the vault is
+  re-encrypted, the recipient is listed and the request file is gone; on
+  the remote none of it happened, the request is still pending, and the
+  joining device is still locked out with `gage sync` reporting nothing
+  wrong. The TDD spells that message out under "Approval's failed push
+  needs the same treatment"; this is the parameter that lets it be said.
+
+  Shape it as a caller-supplied clause with today's text as the default,
+  not as a second push path: `pushAfterWrite` keeps its signature and
+  gains a sibling taking the clause, the divergence branch is untouched
+  (`report.Summary()` is already the right thing in both cases), and
+  `recipient add`/`recipient remove` pass nothing and behave exactly as
+  they do now.
+
+  With three parameters arriving at once, `commitRecipientList` is past
+  the point where positional arguments read well. Bundling them into one
+  options struct is fine and probably better; what must not happen is the
+  extra paths and the clause reaching the commit through two different
+  mechanisms because they were added in two sittings.
 
 Everything else stays where it is. In particular the lock, the reset,
 `requireRecipientsInSync`, the trust question and the cache regeneration
@@ -127,6 +153,18 @@ its second caller needs.
       recipient files and the re-encrypted entries. Assert the mechanism
       with an ordinary file rather than a pending request, so this
       milestone's tests do not depend on a feature two milestones away.
+- [ ] **A caller-supplied failed-push clause reaches the warning**, and
+      the default is today's text. Two assertions: a call passing a
+      clause warns with it, and `AddRecipient` — passing none — produces
+      the byte-for-byte message M9 already produces. Injected fake
+      `RemoteSyncer`, not a real failure. E4 is what needs the first
+      half; the second half is what keeps this milestone's "nothing
+      observable changed" claim true.
+- [ ] **The divergence branch is untouched.** A push that fails as a
+      divergence still warns with `report.Summary()` whatever clause was
+      supplied — the clause describes what did not get published, not
+      what went wrong, and a diverged push has its own established
+      sentence.
 - [ ] **A duplicate *within* the batch is refused** — the same pubkey
       twice, or two entries claiming one device name — before anything is
       written. The existing check only ever compared against the recipient
@@ -166,14 +204,26 @@ its second caller needs.
 - [ ] **Extract the N-recipient, lock-held body** of `AddRecipient` per
       "What the shape actually is": the append takes a slice, the
       duplicate check covers the slice and the existing list, and
-      `commitRecipientList` gains the extra paths to delete in the same
-      commit.
+      `commitRecipientList` gains both the extra paths to delete in the
+      same commit and the failed-push clause.
+
+      **Lock-held is the word that matters**, and E4 depends on it.
+      `AddRecipient` keeps its own `withVaultWrite` wrapper and the
+      extracted body assumes the lock is already held — which is what
+      lets `ApproveEnrollments` take the lock itself, fetch inside it,
+      re-verify the seals, and only then call this. An extraction that
+      swallowed the wrapper would force approval's fetch either outside
+      the lock or into `recipient add`, and both are wrong.
 - [ ] `AddRecipient` becomes the one-recipient caller. Its signature and
-      behavior are unchanged; it wraps the value in a one-element slice
-      and passes no extra paths.
+      behavior are unchanged; it wraps the value in a one-element slice,
+      passes no extra paths, and passes no push clause so the default
+      stands.
 - [ ] **Unexported.** E4's `ApproveEnrollments` is its only other caller
       and lives in the same package, so there is no reason to widen the
       library's surface for it.
+- [ ] Give `pushAfterWrite` a sibling taking the caller's failed-push
+      clause, with the existing function delegating to it and keeping its
+      current text. The divergence branch stays as it is.
 - [ ] Keep `commitRecipientList`'s all-or-nothing property intact — the
       working tree is written first, then everything lands in exactly one
       commit, and a failure anywhere before that leaves HEAD alone. If
@@ -195,3 +245,10 @@ that is the whole claim.
   passes, N commits — which is neither the single atomic commit approval
   is specified to produce nor a place to delete the approved requests'
   files from.
+
+  Three specific things E4 consumes, each of which fails a named E4 test
+  if it is missing here: the **slice** (one commit for a batch), the
+  **extra paths** (the request files cleared in that commit), and the
+  **push clause** (approval's local-only warning). The third is the one
+  an earlier draft dropped, and its absence is invisible until E4's
+  failed-push test runs.

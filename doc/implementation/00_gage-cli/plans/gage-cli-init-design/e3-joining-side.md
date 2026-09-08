@@ -24,7 +24,10 @@ approve one yet — that is E4 — so the end state is a request sitting in
 - **E0** — identity files live at the id-keyed path; the id is available
   from global config; and `[vaults.<name>].pubkey` exists, which the
   already-a-recipient check reads. Without that field the check silently
-  degrades to the name comparison it was added to replace.
+  degrades to the name comparison it was added to replace. Note that
+  `clone` is **not** a writer of `pubkey` — it holds no identity to
+  derive one from — so a freshly cloned vault legitimately lands in the
+  "pubkey absent" branch until this milestone's `enroll` records one.
 - **M8a** — fetch/push and the `RemoteSyncer` seam.
 - **M2** — `CreateIdentity` and its create-or-reuse behavior.
 
@@ -66,6 +69,31 @@ reader of an earlier draft would not expect:
   transcript *and* an unchanged `Prompter`, which `Confirm`'s
   documented default-no rule makes impossible. This milestone owns the
   new method and its implementations.
+
+  **What the non-interactive prompters do with it is part of the
+  decision**, and an earlier draft left it unstated while naming only
+  three implementations to write. The count is the smaller error: the
+  script-mode prompters — `envPrompter`, `refusingPrompter`,
+  `noCreatePrompter` (`cmd/gage/script.go`) and `assumeYesPrompter` —
+  all *embed* `gage.Prompter`, so they inherit the new method silently
+  rather than breaking the build. "Every implementation gains it as a
+  compile-time break" is therefore true of `terminalPrompter` and the
+  bare test fakes, and false of exactly the wrappers whose answer matters
+  most.
+
+  **Resolved: a default-yes question is never answered yes without a
+  human.** The wrappers delegate, as they do for `Confirm`, and what they
+  delegate *to* under `--stdin` or with no terminal is a prompter that
+  cannot ask — so the offer is never reached. That is not an accident to
+  rely on, though, so it is stated as a rule with a test under it: the
+  default belongs to the *rendering* of the question, not to the absence
+  of someone to answer it. A wrapper that returned `true` because the
+  question's default is yes would turn "a script is never asked" into "a
+  script always says yes", which is the one outcome "Why there is no
+  `--enroll` flag" spends a section ruling out.
+
+  `assumeYesPrompter` delegates for the same reason it delegates
+  `Confirm`: `--yes` answers `ConfirmRecipientChange` and nothing else.
 - **"Already a recipient" is a success, not a name collision.** It is
   checked by public key, before the name check, using E0's
   `[vaults.<name>].pubkey`. The old behavior told such a device to pass
@@ -218,6 +246,15 @@ A second review pass settled three more, all in the TDD now:
       an existing default-no question — `recipient remove` of this
       device's own key — asserting a bare Enter still declines, so the
       new method cannot have been added by changing the old one.
+- [ ] **No non-interactive prompter answers `ConfirmDefaultYes` with
+      yes.** Cover the wrappers directly — `assumeYesPrompter` (so
+      `--yes` cannot reach a question it was never meant to answer),
+      `noCreatePrompter` and `refusingPrompter` — rather than only
+      covering `clone`, since these embed `gage.Prompter` and therefore
+      gain the method *without* a compile error to prompt anyone to think
+      about it. The failure being ruled out is a wrapper that returns
+      `true` because the question defaults to yes, which silently turns
+      "a script is never asked" into "a script always agrees".
 - [ ] Answering `n` leaves the vault cloned, no identity written,
       nothing pushed — and a later `identity enroll` still works.
 - [ ] A **non-interactive** `clone` never prompts, never writes an
@@ -332,6 +369,33 @@ merge outcome — unlike a union of two recipient lists. Nothing tested it.
 - [ ] **Neither merged request grants anything** — inertness holds across
       a merge, which is what makes the union safe rather than merely
       convenient.
+- [ ] **A divergence that involves `pending/` is reported honestly.**
+      The union argument covers the *merge*; nothing covered what
+      `SyncReport` says on the way there. `ConflictKind()` returns
+      `ConflictEntries` for any conflicting path that is not one of the
+      two recipient files (`internal/gage/remotesync.go`), and
+      `resolveConflicts` then calls `entryIDFromPath` on every conflict
+      and fails outright on anything that is not an entry
+      (`internal/gage/syncresolve.go`) — so a conflict under `pending/`
+      would be classified as an entry conflict and then refuse to
+      resolve, leaving `gage sync` with no way through.
+
+      Assert the reachable case rather than a contrived one: two devices
+      that both resolve the same request (one approves, one denies)
+      delete the same path, which git merges without a conflict. If that
+      is genuinely the only way `pending/` can appear in a divergence,
+      the test says so and pins it; if a conflicting path can be
+      constructed, this milestone is where it stops being a surprise
+      inside M8b's resolver.
+
+**The request names the vault it is for**
+
+- [ ] **The published request carries this vault's `[vault].id`**, and
+      opening it in that vault succeeds. E2 proves the refusal; this
+      proves the field is actually populated from the vault being
+      enrolled into rather than left zero — a request sealed with an
+      empty `vault_id` fails E2's validation, so this is the bullet that
+      catches enroll never setting it.
 
 ## Implementation
 
@@ -405,12 +469,20 @@ merge outcome — unlike a union of two recipient lists. Nothing tested it.
       D-ENROLL-COLLISIONS.
 - [ ] `Prompter.ConfirmDefaultYes(prompt string) (bool, error)` added to
       the interface, and implemented on the terminal prompter (rendering
-      `[Y/n]`, bare Enter accepting), the test fake, and
-      `assumeYesPrompter` (delegating, exactly as it delegates `Confirm`
-      — `--yes` still answers only `ConfirmRecipientChange`). Clone's
+      `[Y/n]`, bare Enter accepting) and on the bare test fakes. Clone's
       offer is its one caller; every other yes/no in `gage` stays on
       `Confirm`. Reasoning in the TDD's "Clone's offer needs a
       default-yes confirm".
+
+      **The wrapper prompters need attention precisely because the
+      compiler will not ask for it.** `assumeYesPrompter`,
+      `envPrompter`, `refusingPrompter` and `noCreatePrompter` all embed
+      `gage.Prompter` and so acquire the method by promotion the moment
+      it is added. Delegation is the right answer for each — the same
+      answer they give `Confirm` — but it has to be a decision that was
+      made, not one that happened. Grep for `gage.Prompter` embedded as a
+      field before calling this done; the count is larger than the three
+      an earlier draft named.
 - [ ] `cmd/gage`'s `identity enroll`, registered with a `Short`, the
       `Identity` group, and both-mode availability, and carrying
       `--use`, `--device`, and `--ttl`.
@@ -419,9 +491,22 @@ merge outcome — unlike a union of two recipient lists. Nothing tested it.
       makes it and `enroll` identical up to their second clause — the
       listing's only signal that one is a superset of the other — so it
       lands with `enroll`, not later. (`recipient list`'s is E4's.)
-- [ ] Enroll records this device's `pubkey` (and `device`/`method`) into
-      global config's `[vaults.<name>]`, the same as `identity add` —
-      see E0's note on the fourth writer.
+- [ ] **`cmd/gage`'s `identity enroll` handler** records this device's
+      `pubkey` (and `device`/`method`) into global config's
+      `[vaults.<name>]` — the same split `identity add` already uses, and
+      not something `Vault.Enroll` does itself. `AddIdentity`'s own
+      comment states the rule: "The local half — recording device/method
+      in global config — stays in `cmd/gage`, exactly the split `gage
+      init` already uses" (`internal/gage/identity_add.go`). An earlier
+      draft of this bullet put the write in the library, which would have
+      made enroll the one identity verb that reaches across that line.
+      `EnrollmentRequest.Pubkey` is returned precisely so the handler has
+      it. See E0's note on the third writer.
+
+      Reading global config from the library is a different matter and is
+      already precedented (`unlock.go` does it), which is what lets
+      `Vault.Enroll`'s already-a-recipient check read `pubkey` without
+      breaking the same rule.
 - [ ] Clone's post-success branch: `Prompter.ConfirmDefaultYes` when
       interactive and this device holds no identity; the reworded message
       otherwise. **Not `Confirm`** — that is the default-no method, and
@@ -448,6 +533,15 @@ merge outcome — unlike a union of two recipient lists. Nothing tested it.
 
 Every test above green on all three platforms. A device can publish a
 request and print a code; nothing approves it yet.
+
+**Plus one documentation change that has no other home:**
+[A22](../gage-cli-design/open-questions.md#a22) folds `.gage/pending/`
+into the *base* design doc's on-disk layout, and is written to apply
+"when E3 lands" — this is that milestone. The layout diagram gains the
+directory, along with the two properties A22 says belong in the base doc
+rather than only here: it is created lazily and its absence means zero
+requests, and it is inert. Left unowned this is exactly the stale-prose
+failure E1a's `--reencrypt` grep exists to prevent, one document over.
 
 ## Affects later milestones
 

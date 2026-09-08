@@ -23,9 +23,15 @@ format: the risky part is proven before anything is layered on it.
 - **M2** — age encrypt/decrypt, and the scrypt passphrase recipient the
   seal uses.
 - **M0** — atomic writes, the exit-code taxonomy.
+- **E0** — `[vault].id` and `Vault.ID`. New since an earlier draft, which
+  called E2 independent of it: the sealed payload now carries `vault_id`
+  and the open path refuses a request sealed for a different vault, so
+  the primitive cannot be built against a vault that has no id. Only E0's
+  *keying* half is needed, which is the half that should land first
+  anyway.
 
-E2 is independent of E0, E1a and E1b, and can be worked in parallel with
-any of them.
+E2 is independent of E1a and E1b and can be worked in parallel with
+either.
 
 ## Design references
 
@@ -39,6 +45,13 @@ any of them.
 - [`D-ENROLL-TTL`](../../tdds/gage-cli-init-design.md) — the ceiling and
   the two jobs it does
 - ["The load-bearing invariant: `pending/` is inert"](../../tdds/gage-cli-init-design.md)
+- ["The sealed payload is untrusted input"](../../tdds/gage-cli-init-design.md)
+  — what validation runs before `OpenedRequest` exists, and the size
+  bound that runs before anything is read
+- ["The request names the vault it is for"](../../tdds/gage-cli-init-design.md)
+  — the replay direction `request_id` does not cover
+- ["A sealed expiry beyond the ceiling is expired, not refused"](../../tdds/gage-cli-init-design.md)
+  — the clamp applied to the copy approval actually enforces
 
 ## Decisions
 
@@ -69,12 +82,56 @@ each is in the TDD rather than restated here:
   `unlock.go` already does for identity files. Not doing it is a hang,
   not a slowdown.
 - Seals are **written** at factor 14, not the identity file's 19,
-  licensed explicitly by the code being 80 generated bits. It gets its
-  own const and its own "is deliberate" test, following
-  `shippedScryptWorkFactor`'s pattern — and must not read the mutable
-  `scryptWorkFactor` test hook, or a suite that lowers the identity
-  factor silently lowers this one too.
+  licensed explicitly by the code being 80 generated bits. It must not
+  read the mutable `scryptWorkFactor` test hook, or a suite that lowers
+  the identity factor silently lowers this one too — and it follows
+  `shippedScryptWorkFactor`'s pattern **in full**: shipped const, live
+  copy, and its own setter. An earlier draft of this bullet asked for the
+  const alone, which is half the pattern and would have made the suite
+  pay two seconds per seal; see the implementation list.
 - One code-trying run attempts at most **32 live requests**.
+
+**Four more decisions landed after this doc was first written**, all in
+the TDD, and the first of them changes a signature this milestone
+publishes:
+
+- **`OpenEnrollment` takes the requests to try, not just the codes.** An
+  earlier draft's `OpenEnrollment(codes []string)` had no way to express
+  an ID-scoped run — which is the entire escape hatch from
+  `ErrEnrollmentTooManyPending`, and which two bullets in the test list
+  below require. The signature is
+  `OpenEnrollment(requests []PendingRequest, codes []string)`, and the
+  bound applies to whatever scope it is handed. A broad run passes
+  `PendingEnrollments()`' result and can exceed the bound; an ID-scoped
+  run passes the one request `ResolveEnrollment` returned and never can.
+  Neither caller opts in or out — the escape hatch works by construction
+  rather than by a flag or a second path.
+- **The request names the vault it is for.** `vault_id` is sealed
+  alongside `request_id` and compared against this vault's `[vault].id`,
+  refusing a mismatch with `ErrEnrollmentWrongVault`. The `request_id`
+  check stops a blob being replayed onto another *slot*; nothing stopped
+  it being replayed into another *vault*, which needs no attacker at all
+  — one person with two vaults and two codes on screen reaches it by
+  typing the wrong one. See the TDD section of that name.
+- **A pending file is bounded in size before it is opened.**
+  `D-ENROLL-SEAL-COST` bounds count and work factor; it does not bound
+  how large a file a git writer puts in `pending/`. 16 KiB, checked from
+  the directory entry, plus the same limit on the decrypted payload.
+- **The ceiling clamps the sealed expiry too, not only the filename's.**
+  The sealed copy is the one approval enforces, so clamping the filename
+  alone left the authoritative value unbounded. An `expires` more than
+  the ceiling beyond *now* is `ErrEnrollmentExpired` — the existing
+  error, because that is exactly what it is, and compared against now
+  rather than `created` since both are attacker-supplied.
+
+**And one clarification that is easy to read past**, because it decides
+where two other rules live: `PendingEnrollments` returns **live requests
+only** — expired-by-filename and beyond-ceiling ones are *filtered*, not
+deleted. Deleting is pruning's job and rides the next write, because
+listing is a read that takes no lock. That split is what makes both
+"`recipient pending` never shows an expired request as pending" and "the
+32-request bound counts live requests" true without a write having to
+have come along first.
 
 ## Tests (write first)
 
@@ -120,20 +177,34 @@ each is in the TDD rather than restated here:
       first part of `D-ENROLL-SEAL-COST`, and it is worth writing early:
       **one** hostile file is enough, no volume required, and the symptom
       is a process that appears to have stopped rather than an error.
-- [ ] **Seals are written at factor 14**, asserted against the constant
-      the way `TestScryptWorkFactorIsDeliberate` asserts the identity
-      file's — a number this deliberate should fail a test when someone
-      changes it, not drift silently.
+- [ ] **Seals are written at factor 14**, asserted against the *shipped*
+      constant the way `TestScryptWorkFactorIsDeliberate` asserts the
+      identity file's — a number this deliberate should fail a test when
+      someone changes it, not drift silently.
 - [ ] **The two work factors are independent.** Move the identity factor
       with `SetScryptWorkFactorForTests` and assert a sealed request's is
-      unchanged. This is the test that stops the two being collapsed into
-      one const later, which would recalibrate a security parameter
-      through a test-only hook.
+      unchanged; then move the enrollment factor with its own setter and
+      assert the identity file's is unchanged. Both directions, because
+      the failure being ruled out is the two being collapsed into one
+      const later — which would recalibrate a security parameter through
+      a test-only hook.
+- [ ] **The shipped enrollment factor is what a fresh seal actually
+      reaches age with**, in the spirit of
+      `TestScryptWorkFactorReachesAge`: restore the shipped value, seal
+      one request, and read the factor back out of the blob's own scrypt
+      stanza. The const being right is not the same claim as the const
+      being wired up.
+- [ ] **Only the setter writes the live enrollment factor.** M2 pins this
+      for the identity factor with an AST walk over the package
+      (`TestOnlySetScryptWorkFactorForTestsAssignsIt`); the enrollment
+      factor is a security parameter of the same kind and gets the same
+      guard, extended rather than duplicated.
 - [ ] **A wrong code against a full directory is fast.** Not a
       benchmark — assert the honest-typo path finishes well inside a
-      generous ceiling with 32 requests pending, at the real factor. This
-      is the case the factor was chosen for, and it regresses invisibly
-      if someone later "hardens" the seal back to 19.
+      generous ceiling with 32 requests pending, **at the shipped factor,
+      restored for the duration of this one test**. This is the case the
+      factor was chosen for, and it regresses invisibly if someone later
+      "hardens" the seal back to 19.
 
       **This is the one wall-clock assertion in the plan, so give it
       room.** At factor 14 the fixtures alone are 32 seals (~2s), and the
@@ -142,17 +213,27 @@ each is in the TDD rather than restated here:
       which is what the test is actually for. A tight bound here buys
       nothing and costs a flaky suite, which this project's convention of
       injected seams over timing exists to avoid.
-- [ ] **More than 32 live requests is refused** with
+- [ ] **More than 32 requests in the scope is refused** with
       `ErrEnrollmentTooManyPending` at `exitcode.Conflict`, **before any
       decryption**, naming the ID form.
 - [ ] **The bound counts live requests only**: a directory of 40 where
-      most have expired prunes below the bound and proceeds normally.
+      most have expired by filename yields a `PendingEnrollments` result
+      below the bound, and a broad open over it proceeds normally.
       Expired files must never consume the budget, or ordinary neglect
-      starts to look like an attack.
-- [ ] **An ID-scoped run ignores the bound** and costs one attempt per
-      code. Build a directory well past 32 and assert resolution by ID
-      still works — this is what makes the refusal recoverable rather
-      than a wall.
+      starts to look like an attack. Assert this **without a write having
+      run** — the filtering is what makes it true, not the pruning.
+- [ ] **An ID-scoped run passes the bound by construction.** Build a
+      directory well past 32, resolve one request by ID, hand
+      `OpenEnrollment` that one-element slice, and assert it opens with
+      one decryption attempt per code. This is what makes the refusal a
+      detour rather than a wall — and note there is no flag involved: the
+      two runs differ only in the scope they were handed.
+- [ ] **The scope is honoured, not treated as a hint.** With two valid
+      requests in `pending/` and a code that opens one of them, a run
+      scoped to the *other* request opens nothing and returns
+      `ErrEnrollmentCodeWrong`. A scope parameter that were quietly
+      widened back to "everything pending" would still pass every bullet
+      above, and would silently reintroduce the unbounded path.
 - [ ] A request whose sealed `request_id` disagrees with its filename's
       UUID portion is refused with `ErrEnrollmentIDMismatch`. Changing
       only the **epoch** portion is not a mismatch.
@@ -186,6 +267,49 @@ field, the way both a git writer and a code-holder can.
       the bound in `D-ENROLL-SEAL-COST` exists to prevent by a different
       route.
 
+**The request names the vault it is for**
+
+- [ ] **A request sealed for vault A does not open in vault B.** Seal one
+      against A's id, drop the file into B's `pending/`, and open it in B
+      with the correct code: `ErrEnrollmentWrongVault` at
+      `exitcode.Conflict`. Construct it as a file copy, which is exactly
+      how it happens — the blob is committed and readable to everyone who
+      can read A.
+- [ ] It is **not** `ErrEnrollmentCodeWrong`, asserted explicitly. A
+      retry loop keyed on wrong-code would otherwise sit re-prompting for
+      a code that is already correct, against a file no code can make
+      right in this vault.
+- [ ] It is **not** `ErrEnrollmentMalformedRequest` either. The payload
+      is well-formed and gage wrote it; reporting corruption would send a
+      human looking for damage that does not exist. Three errors, three
+      different next actions.
+- [ ] A sealed `vault_id` that is **absent or not a UUID** is
+      `ErrEnrollmentMalformedRequest` — that one genuinely is a payload
+      gage could not have produced.
+- [ ] The error **names the vault the request is for**, not just the
+      mismatch. The id is opaque; the user has the other vault registered
+      under a name gage can look up and print, and "this request is for
+      \"work\", not \"personal\"" is the whole content of the mistake.
+- [ ] **Round-tripping within one vault is unaffected**, which is the
+      regression this could cause: every seal-then-open test above still
+      passes with the field present.
+
+**A pending file is bounded before it is opened**
+
+- [ ] **A file over 16 KiB in `pending/` is skipped**, from its size
+      alone — asserted with decrypt call-count instrumentation, so the
+      claim is "never opened" rather than "opened and rejected". Skipped,
+      not deleted: an oversized file is not something gage wrote, and the
+      filename parser's posture toward strays is the one to match.
+- [ ] **An oversized file does not poison the run**: one 20 MiB file and
+      one good request in `pending/`, and the good one still opens.
+- [ ] **The decrypted payload is limited too.** Seal a multi-megabyte
+      payload with a known code and assert opening it refuses on the
+      limit rather than allocating it. The party who can produce this is
+      a code-holder — trusted enough to be granted access, not trusted
+      enough to be handed an unbounded allocation — so the ciphertext
+      bound alone does not cover it.
+
 **Expiry and the filename**
 
 - [ ] The file is named `<request-id>-<expires-epoch>.age`, and the
@@ -207,6 +331,17 @@ field, the way both a git writer and a code-holder can.
 - [ ] **A filename epoch more than the ceiling beyond now is pruned as
       already expired** — the clamp that stops a forged
       `<uuid>-99999999999.age` lingering forever.
+- [ ] **A *sealed* `expires` more than the ceiling beyond now is treated
+      as expired too**, with `ErrEnrollmentExpired` and not a malformed-
+      payload error. The sealed copy is the one approval enforces, so a
+      clamp applied only to the filename leaves the authoritative value
+      unbounded. Hand-seal a payload claiming a ten-year expiry under a
+      filename with an in-range epoch, so the filename cannot be what
+      catches it.
+- [ ] The comparison is **against now, not against `created`** — assert a
+      payload whose `created` is also forged far into the past still
+      expires. Both fields are attacker-supplied, so checking one against
+      the other checks nothing.
 - [ ] A name that does not parse is **skipped, not deleted** — gage
       never removes a file it cannot account for.
 - [ ] An ID matches the **UUID portion only**. Construct a vault where
@@ -249,7 +384,7 @@ without them. E2 delivers three of the six:
 | Function | Milestone |
 |---|---|
 | `Vault.PendingEnrollments()` | **E2** — every listing test above calls it |
-| `Vault.OpenEnrollment(codes)` | **E2** — every wrong-code, normalization, tamper, and expiry test calls it |
+| `Vault.OpenEnrollment(requests, codes)` | **E2** — every wrong-code, normalization, tamper, and expiry test calls it |
 | `Vault.ResolveEnrollment(id)` | **E2** |
 | `Vault.Enroll(...)` | E3 |
 | `Vault.ApproveEnrollments(...)` | E4 |
@@ -272,16 +407,38 @@ what makes the late unlock possible.
       cosmetic `GAGE-` prefix.
 - [ ] Normalization and validation as one function, run before any
       decryption is attempted.
-- [ ] The sealed payload as TOML — `request_id`, `device`, `pubkey`,
-      `method`, `created`, `expires` — encrypted to a single scrypt
-      recipient at `enrollmentScryptWorkFactor`.
+- [ ] The sealed payload as TOML — `request_id`, **`vault_id`**,
+      `device`, `pubkey`, `method`, `created`, `expires` — encrypted to a
+      single scrypt recipient at `enrollmentScryptWorkFactor`.
 - [ ] **Payload validation on the open path**, before `OpenedRequest` is
       returned: `devicename.Valid` on `device`,
       `agekey.ValidateRecipient` on `pubkey`, the single-value allowlist
-      on `method`, UUID on `request_id`. Failures are
-      `ErrEnrollmentMalformedRequest` at `Conflict`, and a malformed file
-      is skipped rather than failing the whole open — the same posture
-      the filename parser already takes toward strays.
+      on `method`, UUID on `request_id` and on `vault_id`, RFC 3339 on
+      both timestamps. Failures are `ErrEnrollmentMalformedRequest` at
+      `Conflict`, and a malformed file is skipped rather than failing the
+      whole open — the same posture the filename parser already takes
+      toward strays.
+- [ ] **The `vault_id` comparison**, after that validation and before
+      `OpenedRequest` is returned: sealed value against `v.ID` (E0),
+      mismatch is `ErrEnrollmentWrongVault` at `Conflict` with a message
+      naming the vault the request belongs to. Kept distinct from both
+      neighbours — the code worked, and the payload is not corrupt. There
+      is deliberately **no `VaultID` field on `OpenedRequest`**: every one
+      that exists is for this vault, so a field would be a constant the
+      caller could only re-check.
+- [ ] **The sealed-expiry clamp**: an `expires` more than the TTL ceiling
+      beyond now is `ErrEnrollmentExpired`, the same treatment the
+      filename epoch already gets and the same error a genuinely stale
+      request gets. Not a new error and not a malformed payload — the
+      claim is simply outside what gage honours, which is what expired
+      means. Compared against now rather than `created`, since both are
+      attacker-supplied.
+- [ ] **Size bounds**: `maxPendingRequestBytes` (16 KiB), applied twice —
+      once from the directory entry at listing time, so an oversized file
+      is skipped without being read, and once as a limit on the decrypted
+      payload, since age's plaintext is not bounded by its ciphertext and
+      the only party who can produce a large one is a code-holder.
+      Skipped, never deleted.
 - [ ] **A scrypt recipient at an explicit work factor**, which does not
       exist yet. `PassphraseRecipient` hardcodes `scryptWorkFactor` —
       the mutable test hook (`internal/gage/crypt.go`) — so sealing
@@ -293,31 +450,65 @@ what makes the late unlock possible.
       so it is called out rather than left to be discovered mid-task; the
       "two work factors are independent" test above is what proves it
       landed.
-- [ ] `enrollmentScryptWorkFactor = 14` as its own const, carrying
+- [ ] `shippedEnrollmentScryptWorkFactor = 14` as its own const, carrying
       D-ENROLL-SEAL-COST's reasoning in its comment — including the
       coupling that licenses it (the code is generated, uniform, ~80
       bits) and the instruction not to merge it with
       `shippedScryptWorkFactor`.
+- [ ] **A live copy and its own test setter**, mirroring
+      `scryptWorkFactor` / `SetScryptWorkFactorForTests` exactly:
+      `enrollmentScryptWorkFactor = shippedEnrollmentScryptWorkFactor`
+      and `SetEnrollmentWorkFactorForTests`. An earlier draft of this
+      milestone asked for the const alone, which is the *first* half of
+      M2's pattern mistaken for the whole of it — and the reason M2 has
+      the second half is arithmetic that applies here too: this package's
+      `TestMain` lowers the identity factor for the whole test binary
+      because a suite that pays the shipped cost per operation is
+      unusable. E2 fixtures alone are 32 seals; E4 builds pending requests
+      through `Enroll` in roughly twenty tests, on three platforms, with
+      Windows the slow one.
+
+      **This does not weaken the independence the previous bullet is
+      about**, which is the thing to check before "simplifying" it back:
+      the two factors have two constants, two variables and two setters,
+      so moving either leaves the other alone — which is exactly what the
+      "independent" test above asserts in both directions. What is
+      forbidden is enrollment *reading* `scryptWorkFactor`, and a separate
+      hook is how you avoid that while still being able to run the suite.
+      The "is deliberate" and "reaches age" tests assert the **shipped**
+      const, so the shipped number stays pinned however the live one is
+      moved.
 - [ ] `SetMaxWorkFactor(scryptMaxWorkFactor)` on the open path, before
       any request is decrypted.
-- [ ] The 32-request bound, applied after pruning and before any
-      decryption, returning `ErrEnrollmentTooManyPending`. It belongs on
-      the code-trying path only — `deny` and `PendingEnrollments` open
+- [ ] The 32-request bound, applied to the scope handed in and before
+      any decryption, returning `ErrEnrollmentTooManyPending`. Expired
+      requests never reach it because `PendingEnrollments` already
+      filtered them. It belongs on the code-trying path only — `deny` and `PendingEnrollments` open
       nothing and stay unbounded, which is also how someone inspects and
       cleans up a stuffed directory.
 - [ ] Filename construction and parsing, with the UUID and epoch halves
       validated independently.
 - [ ] `Vault.PendingEnrollments()` — builds `PendingRequest`s from
       filenames alone, returns zero for a missing `pending/`, skips
-      strays, and reads no git history.
-- [ ] `Vault.OpenEnrollment(codes)` — normalize and validate each code,
-      then try the surviving ones against each request. Takes **no
-      `Identity`**: opening is keyed by the code, and that signature is
-      the contract E4's late unlock rests on, so it is fixed here rather
-      than arrived at there.
+      strays and oversized files, reads no git history, and returns
+      **live requests only**: expired-by-filename and beyond-ceiling ones
+      are filtered out rather than deleted, because a listing takes no
+      lock and writes nothing. Deleting them is pruning's job.
+- [ ] `Vault.OpenEnrollment(requests, codes)` — normalize and validate
+      each code, apply the bound to the scope it was handed, then try the
+      surviving codes against the requests it was given and nothing else.
+      Takes **no `Identity`**: opening is keyed by the code, and that
+      signature is the contract E4's late unlock rests on, so it is fixed
+      here rather than arrived at there.
+
+      **The scope parameter is what makes the bound recoverable**, so
+      resist the shortcut of reading the directory inside this function
+      and treating the argument as advisory. A broad run and an ID-scoped
+      run are the same code path over different inputs; that is the whole
+      design, and it is why neither caller needs a flag.
 - [ ] `PendingRequest`, `OpenedRequest`, `EnrollmentRequest` types, and
-      the typed errors: expired, wrong-code, id-mismatch, clock-skew, and
-      no-such-request. Each carries the exit code the TDD's "Library
+      the typed errors: expired, wrong-code, id-mismatch, wrong-vault,
+      malformed-request, clock-skew, and no-such-request. Each carries the exit code the TDD's "Library
       surface" table assigns it — the taxonomy is an M0 contract, not a
       per-command choice.
 - [ ] A malformed code returns `ErrEnrollmentCodeWrong` at
