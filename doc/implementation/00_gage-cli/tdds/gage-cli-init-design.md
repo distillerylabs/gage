@@ -215,6 +215,14 @@ rather than data the seal vouched for.
 **Auto-suffixing to `macbook-pro-2` was rejected.** Silent renaming
 contradicts the posture of every other decision here.
 
+**`--device` relabels exactly one request per run.** One flag cannot say
+which of several requests it applies to, so it is accepted only when the
+run resolves to a single request — narrow a batch with an ID if two
+requests collide at once. That costs a second re-encryption pass in the
+rare double-collision case, which is the right trade against inventing a
+per-request flag syntax for something that needs two devices to collide
+simultaneously.
+
 **Re-running `enroll` mints a fresh request and a fresh code**, never
 reusing the pending one. Reuse would force gage either to persist the
 code — which D-ENROLL-CODE-FORMAT forbids — or to re-seal under a new
@@ -1074,6 +1082,52 @@ Removed pending request e4f88b21. Nothing was granted; nothing to re-encrypt.
   skips it — the same posture `ListIdentities` takes toward strays, and
   the conservative direction: refusing to delete a file it doesn't
   understand.
+
+### An ID always means the UUID, never the whole filename
+
+Every place a human types an ID — `approve <ID>`, `deny <ID>`, and the
+listing that shows them — resolves **against the UUID portion of the
+filename only**. Never the epoch, never the filename as a whole.
+
+This is not fussiness; it is the same hazard the base design's
+resolution order exists to prevent. "A hex-spellable title — `dead`,
+`beef`, `cafe`, even a single letter — is exactly the kind of string an
+entry's own randomly-generated UUID can coincidentally contain." Now
+that a pending filename carries ten digits of epoch, a short id like
+`1788` could match the *expiry* of one request and the *id* of another,
+and a naive substring search over whole filenames would resolve to
+whichever it hit first. `gage deny 1788` deleting the wrong request
+because the digits happened to land in a timestamp is precisely the
+class of bug that ordering was written to close.
+
+So the epoch is parsed off before any matching happens, and it is not
+part of the searchable text.
+
+### Clock skew, in the direction the ceiling doesn't cover
+
+The far-future clamp above handles a *fast* clock. A **slow** one fails
+differently and more confusingly: a device two days behind seals
+`expires` at a moment already in the past, so the request is dead on
+arrival. The joining device reports success and prints a code; the
+approver sees a request that is already expired, or nothing at all
+because it was pruned.
+
+`gage` cannot reliably detect this locally — by its own clock the expiry
+is always in the future, which is the whole problem. Two cheap measures
+make it legible rather than baffling:
+
+- **At approve time, diagnose it.** Both `created` and `expires` are in
+  the seal. A request whose `expires` is in the past *and* whose
+  `created` is also in the past by less than its own TTL was expired
+  before it was written. That is not an expiry, it is a wrong clock, and
+  the error should say so instead of reporting a stale request.
+- **At enroll time, warn on the available signal.** A freshly cloned or
+  fetched vault carries commit timestamps written by other devices. If
+  local time is meaningfully behind HEAD's committer timestamp, this
+  machine's clock is probably wrong — one field read, no history walk.
+  Warn and proceed, the same posture as an unreachable network or a
+  failed page-lock; refusing to enroll over a heuristic would be worse
+  than publishing a request that might expire early.
 - **Replay within the TTL is accepted, not defended against.** Someone
   with read and write access could copy a pending blob and re-commit it.
   They still cannot open it, and approval still requires a human with the
@@ -1147,8 +1201,12 @@ gage recipient approve [ID...] --code CODE [--code CODE ...]
     --device relabels a request whose claimed device name now collides
     with an existing recipient, which is the approver's call to make: the
     code authenticated the key, not the label. Without it such a request
-    would be permanently unapprovable. With several requests in one run,
-    --device applies to the one it disambiguates and gage says which.
+    would be permanently unapprovable.
+
+    --device is only accepted when the run resolves to exactly one
+    request — because one flag cannot name which of several requests it
+    relabels. Pass an ID to narrow a multi-request run down to one.
+    Otherwise it is a usage error that says so, rather than guessing.
 
     A request whose pubkey is already a recipient is not an error: the
     request is cleared, nothing is re-encrypted, and gage reports that
@@ -1527,6 +1585,20 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - A file in `pending/` whose name does not parse (bad UUID, non-numeric
   epoch, missing epoch) is **skipped, not deleted** — gage never removes
   a file it cannot account for.
+- **An ID matches the UUID portion only.** Construct a vault where one
+  request's expiry epoch contains another request's short id as a
+  substring, then assert `deny <that id>` removes the request whose
+  *UUID* matches and never the one whose *epoch* does.
+- An id that appears only inside an epoch, and in no UUID, matches
+  nothing rather than matching by accident.
+- A request sealed with an `expires` already in the past at `created`
+  (a slow-clock device) is refused with a message naming clock skew,
+  distinguishable from an ordinary expired request that simply sat too
+  long.
+- `enroll` warns, and proceeds, when local time is behind the vault's
+  HEAD committer timestamp.
+- `--device` with a run that resolves to more than one request is a
+  usage error naming the ID form; with exactly one request it applies.
 
 **Approval:**
 - Approving adds exactly one recipient to both `.age-recipients` and
