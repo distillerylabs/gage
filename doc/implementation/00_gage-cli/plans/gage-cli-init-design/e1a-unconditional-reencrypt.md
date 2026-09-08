@@ -1,16 +1,12 @@
-# E1 — Unconditional re-encryption
+# E1a — Unconditional re-encryption
 
-[← E0](e0-vault-id-keying.md) · [plan index](index.md) · next: [E2 — The sealed request](e2-sealed-request.md)
+[← E0](e0-vault-id-keying.md) · [plan index](index.md) · next: [E1b — The shared recipient write](e1b-shared-recipient-write.md)
 
-> **Recommended model: Sonnet\*.** Borderline, and it moved. The
-> specification is fully settled and the atomic machinery already exists;
-> most of this *removes* a code path. What raised it is the N-recipient
-> extraction, which reshapes M9's central write path — additive and
-> mechanical, but on the function every recipient change goes through.
-> Start on Sonnet; switch if the extraction turns awkward. The care is in
-> the pre-flight's ordering (before the lock, before any confirmation),
-> in keeping `AddRecipient`'s observable behavior identical, and in
-> replacing M9's tests rather than deleting them.
+> **Recommended model: Sonnet.** The specification is fully settled and
+> the atomic machinery already exists — this mostly *removes* a code
+> path. The care is in the pre-flight check's ordering (before the lock,
+> before any confirmation) and in replacing M9's tests rather than
+> deleting them.
 
 ## Goal
 
@@ -21,14 +17,16 @@ it stays mandatory on `remove`, where it means something different.
 Add the refusal this creates: an actor who cannot read every entry can
 no longer add a recipient, and must be told why before anything happens.
 
-**And extract the N-recipient form of `AddRecipient`'s body**, which E4's
-batch approval needs and which this milestone is already the one opening
-that function. See "The extraction" below.
-
 **Not enrollment.** This is an amendment to M9. It is sequenced here
 because E4's approval reuses both the behavior and the error, and
 landing this first makes them existing machinery rather than two
 commands inventing the same rule independently.
+
+**The other half of that amendment is [E1b](e1b-shared-recipient-write.md).**
+This milestone changes what `recipient add` *does*; E1b reshapes the
+function it does it in, so that E4's batch approval has something to call.
+They were one milestone in an earlier draft — see E1b's "Why this is its
+own milestone" for why they are two.
 
 ## Depends on
 
@@ -52,38 +50,11 @@ can neither repair itself nor grant full access to anyone else. The
 refusal below is what makes that legible instead of a mid-write failure
 on an opaque UUID.
 
-### The extraction
-
-`AddRecipient` today is a complete write: validate → `withVaultWrite`
-(lock + dirty-tree reset) → `requireRecipientsInSync` →
-`confirmRecipientTrust` → duplicate check → append **one** recipient →
-`commitRecipientList` (one commit) → `noteRecipientsReviewed`
-(`internal/gage/recipient.go`).
-
-E4 needs the same sequence for N recipients under one lock, one trust
-question, one re-encryption pass and one commit — and with the pending
-files it is clearing deleted *in that same commit*. Calling `AddRecipient`
-N times cannot produce that; it produces N of everything, which is
-precisely the shape batch approval exists to avoid.
-
-So this milestone lands the shared inner form: the append takes a slice,
-and the commit takes the extra paths to remove alongside the entries it
-rewrites. `AddRecipient` becomes its one-recipient caller — unchanged
-externally, and still the thing whose duplicate check under the lock is
-authoritative.
-
-**Why here and not in E4.** Three reasons, in order of weight. This
-milestone is already inside that function, so the alternative is opening
-it twice. E1's whole purpose is to make the machinery E4 reuses
-*existing* rather than co-invented — the same argument the plan already
-makes for `ErrCannotGrantFullAccess`. And E4 is described everywhere as
-wiring settled primitives to commands; leaving a refactor of M9's central
-write path inside it would make that description false, which is the kind
-of quiet scope growth the plan index warns about.
-
-**The visible behavior of `recipient add` does not change**, which is
-what keeps this from being speculative: it is one caller of a function
-shaped for two, landing in the milestone that has the function open.
+**Leave `AddRecipient`'s shape alone.** The pre-flight below is a
+*separate* pass this milestone adds beside it, not a restructuring of the
+method — [E1b](e1b-shared-recipient-write.md) is what reshapes the body,
+and doing both at once is what made an earlier draft of this milestone
+hard to review.
 
 ## Tests (write first)
 
@@ -115,23 +86,6 @@ are the starting point; these expand them.
       re-encryption, no cache regeneration.
 - [ ] `recipient remove` is untouched — still requires `--reencrypt`,
       still prints the revokes-future-access-only warning.
-- [ ] **The N-recipient form adds several recipients in one commit**,
-      with one trust question and one re-encryption pass, and every added
-      key can read every pre-existing entry. Exercise it directly at the
-      library level — E4 is what puts a command on it, and a test that
-      waits for E4 leaves this milestone shipping an untested function.
-- [ ] **It deletes the extra paths it is handed in the same commit** as
-      the recipient files and the re-encrypted entries. E4 passes pending
-      requests here; assert the mechanism with an ordinary file, so the
-      test does not depend on a feature two milestones away.
-- [ ] **An injected failure partway leaves HEAD untouched** in the
-      N-recipient form too — no recipients added, no entries rewritten,
-      no paths deleted. The one-recipient atomicity guarantee has to hold
-      for the batch or approval's all-or-nothing claim is unfounded.
-- [ ] **`AddRecipient` still behaves exactly as before**, including its
-      duplicate check under the lock returning `ErrRecipientExists`. It
-      is now a caller of the batch form, and the regression to guard
-      against is the wrapper quietly changing what it does.
 - [ ] `recipient add`'s registry `Short` reads "Authorize a public key
       and re-encrypt the vault to include it", parallel to `remove`'s
       wording. M0's registry test keeps both surfaces honest. (Three
@@ -152,13 +106,6 @@ the old behavior first.
 
 - [ ] Drop `reencrypt bool` from `Vault.AddRecipient`; always
       re-encrypt. `RemoveRecipient` keeps its parameter.
-- [ ] **Extract the N-recipient, lock-held form** of `AddRecipient`'s
-      body, per "The extraction" above: the append takes a slice of
-      recipients, and `commitRecipientList` gains the extra paths to
-      delete in the same commit. `AddRecipient` becomes the
-      one-recipient caller. Unexported is right — E4's
-      `ApproveEnrollments` is its only other caller and lives in the same
-      package.
 - [ ] Add `ErrCannotGrantFullAccess`, raised from a pre-flight pass that
       attempts to read every entry with the acting identity, ahead of
       `withVaultWrite`.
@@ -198,17 +145,14 @@ longer describes a flag that does not exist.
 
 ## Affects later milestones
 
-- **E4** calls the same `AddRecipient` and reuses
-  `ErrCannotGrantFullAccess` unchanged. If this milestone is skipped,
-  E4 has to define both itself, and `recipient add` remains the vector
-  that keeps creating partial recipients — which is most of what A19
-  was for.
+- **E1b** reshapes the function this milestone changes the behavior of.
+  Landing this first means the extraction never has to thread a
+  `reencrypt bool` through a body it is about to remove it from.
 
-  It also calls the N-recipient form extracted here. Without it,
-  `ApproveEnrollments` either re-implements M9's central write path or
-  falls back to N `AddRecipient` calls, which is N locks, N trust
-  prompts, N re-encryption passes and N commits — not the single atomic
-  commit approval is specified to produce.
+- **E4** reuses `ErrCannotGrantFullAccess` unchanged. If this milestone
+  is skipped, E4 has to define it itself, and `recipient add` remains the
+  vector that keeps creating partial recipients — which is most of what
+  A19 was for.
 
   **The error is reused; its position is not.** `recipient add` unlocks
   first and runs the pre-flight before *any* confirmation it shows.

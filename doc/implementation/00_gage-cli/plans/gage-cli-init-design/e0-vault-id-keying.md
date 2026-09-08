@@ -1,6 +1,6 @@
 # E0 — Vault-id keying
 
-[plan index](index.md) · next: [E1 — Unconditional re-encryption](e1-unconditional-reencrypt.md)
+[plan index](index.md) · next: [E1a — Unconditional re-encryption](e1a-unconditional-reencrypt.md)
 
 > **Recommended model: Opus.** An on-disk contract change plus a fix to
 > code that deletes private keys. Being subtly wrong here destroys key
@@ -225,7 +225,7 @@ before starting.
       direction it constructs (`format_version = 99`) and still passing
       afterwards, but it now needs a sibling for the older direction
       rather than being left as the only case covered. Update in place
-      rather than deleting, the same way E1 handles M9's bullets.
+      rather than deleting, the same way E1a handles M9's bullets.
 
 ## Definition of done
 

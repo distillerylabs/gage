@@ -1,6 +1,6 @@
 # E2 — The sealed request
 
-[← E1](e1-unconditional-reencrypt.md) · [plan index](index.md) · next: [E3 — Joining a vault](e3-joining-side.md)
+[← E1b](e1b-shared-recipient-write.md) · [plan index](index.md) · next: [E3 — Joining a vault](e3-joining-side.md)
 
 > **Recommended model: Opus.** The code is an offline-attackable secret
 > and the seal is what makes the whole feature mean anything — entropy,
@@ -24,7 +24,8 @@ format: the risky part is proven before anything is layered on it.
   seal uses.
 - **M0** — atomic writes, the exit-code taxonomy.
 
-E2 is independent of E0 and E1 and can be worked in parallel with either.
+E2 is independent of E0, E1a and E1b, and can be worked in parallel with
+any of them.
 
 ## Design references
 

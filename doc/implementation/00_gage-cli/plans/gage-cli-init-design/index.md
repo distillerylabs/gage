@@ -60,16 +60,27 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | # | Milestone | Status | Model | Theme |
 |---|---|---|---|---|
 | E0 | [Vault-id keying](e0-vault-id-keying.md) | `[ ]` | **Opus** ⚑ | A20: identities and trust cache keyed by vault id, not local name |
-| E1 | [Unconditional re-encryption](e1-unconditional-reencrypt.md) | `[ ]` | Sonnet* | A19: `recipient add` always re-encrypts; extract the N-recipient write E4 needs |
+| E1a | [Unconditional re-encryption](e1a-unconditional-reencrypt.md) | `[ ]` | Sonnet | A19: `recipient add` always re-encrypts |
+| E1b | [The shared recipient write](e1b-shared-recipient-write.md) | `[ ]` | Sonnet* ⚑ | The N-recipient form of `AddRecipient`'s body, which E4's batch approval calls |
 | E2 | [The sealed request](e2-sealed-request.md) | `[ ]` | **Opus** ⚑ | Code generation, the seal, the filename scheme, expiry — library only |
 | E3 | [Joining a vault](e3-joining-side.md) | `[ ]` | Sonnet | `identity enroll`, the clone prompt, publishing a request |
 | E4 | [Approving a device](e4-approving-side.md) | `[ ]` | **Opus** | `recipient pending/approve/deny`, late unlock, atomic batch approval |
 
-**E0 and E1 are prerequisites, not enrollment.** They are amendments to
-already-shipped milestones (E0 → M1/M2, E1 → M9) that enrollment depends
-on. They live in this plan because nothing else is going to sequence
-them, and because both were raised *by* designing enrollment. The core
-plan's "Accepted, not yet implemented" section points here.
+**E0, E1a and E1b are prerequisites, not enrollment.** They are
+amendments to already-shipped milestones (E0 → M1/M2, E1a/E1b → M9) that
+enrollment depends on. They live in this plan because nothing else is
+going to sequence them, and because all three were raised *by* designing
+enrollment. The core plan's "Accepted, not yet implemented" section
+points here.
+
+**E1 was split into E1a and E1b**, following M8a/M8b's precedent in the
+core plan. E1a is A19 — a behavior change with a user-visible surface.
+E1b is the N-recipient extraction — a pure refactor whose correctness
+criterion is that nothing observable changes. They fail differently
+(a missed prose site that still teaches `--reencrypt`, versus lost
+atomicity on M9's central write path), they want different attention, and
+only E1b is on E4's path. E1b's "Why this is its own milestone" carries
+the full argument.
 
 **Do E0 first, and do it soon.** Its migration is "re-create the vault,"
 which is free only while there is no installed base — nothing has
@@ -87,7 +98,7 @@ E0 (A20) ──┬────────────────> E3 ───
            │                   ↑       ↑
 E2 (seal) ─┴───────────────────┴───────┤
                                        │
-E1 (A19) ──────────────────────────────┘
+E1a (A19) ───> E1b (batch write) ──────┘
 ```
 
 - **E0 → E3** — enroll writes and reads identity files, so the path
@@ -99,16 +110,24 @@ E1 (A19) ───────────────────────�
   `ResolveEnrollment` and pruning directly. Transitive through E3, but
   drawn because someone parallelizing E3 and E4 across two people would
   otherwise read E4 as depending only on E3.
-- **E1 → E4** — approval always re-encrypts, needs
-  `ErrCannotGrantFullAccess`, and is built on E1's **N-recipient form**
-  of `AddRecipient`'s body. Landing A19 first makes all three *existing*
+- **E1a → E1b** — the `reencrypt bool` is gone by the time the body is
+  extracted, so the extraction never threads a parameter it is about to
+  lose. The other order means touching the same signature twice.
+- **E1a → E4** — approval always re-encrypts and reuses
+  `ErrCannotGrantFullAccess`. Landing A19 first makes both *existing*
   machinery that approval reuses, rather than two commands arriving at
-  the same rules independently.
+  the same rule independently.
+- **E1b → E4** — `ApproveEnrollments` is built directly on the
+  N-recipient form. Without it, approval either re-implements M9's
+  central write path or falls back to N `AddRecipient` calls, which is
+  neither one atomic commit nor a place to delete the approved requests'
+  files from.
 - **E0 → E4** — approval relabels recipients, which is the thing that
   makes E0's `removeOrphanedIdentity` fix urgent (see below).
 
-**E1 and E2 are mutually independent** and can be worked in either
-order, or in parallel by two people.
+**The E1 pair and E2 are mutually independent** and can be worked in
+either order, or in parallel by two people. E1a and E1b are sequential
+with respect to each other and are one person's work.
 
 ### What this plan corrected after review
 
@@ -129,7 +148,7 @@ the mistake.
   in the codebase.
 - **`ErrCannotGrantFullAccess` cannot precede `approve`'s confirmation.**
   The check is a decryption pass, so it needs the unlock — which
-  `approve` deliberately defers until after the human says yes. E1's
+  `approve` deliberately defers until after the human says yes. E1a's
   phrasing was correct for `recipient add` and wrong when copied into
   E4. See E4's Decisions for the ordering that replaces it.
 
@@ -197,10 +216,9 @@ and the fifth is a claim about the code that turned out to be false:
   complete write — lock, trust question, one recipient, one commit — so N
   calls is N of everything, which is what batch approval exists to avoid,
   and it has nowhere to delete the pending files in the same commit. An
-  N-recipient form of its body is needed, and it now lands in **E1**,
-  which is already the milestone opening that function. Without this, E4
-  quietly grows a refactor of M9's central write path while being
-  described everywhere as wiring.
+  N-recipient form of its body is needed, and it now lands in **E1b**,
+  its own milestone. Without it, E4 quietly grows a refactor of M9's
+  central write path while being described everywhere as wiring.
 - **The enrollment code does reach the history file.** The TDD claimed it
   "exists nowhere else — not in the session history file (which already
   refuses to record values)". The history file records every typed line
@@ -250,8 +268,8 @@ files.
 | E0 | `pubkey` in global config's `[vaults.<name>]`, written by `init`, `clone`, `identity add` — and by E3's `enroll` | E0's own `removeOrphanedIdentity`; **E3's already-a-recipient check**, which is the second consumer of the same key-not-name comparison; anything else needing one |
 | E2 | `Vault.PendingEnrollments`, `OpenEnrollment`, `ResolveEnrollment` — **built here, not in E4** | E4 wires all three to commands and reimplements none of them |
 | E3 | `Prompter.ConfirmDefaultYes` — the one default-yes question in `gage` | Nothing else today. Recorded because it is a compile-time break on every `Prompter` implementation, which is the point |
-| E1 | `recipient add` always re-encrypts; `ErrCannotGrantFullAccess` exposed as a **separately callable pre-flight pass**, not buried in `AddRecipient` | E4 reuses the error and the pass, but places it differently — after its own confirmation and unlock, still before the lock and M10's prompt |
-| E1 | The **N-recipient form** of `AddRecipient`'s body: a slice of recipients, and the extra paths to delete in the same commit. `AddRecipient` becomes its one-recipient caller | E4's `ApproveEnrollments` — one lock, one trust question, one re-encryption pass, one commit, with the approved requests' files removed in it |
+| E1a | `recipient add` always re-encrypts; `ErrCannotGrantFullAccess` exposed as a **separately callable pre-flight pass**, not buried in `AddRecipient` | E4 reuses the error and the pass, but places it differently — after its own confirmation and unlock, still before the lock and M10's prompt |
+| E1b | The **N-recipient form** of `AddRecipient`'s body: a slice of recipients, and the extra paths to delete in the same commit. Unexported; `AddRecipient` becomes its one-recipient caller | E4's `ApproveEnrollments` — one lock, one trust question, one re-encryption pass, one commit, with the approved requests' files removed in it |
 | E2 | Payload validation on the open path — `device`, `pubkey`, `method`, `request_id` checked before `OpenedRequest` is returned; `ErrEnrollmentMalformedRequest` kept distinct from a wrong code | E4, which renders those fields to the approver directly above the `[y/N]` |
 | E3 | `Vault.Enroll(ctx, …)` — the one enrollment method that takes a context, because its fetch is a hard precondition rather than an opportunistic push | `cmd/gage`; the shape matches `Pull`/`Push`/`Sync` |
 | E2 | Enrollment code: generation, Crockford normalization, validation-before-decrypt | E3 displays one, E4 consumes one |

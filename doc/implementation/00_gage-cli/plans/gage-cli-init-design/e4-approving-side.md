@@ -25,13 +25,14 @@ This is the milestone that makes enrollment actually grant access.
   and the boundary is otherwise easy to blur.
 - **E3** — requests exist to approve, and its `Enroll` builds the test
   fixtures.
-- **E1** — approval always re-encrypts and reuses
+- **E1a** — approval always re-encrypts and reuses
   `ErrCannotGrantFullAccess`, **and needs its pre-flight callable on its
   own** rather than only from inside `AddRecipient`: approval runs it at
-  a different point in the sequence than `recipient add` does. E1 also
-  lands the **N-recipient form** of `AddRecipient`'s body that this
-  milestone's one-commit batch is built on — see "The batch path is
-  not `AddRecipient`" below.
+  a different point in the sequence than `recipient add` does.
+- **E1b** — the **N-recipient form** of `AddRecipient`'s body, which this
+  milestone's one-commit batch is built on. See "The batch path is not
+  `AddRecipient`" below; this is the dependency that turns approval into
+  wiring rather than a refactor.
 - **E0** — `recipient approve --device` relabels recipients, which is
   precisely what makes E0's `removeOrphanedIdentity` fix necessary. **Do
   not ship E4 without it**, or approval introduces a new route to an
@@ -52,7 +53,7 @@ This is the milestone that makes enrollment actually grant access.
 ## Decisions
 
 Settled — but read the second bullet before writing anything. It
-corrects an ordering this milestone inherited from E1 that cannot hold
+corrects an ordering this milestone inherited from E1a that cannot hold
 here, and getting it wrong means either an impossible test or the loss
 of the late unlock. The rest shape the structure more than they look
 like they do:
@@ -65,7 +66,7 @@ like they do:
   existing command's shape, and it departs toward `sync`'s lazy unlock.
 - **And therefore `ErrCannotGrantFullAccess` lands *after* that
   confirmation**, not before it — the one place this milestone's
-  ordering differs from E1's, and the thing to get right before writing
+  ordering differs from E1a's, and the thing to get right before writing
   any of it. The pre-flight decrypts every entry, so it needs the
   unlocked identity; an age file's X25519 stanzas carry an ephemeral
   share rather than a recipient key, so there is no cheaper form of the
@@ -103,12 +104,12 @@ re-encryption passes and produce N commits — the exact thing batch
 approval exists to avoid, and incompatible with "removal of every
 approved request's file lands in the same commit."
 
-`ApproveEnrollments` therefore calls **E1's N-recipient form**: the same
-sequence, with a slice of recipients and the pending files to delete
-passed to the commit. E1 owns that extraction; this milestone consumes
-it. If E1 shipped without it, stop and add it there rather than growing a
-second implementation here — two functions that both mean "add
-recipients and re-encrypt" is how they drift.
+`ApproveEnrollments` therefore calls **[E1b](e1b-shared-recipient-write.md)'s
+N-recipient form**: the same sequence, with a slice of recipients and the
+pending files to delete passed to the commit. E1b owns that extraction;
+this milestone consumes it. If E1b was skipped, stop and do it there
+rather than growing a second implementation here — two functions that
+both mean "add recipients and re-encrypt" is how they drift.
 
 **What this does not change** is where the authoritative duplicate check
 lives. It is still inside that shared body, still under the lock, and it
@@ -147,7 +148,7 @@ still returns `ErrRecipientExists`.
       ceiling, are both gone from `pending/` after either command — in
       the same commit, not a second one.
 - [ ] **`recipient add` and `recipient remove` prune too.** The TDD says
-      pruning rides "the next recipient change"; E1 is the milestone that
+      pruning rides "the next recipient change"; E1a is the milestone that
       touches `AddRecipient`, but pruning does not exist until E2, so the
       wiring lands here. Assert an expired request is cleared by an
       ordinary `recipient add` with no enrollment involved.
@@ -297,7 +298,7 @@ still returns `ErrRecipientExists`.
       (ApprovalResult, error)` with `Approval{Request, Label}` and
       per-request `ApprovalOutcome`. `RecipientChange` is deliberately
       *not* reused — it names one device, and a batch resolves N.
-      Implemented over **E1's N-recipient form**, handing it the labels
+      Implemented over **E1b's N-recipient form**, handing it the labels
       to add and the pending files to delete, so the whole batch is one
       lock, one trust question, one re-encryption pass and one commit.
       It does **not** call `AddRecipient` — see this milestone's
@@ -309,7 +310,7 @@ still returns `ErrRecipientExists`.
 - [ ] `cmd/gage` orders it: open → collision check → render → confirm →
       **unlock** → full-access pre-flight → lock → re-verify → add +
       re-encrypt + clear → commit → push. The pre-flight sits between the
-      unlock and the lock, which is why E1 must expose it as its own pass
+      unlock and the lock, which is why E1a must expose it as its own pass
       rather than burying it inside `AddRecipient`.
 - [ ] Three commands registered in the `Recipients` group, both-mode
       availability. `recipient list`'s `Short` reworded to "List the

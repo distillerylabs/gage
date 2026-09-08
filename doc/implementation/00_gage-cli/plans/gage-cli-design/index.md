@@ -308,7 +308,7 @@ from a mismatch between the TDD and the binary — and it should be empty
 most of the time.
 
 **Both items below are sequenced in their own plan.** A20 is `E0` and
-A19 is `E1` in
+A19 is `E1a` in
 [plans/gage-cli-init-design/](../gage-cli-init-design/index.md), which
 also covers the device-enrollment feature that raised them. The
 summaries here are the standing record; the milestone docs carry the

@@ -1662,7 +1662,7 @@ delete alongside the entries it rewrites. `AddRecipient` becomes its
 one-recipient caller, which keeps a single implementation of "add
 recipients and re-encrypt" rather than two that must be kept honest
 against each other. The extraction belongs with A19's work on
-`recipient add` rather than with approval — see the plan's E1 — so that
+`recipient add` rather than with approval — see the plan's E1b — so that
 approval remains what this document describes it as: a wiring of existing
 machinery.
 
@@ -2488,10 +2488,10 @@ here, and the sequencing live in
 the same split the core design uses, where the TDD holds the *why* and
 the plan holds the *how* and the definition of done.
 
-Five milestones: **E0** and **E1** are prerequisites this design raised
-against already-shipped work (`A20` and `A19`), **E2** proves the sealed
-request in isolation, and **E3**/**E4** are the joining and approving
-sides.
+Six milestones: **E0**, **E1a** and **E1b** are prerequisites this design
+raised against already-shipped work — `A20`, and `A19` plus the
+extraction its consumer needs. **E2** proves the sealed request in
+isolation, and **E3**/**E4** are the joining and approving sides.
 
 **E0 should be done first and soon.** Its migration is free only while
 there is no installed base, which makes it the one piece of work in

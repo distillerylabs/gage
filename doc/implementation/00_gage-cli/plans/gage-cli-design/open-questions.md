@@ -820,7 +820,7 @@ they are the only amendments here that change shipped behavior rather
 than describing it. `[x]` in this section has always meant "the TDD says
 this," never "the code does"; that distinction matters for exactly those
 two entries. The outstanding work is listed under "Accepted, not yet
-implemented" in [index.md](index.md), and sequenced as E0/E1 in
+implemented" in [index.md](index.md), and sequenced as E0/E1a in
 [plans/gage-cli-init-design/](../gage-cli-init-design/index.md).
 
 A21 runs the other way: the code was right and the doc was wrong, so

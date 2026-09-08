@@ -241,7 +241,7 @@ A second review pass settled three more, all in the TDD now:
       second one.
 - [ ] **The reworded `accessLines` names `identity enroll`** and still
       names the manual path. Assert the text on both the declined and the
-      no-TTY routes — it is the message a user copies, and the E1 bullet
+      no-TTY routes — it is the message a user copies, and the E1a bullet
       about `identity add`'s printed next-command exists because this
       class of instruction goes stale silently.
 
