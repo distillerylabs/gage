@@ -503,6 +503,7 @@ path = "$GAGE_DATA/vaults/personal"
 id = "9f3a1c2e-7b41-4d58-a0c6-2e5f81b3d497"   # copied from the vault's own config
 type = "git"
 device = "laptop-1"       # this device's identity name in that vault
+pubkey = "age1qz8x2..."   # this device's public key for that vault
 method = "passphrase"     # how THIS device unlocks it — see "Decryption
                           # methods are per-device"
 
@@ -530,6 +531,15 @@ clipboard_timeout = "45s"            # how long `show -c` leaves a value on the 
 find that vault's identities directory without reading the vault at all
 — which matters when the vault's files have moved or been removed, the
 situation A20 exists to make safe.
+
+`pubkey` is this device's own public key for that vault, recorded when
+the identity is created. It exists so a question like "is the key I hold
+locally still a recipient here?" can be answered by comparing *keys*
+rather than device names — the name is a label, and a label is not proof
+of which key it refers to. Deriving the public key from the wrapped
+identity file would need an unlock, so it is captured at the one moment
+gage holds the key anyway. It is public, and already committed inside
+the vault, so a local plaintext copy discloses nothing new.
 
 `device` and `method` are this machine's answers to "who am I in that
 vault, and how do I unlock it." They're per-vault because both can
@@ -567,9 +577,13 @@ flat directory buys two things a single root can't:
 Within each root the substructure is unchanged in spirit from the old
 single-root design: `$GAGE_DATA/vaults/` holds actual vaults (git repos,
 today), `$GAGE_STATE/` holds local-only, never-synced device state (the
-history file and, per-vault, `$GAGE_STATE/<vault>/known-config.toml` —
+history file and, per-vault, `$GAGE_STATE/<vault-id>/known-config.toml` —
 the trust cache used to detect unreviewed recipient changes, see "Local
-trust cache").
+trust cache"). Both per-vault roots — identities under `$GAGE_DATA` and
+the trust cache under `$GAGE_STATE` — are keyed by the vault's `id`
+rather than its local registration name, for the reason given under
+"Local identity storage": a local name is chosen at clone time and can
+be reused for a different vault.
 
 ### Local identity storage
 
@@ -1289,7 +1303,7 @@ The mechanism behind "change detection" above:
 
 - **What's cached.** The first time a device successfully uses a vault,
   `gage` writes a verbatim copy of `.gage/config.toml` to
-  `$GAGE_STATE/<vault>/known-config.toml`, plus the content hash of
+  `$GAGE_STATE/<vault-id>/known-config.toml`, plus the content hash of
   `.age-recipients` at that same moment, both local, uncommitted, never
   synced. `config.toml` is the file diffed and shown to the user (device
   names alongside pubkeys make for a legible warning; a bare `age1...`

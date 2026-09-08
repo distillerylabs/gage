@@ -273,6 +273,110 @@ answer becomes the manual path — which means giving up the
 authentication this feature exists to provide. That narrowing is stated
 where the leak is described rather than dropped.
 
+### `[x]` D-ENROLL-REMOTE — when enroll touches the network, and how it fails
+
+**Resolved: fetch first and fail early if the remote is unreachable;
+push last and fail legibly if it is unwritable.** Enroll is the one write
+in `gage` that is worthless unless it reaches the remote, and both halves
+of this follow from that.
+
+**It pulls before it commits, and it has to do so explicitly.** The base
+design's automatic fetch + fast-forward pull rides on *unlocking a
+vault* — session `use`, or a one-shot command's implicit unlock. A
+joining device never unlocks the vault, because it cannot: it is not a
+recipient. So enroll passes through none of the existing hooks and must
+fetch on its own.
+
+Skipping it would mean committing onto a stale tip and failing the push
+as a non-fast-forward, with the standard "origin has diverged — run
+`gage sync`" advice. That advice is wrong here specifically: `gage sync`
+resolves entry conflicts by decrypting both sides, and this device
+cannot decrypt anything. Sending someone to a command that cannot work
+for them is worse than the divergence.
+
+**An unreachable remote fails the command, which departs from
+"warn and proceed."** That posture exists because refusing to show a
+password when offline is worse than showing a possibly-stale one — a
+read still delivers value offline. Enroll delivers none: an enrollment
+request that was never published is a private key, a local commit, and a
+code nobody can act on. Failing before any of that is created is kinder
+than producing all three and reporting that the useful part didn't
+happen.
+
+The two failures stay **separate typed errors**, because they have
+different fixes and the caller decides what to say about each:
+`ErrEnrollmentNoRemote` means this vault has no remote configured (fix:
+`gage git set-remote`), while `ErrEnrollmentRemoteUnreachable` means it
+has one that can't be reached right now (fix: get on the network, or
+check the token). Folding them together would have been a small
+violation of the rule that library boundaries return distinguishable
+errors so `cmd/gage` — not the library — picks the advice.
+
+Order of operations, with the reasons that fix each position:
+
+1. **Remote configured?** Else `ErrEnrollmentNoRemote` — before anything,
+   and before the lock, since it needs no vault state.
+2. **Take the vault write lock**, and hold it through step 7.
+3. **Fetch + fast-forward pull.** Fails with
+   `ErrEnrollmentRemoteUnreachable` if the remote can't be reached. Also
+   the first point at which a bad or missing token is discovered, which
+   is as early as it can honestly be discovered (below).
+4. **Device-name collision check**, against the recipient list as of the
+   pull just performed rather than a stale one.
+5. **Create or reuse the identity** — the only step that prompts.
+6. **Seal, write to `pending/`, commit.**
+7. **Push**, then release the lock — on every exit path, error paths
+   included.
+
+**The lock wraps the pull, not just the commit**, and an earlier draft of
+this section had that wrong. A fast-forward pull mutates the working
+tree, so it already runs under the write lock today —
+`tryPull` wraps `pull` in `underWriteLock` (`internal/gage/remotesync.go`).
+Pulling outside the lock and taking it afterwards would leave a window
+for another `gage` process to move HEAD between the catch-up and the
+commit, which is exactly the interleaving the lock exists to prevent.
+Enroll's pull-then-commit is one read-modify-commit sequence and gets one
+lock, per "every write holds the per-vault advisory lock across the full
+sequence."
+
+**Holding it across the passphrase prompt is deliberate**, and has
+precedent in both directions: `--reencrypt` holds the lock for its whole
+run, and M8b resolved the same question for interactive conflict
+resolution by holding it. The concurrency model is
+same-user-multiple-terminals, so "my other pane waits while I type a
+passphrase" is expected rather than surprising.
+
+**A read-scoped token still fails at step 7, and that is accepted rather
+than solved.** A token with read access clones and fetches fine and
+cannot push, so someone with one gets through the passphrase prompt,
+gets a key written to disk and a local commit, and only then learns they
+cannot publish.
+
+Predicting it is not available: telling read scope from write scope
+means asking the host about the token, and `gage` is deliberately
+host-neutral with no host-specific code paths (Q-GIT-AUTH). The project
+has already taken this exact position — `gage auth status`
+"deliberately makes no network call," because "does this token still
+work" is answered by the next fetch or push, "which says so in terms of
+the operation the human actually wanted." Adding a credential probe here
+would contradict a decision already made.
+
+So the requirement is legibility and cheap recovery, not prediction:
+
+- The push failure names the likely cause and the fix — a token without
+  write access for this host, and `gage auth login` — rather than
+  surfacing a bare 403 from the transport.
+- It says plainly what *did* happen: the identity was created and the
+  request committed locally but not published.
+- Re-running after `gage auth login` is cheap, because the reuse path
+  picks up the existing identity rather than generating a second one. It
+  does mint a fresh request and code (D-ENROLL-COLLISIONS); the
+  unpublished one is inert and expires.
+
+Step 2 narrows the window: an unusable token is usually caught at the
+fetch, before the passphrase prompt. What survives to step 7 is the
+narrower case of a token that can read but not write.
+
 ### `[x]` D-ENROLL-VERBS — command naming
 
 **Resolved: `gage identity enroll` on the joining side, `gage recipient
@@ -1015,11 +1119,8 @@ longer approve at all — which is correct, since they were never in a
 position to grant what they were being asked to grant. That must fail
 *before* the write lock and *before* the confirmation, with an error
 that names the real problem rather than surfacing a decryption failure
-on a UUID:
-
-```go
-var ErrCannotGrantFullAccess = errors.New("gage: this device cannot read every entry in the vault, so it cannot grant full access")
-```
+on a UUID — `ErrCannotGrantFullAccess`, declared under "Library
+surface".
 
 The message should say how many entries are unreadable and that someone
 who can read the whole vault has to perform the approval. This is the
@@ -1200,6 +1301,31 @@ make it legible rather than baffling:
   Warn and proceed, the same posture as an unreachable network or a
   failed page-lock; refusing to enroll over a heuristic would be worse
   than publishing a request that might expire early.
+- **An interrupted enroll can strand an uncommitted file**, and that is
+  tolerated rather than prevented. Enroll seals the request, writes it
+  into `pending/`, then commits; process death between those two steps
+  leaves an untracked file behind. The base design has machinery for
+  this shape of problem — "gage refuses to start any write against a
+  dirty `entries/` working tree it didn't just create itself," warns,
+  and resets to HEAD — but it is scoped to `entries/` and deliberately
+  not extended here. That reset exists because a stale partial
+  `--reencrypt` is *dangerous*: the recipient list and the actual
+  ciphertext disagree. A stray pending file is inert, expires on its own
+  epoch, and is visible only on the machine that failed to publish it,
+  where `recipient pending` will list a request nobody else can see. Not
+  worth a second reset path.
+
+  `D-ENROLL-REMOTE` already narrowed it: enroll holds the write lock
+  across the whole sequence, so another process cannot interleave with
+  it. What remains is genuine process death.
+
+  **The one hard requirement is staging.** Every commit this feature
+  makes stages *explicit paths* — the recipient files, the entries it
+  re-encrypted, the specific request files it approved — never the
+  `pending/` directory wholesale. Otherwise an unrelated write could
+  sweep a stray into a commit it has nothing to do with, which turns a
+  harmless local artifact into something other devices see.
+
 - **Replay within the TTL is accepted, not defended against.** Someone
   with read and write access could copy a pending blob and re-commit it.
   They still cannot open it, and approval still requires a human with the
@@ -1225,11 +1351,18 @@ gage identity enroll [--use NAME] [--device NAME] [--ttl DURATION]
     passphrase on the reuse path fails with ErrWrongPassphrase and
     publishes nothing. See "Enrolling with an identity you already have".
 
-    Requires git write access to the remote. A device with read-only
-    access gets a message saying so and pointing at the manual path
-    (`gage identity add`, then `gage recipient add` elsewhere), which
-    remains fully supported and is also the answer for air-gapped
-    transfer (see D-ENROLL-PRINT-ONLY).
+    Fetches and fast-forwards before committing, and fails outright if
+    the remote is unreachable — unlike a read, an unpublished enrollment
+    request accomplishes nothing, so producing a key and a local commit
+    it cannot publish would be worse than stopping. See D-ENROLL-REMOTE.
+
+    Requires git *write* access. A token that can read but not write is
+    only discovered at the push, which reports that the identity was
+    created and the request committed locally but not published, and
+    names `gage auth login`. A device with read-only access has the
+    manual path (`gage identity add`, then `gage recipient add`
+    elsewhere), which remains fully supported and is also the answer for
+    air-gapped transfer (see D-ENROLL-PRINT-ONLY).
 
     Refuses, before generating any key, a device name that already
     labels a recipient of this vault — and says to pass --device.
@@ -1296,7 +1429,9 @@ gage recipient deny <ID> [--use NAME]
     and no unlock: refusing to grant access requires no proof, it
     changes no recipient list, and anyone with git write access could
     delete the file directly anyway. It still takes the vault write lock
-    and commits, like any other write.
+    and commits, like any other write — and warns if the push fails,
+    since a deny that never reached the remote leaves the request live
+    for every other device.
 ```
 
 The confirmation prompt states the consequence in the terms the approver
@@ -1379,7 +1514,7 @@ func (v *Vault) Enroll(device string, ttl time.Duration, p Prompter) (Enrollment
 func (v *Vault) PendingEnrollments() ([]PendingRequest, error)
 func (v *Vault) OpenEnrollment(codes []string) ([]OpenedRequest, error)
 func (v *Vault) ApproveEnrollments(approvals []Approval, ident *Identity) (ApprovalResult, error)
-func (v *Vault) DenyEnrollment(id string) error
+func (v *Vault) DenyEnrollment(id string, p Prompter) error
 ```
 
 `ApproveEnrollments` returns `ApprovalResult` rather than the existing
@@ -1402,7 +1537,12 @@ var ErrEnrollmentCodeWrong  = errors.New("gage: no pending request opened with t
 var ErrEnrollmentIDMismatch = errors.New("gage: this request's sealed id does not match its filename")
 // (compared against the filename's UUID portion only — the epoch portion
 // is an unauthenticated hint and is deliberately not part of the check.)
-var ErrEnrollmentNoRemote   = errors.New("gage: publishing an enrollment request needs a writable remote")
+var ErrEnrollmentNoRemote   = errors.New("gage: this vault has no remote to publish an enrollment request to")
+
+// Distinct from NoRemote: a remote exists but could not be reached. Kept
+// separate because the fixes differ — configure one, versus get on the
+// network — and cmd/gage decides which to say. See D-ENROLL-REMOTE.
+var ErrEnrollmentRemoteUnreachable = errors.New("gage: could not reach this vault's remote, so the enrollment request was not published")
 
 // Raised when a request's device name — the one it was sealed with — now
 // labels a different recipient. Recoverable by the approver alone, via
@@ -1455,6 +1595,28 @@ in `withUnlockedVault` the way `recipient add` is; it unlocks in the
 middle. That is the one place this feature departs from the shape of an
 existing command, and it departs toward `sync`'s lazy-unlock behavior
 rather than inventing anything.
+
+**`DenyEnrollment` takes a `Prompter`, and that is a deliberate
+exception to a rule rather than an oversight.** This codebase routes
+human interaction through the `Identity` — `warnTo()` returns nil when
+there is none, and `identity.go` says why: "human interaction rides the
+Identity rather than growing a `Prompter` parameter on every mutating
+method." `deny` is the first mutating method that legitimately holds no
+`Identity`, because refusing to grant access requires proving nothing.
+So the rule has nothing to attach to here.
+
+Without a `Prompter`, a `deny` whose push fails — offline, expired
+token — reports success, leaves the request live on the remote, and lets
+it reappear on every other device. A silent failed refusal is
+indistinguishable from a successful one, which is the worst of the
+available outcomes. The alternatives are worse still: requiring an
+unlock in order to *refuse* something contradicts the reason `deny`
+needs no code, and leaving it silent is the status quo being fixed.
+
+Recorded as an exception so it is not later "corrected" back: the rule
+exists so that methods which *already* take an `Identity` do not
+redundantly take a `Prompter` too. It was never a rule against a
+`Prompter` reaching a method with no identity to carry one.
 
 **`identity enroll` takes the per-vault write lock** for its commit, like every
 other write. **`approve` holds it across the whole re-encryption
@@ -1692,6 +1854,24 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
   state by adding a recipient without re-encryption (or by hand-editing
   `.age-recipients`) and then approving from that device.
 - `deny` removes the file, grants nothing, and needs no code.
+- **`deny` warns when its push fails** rather than reporting plain
+  success — injected fake `RemoteSyncer`, and assert the warning reached
+  the `Prompter`. A silent failed deny would leave the request live for
+  every other device.
+
+**Crash-safety of a partial enroll:**
+- A file written into `pending/` by an enroll that died before
+  committing is **inert**: an entry written afterwards is not decryptable
+  by the key it names.
+- That stray is **pruned on its own epoch** like any other expired
+  request, without special handling.
+- **No commit ever stages the `pending/` directory wholesale.** Construct
+  a stray, then run an unrelated write (`insert`, `recipient approve` for
+  a different request) and assert the stray is absent from the resulting
+  commit. This is the bullet that keeps a local artifact from becoming
+  something other devices see.
+- `recipient pending` on the machine that failed lists the stray;
+  on any other machine it does not exist.
 
 **Collisions and duplicates (D-ENROLL-COLLISIONS):**
 - `identity enroll` whose device name already labels a recipient fails with
@@ -1752,6 +1932,24 @@ cover, driven in-process through `rootCmd.Execute()` with an injected
 - `identity enroll` against a vault with no writable remote fails with
   `ErrEnrollmentNoRemote` and names the manual path, via an injected fake
   `RemoteSyncer` rather than a real timeout.
+- **`identity enroll` fetches before it commits** — assert against a
+  bare remote that moved ahead, and confirm the resulting push is a
+  fast-forward rather than a divergence.
+- An **unreachable remote fails the command before any identity file is
+  written and before any prompt** — `ErrEnrollmentRemoteUnreachable`,
+  passphrase prompt count zero, no new file under
+  `$GAGE_DATA/identities/`, nothing committed. Injected fake
+  `RemoteSyncer`, not a real timeout.
+- A vault with **no remote configured** fails with the *different* error
+  `ErrEnrollmentNoRemote`; the two are distinguishable by the caller.
+- **The vault write lock is held across the pull, not taken after it** —
+  assert a second process cannot move HEAD between enroll's catch-up and
+  its commit, in the same style as M4's concurrent-write tests.
+- A **push rejected for lack of write access** leaves the identity and
+  the local commit in place, and the error names both what happened and
+  `gage auth login` — never a bare transport error.
+- Re-running after such a failure reuses the existing identity, mints a
+  fresh request and code, and succeeds once the push is allowed.
 - An interactive `clone` of a vault this device can't read offers to
   enroll, and answering yes produces the same end state as `clone`
   followed by `identity enroll`.

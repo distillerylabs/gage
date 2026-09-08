@@ -688,6 +688,110 @@ verify what it is reusing.
 
 ---
 
+### `[x]` Q-ORPHAN-BY-NAME — `vault remove` deletes a private key based on a name comparison {#q-orphan-by-name}
+
+**Resolved: compare public keys, and never delete without asking.** The
+`pubkey` field this needs is folded into [A20](#a20), which is already
+changing the same config table. Full reasoning after the problem
+statement.
+
+**Blocks:** nothing, but it is the unfixed remainder of
+[Q-IDENTITY-VAULT-NAME](#q-identity-vault-name), and it is filed
+separately on purpose. That entry is marked resolved, and an unresolved
+remainder living inside a resolved entry is exactly the silent deferral
+this register exists to prevent.
+
+`removeOrphanedIdentity` (`cmd/gage/vault.go`) decides whether to delete
+this device's wrapped private key by comparing device **names**:
+
+```go
+for _, r := range recipients {
+    if r.Device == entry.Device { /* keep */ }
+}
+// ...otherwise delete the key file
+```
+
+That is the same label-versus-identity confusion `D-ENROLL-COLLISIONS`
+settled for enrollment — the device name is a label the vault happens to
+store, not proof of which key it refers to. Here it gates an
+irreversible destructive operation on the only copy of a private key.
+
+**A20 makes this much harder to trigger and does not fix it.** Keying the
+identities directory by vault id removes the cross-vault collision, which
+is what made the wrong comparison catastrophic. What remains is a
+within-vault version: a recipient entry relabeled, or a device name
+reused after a `recipient remove`, can make the comparison answer
+"not a recipient" about a key that is one.
+
+The honest fix is to compare public keys rather than names — which needs
+the local key's public half, which needs an unlock (see the enrollment
+doc's "Enrolling with an identity you already have"). Options: prompt
+before deleting (turning a silent side effect into a deliberate act),
+never delete and accept the clutter, or delete only when the vault's
+recipient list is empty of *any* plausible match and say what it did.
+
+**Do not close this by declaring it rare.** It was already rare; the
+severity comes from being unrecoverable, not from being frequent.
+
+**It is wrong in both directions**, which is the clearest evidence the
+comparison isn't measuring what it claims:
+
+- **False delete, unrecoverable.** The vault lists this device's key
+  under a label other than the one local config records — global config
+  says `laptop-1`, the vault says `laptop-1-work`, same public key. No
+  name match, so `vault remove` deletes a key that is an *active
+  recipient*. Nothing warns beforehand: the device works normally until
+  then, because `Unlock` locates the identity file by the *local* name,
+  which is still correct.
+- **False keep, harmless.** `recipient remove laptop-1 --reencrypt`,
+  then some other device is added under that label with a different key.
+  The stale local file now matches by name and is kept. Clutter only.
+
+**`recipient approve --device` made the dangerous direction newly
+reachable.** D-ENROLL-COLLISIONS lets an approver relabel an incoming
+request — correctly, since the code authenticates the key and not the
+label — but that produces precisely the false-delete state: the joining
+device recorded one name at enroll time, the approver stored the key
+under another. So this fix belongs with device enrollment rather than
+after it.
+
+## The answer
+
+**The obvious repair is blocked.** Comparing public keys means deriving
+this device's public key, which lives *inside* the encrypted identity
+file, which needs an unlock — and prompting for a passphrase to decide a
+cleanup side effect on a vault being removed is the same "exactly
+backwards" pattern `clone.go` already refuses.
+
+So the public key is recorded where it can be read without one:
+
+1. **Record `pubkey` in global config**, beside `device` under
+   `[vaults.<name>]`, written when the identity is created (`init`,
+   `identity add`, `identity enroll`) — the moment gage holds the key
+   anyway. It is public, and already sits in the vault's committed
+   config, so there is no secrecy cost to a local plaintext copy. The
+   comparison becomes `r.Pubkey == entry.Pubkey`: an identity
+   comparison, no unlock. Folded into A20, which is already editing this
+   table.
+2. **Never delete without a `Confirm`, defaulting to keep.** This is the
+   load-bearing half. Step 1 makes the *suggestion* accurate, but a
+   stale record — someone swaps the `.age` file by hand — would make it
+   confidently wrong, which is worse than uncertain. A prompt turns any
+   wrong answer into a wrong suggestion a human reads, with the path in
+   front of them. `app.Prompter` is already on the struct, so there is
+   no plumbing, and `Confirm` defaults to no, which means a scripted
+   `vault remove` keeps the file by construction.
+3. **When the pubkey is unknown, say so and keep.** Missing field,
+   hand-edited config, older install — do not guess.
+
+**A20 also removes most of what this cleanup was for.** #39 deleted
+orphans largely so that `vault remove` followed by `init` under the same
+name wouldn't silently reuse the old key. Keying by vault id makes that
+structurally impossible, so the deletion is doing less work than it was
+designed for — which further favors asking over assuming.
+
+---
+
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}
 
 **Blocks:** nothing; needed before a first public release.
@@ -995,9 +1099,27 @@ live path that silently deletes the only copy of a private key.
 **Applied as:** `[vault].id` added to `.gage/config.toml` (a UUIDv4
 minted by `init`); `format_version` raised to 2; the identity path in
 "Local identity storage" becomes
-`$GAGE_DATA/identities/<vault-id>/<device>.age`; the id added to global
-config's `[vaults.<name>]`; and the id folded into the untrusted-input
-validation rule that already covers device names.
+`$GAGE_DATA/identities/<vault-id>/<device>.age`; the **trust cache** path
+becomes `$GAGE_STATE/<vault-id>/known-config.toml`; the id added to
+global config's `[vaults.<name>]`; and the id folded into the
+untrusted-input validation rule that already covers device names.
+
+**`pubkey` is added to `[vaults.<name>]` in the same change**, per
+[Q-ORPHAN-BY-NAME](#q-orphan-by-name): this device's public key for that
+vault, recorded when the identity is created, so `vault remove` can tell
+whether a local key is genuinely orphaned by comparing keys instead of
+names. Bundled here because both fields land in the same table and both
+exist for the same reason — a name was being used where an identity was
+meant.
+
+**The trust cache had the same flaw and is fixed in the same change.**
+`TrustCacheDir(vault string)` keyed `$GAGE_STATE/<vault>/` by the local
+name, so two vaults registered under one name in sequence shared a
+cache. It is far less serious than the identity case — it fails safe (an
+inherited cache produces a *spurious* recipient-change warning rather
+than suppressing a real one) and the design already calls the cache
+disposable — but there is no reason to leave one keying scheme correct
+and its neighbour wrong when the id exists anyway.
 
 **Affects:** M1 (config schema, `format_version`, global config), M2
 (identity file paths), and the enrollment doc's references to the
@@ -1013,6 +1135,24 @@ underneath it.
 ---
 
 ## Accepted risks
+
+### Batch enrollment approval costs one scrypt run per code per pending request
+
+`gage recipient approve` tries each supplied code against each pending
+request, and each attempt is a deliberately slow scrypt KDF. Approving
+3 devices with 10 requests outstanding is 30 runs.
+
+**Knowingly not optimized.** The numbers that make it slow do not occur:
+pending requests expire in 24h by default and are deleted on approval,
+so more than a handful outstanding at once means something unusual is
+already happening. Malformed codes are rejected on length and alphabet
+before any decryption, so the common typo costs nothing. Reducing it
+further would mean either weakening the KDF — the thing protecting an
+offline-attackable blob — or adding unsealed hints about which code
+opens which request, which leaks more than the time is worth.
+
+Recorded so a future reader doesn't mistake it for an oversight.
+
 
 ### A hostname device name discloses whose machine it is
 

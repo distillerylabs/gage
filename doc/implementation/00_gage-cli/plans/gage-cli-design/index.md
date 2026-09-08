@@ -283,6 +283,12 @@ milestone whose surface it touches rather than in a suite of their own.
   ciphertext, and `vault remove` never touches the store. `gage init`
   and `identity add` reusing an existing identity file rather than
   overwriting it is the other half of the same guarantee.
+  **Being revised:** the "no longer lists this device" test compares
+  device *names*, which A20's follow-on changes to a public-key
+  comparison behind a confirmation. A20 also removes most of this
+  cleanup's original motivation, since keying identities by vault id
+  makes the silent-reuse case it guarded against structurally
+  impossible.
 - **`make reset-local-state`** (`scripts/resetlocalstate`) — a
   development helper that deletes this machine's
   `$GAGE_CONFIG`/`$GAGE_DATA`/`$GAGE_STATE` so the fresh-install path can
@@ -355,6 +361,18 @@ Work remaining, spanning M1 and M2:
   can identify a vault's identities directory without reading the vault.
 - The id validated as untrusted input before any path is built from it,
   the same rule device names already get (Q-DEVICE-NAME).
+- The trust cache moved to `$GAGE_STATE/<vault-id>/known-config.toml` —
+  the same keying flaw, far milder (it fails safe, producing a spurious
+  recipient-change warning rather than suppressing a real one), fixed
+  here because the id exists anyway.
+- `pubkey` added to `[vaults.<name>]`, and `removeOrphanedIdentity`
+  changed to compare public keys rather than device names **and to
+  `Confirm` before deleting, defaulting to keep**
+  ([Q-ORPHAN-BY-NAME](open-questions.md#q-orphan-by-name)). Today that
+  function decides whether to delete the only copy of a private key by
+  comparing labels, which is wrong in both directions; the false-delete
+  direction is unrecoverable, and `recipient approve --device` makes it
+  newly reachable.
 
 **Do this before shipping anything.** Migration is "re-create the
 vault," which is only tolerable because there is no installed base;
@@ -362,10 +380,11 @@ vault," which is only tolerable because there is no installed base;
 waits makes it more expensive, and it is the only item here with that
 property.
 
-**It does not close the whole bug.** `removeOrphanedIdentity` still
-compares device *names* to decide whether to delete a private key — the
-same label-versus-identity confusion the enrollment work settled — and
-that deserves fixing on its own terms.
+**Ordering against enrollment.** A20's keying half should land first —
+it is the only item here that gets more expensive with time. The
+`removeOrphanedIdentity` half should land with device enrollment, since
+`recipient approve --device` is what makes its unrecoverable case
+reachable.
 
 ---
 
