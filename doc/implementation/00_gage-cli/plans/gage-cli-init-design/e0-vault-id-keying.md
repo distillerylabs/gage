@@ -69,6 +69,35 @@ before starting.
 - [ ] Identity files land at
       `$GAGE_DATA/identities/<vault-id>/<device>.age`, still `0700`
       directory and `0600` file.
+- [ ] **The id `init` files the identity under is the id it commits.**
+      Assert the directory name equals `[vault].id` in the created
+      vault's own `.gage/config.toml` — the one assertion that catches
+      `init` minting a second id after `CreateIdentity` has already
+      written the file, which leaves a working vault and an unreachable
+      key.
+- [ ] **A failed `init` rolls back the identity it generated.** Make
+      `Create` fail after `CreateIdentity` has succeeded (an existing
+      non-empty target directory does it) and assert nothing is left
+      under `$GAGE_DATA/identities/`. This pins the rollback against the
+      id path; against the name it silently does nothing.
+- [ ] **A retried `init` generates a fresh key rather than reusing one**,
+      and leaves no directory behind from the failed attempt. This is a
+      real behavior change and the test should say so: `init` mints a new
+      id every run, so `CreateIdentity`'s reuse path — which under
+      name-keying made a retried `init` pick its previous key back up —
+      can no longer be reached from `init` at all. The `identityExisted`
+      flag at that call site is consequently always false for `init`.
+      Reuse itself is untouched and still reachable from `identity add`
+      and `identity enroll`, which operate on a vault whose id already
+      exists.
+
+      **The knock-on is that rollback becomes load-bearing.** It used to
+      be a tidiness measure with reuse as the backstop; it is now the only
+      thing standing between repeated failed `init`s and an orphaned
+      identity directory per attempt, each holding a private key for a
+      vault that was never created. Worth one test of its own — two failed
+      `init`s in a row leave `$GAGE_DATA/identities/` empty — rather than
+      resting on the single-failure case above.
 - [ ] The trust cache lands at
       `$GAGE_STATE/<vault-id>/known-config.toml`.
 - [ ] **Two vaults registered under the same local name in sequence do
@@ -78,6 +107,11 @@ before starting.
 - [ ] The identities directory carries a plaintext marker naming the
       vault, and nothing reads it to make a decision (delete it and
       assert every operation still behaves identically).
+- [ ] **Removing the last identity for a vault leaves no orphaned
+      directory** — whichever way the marker/prune question above is
+      settled, assert the end state rather than the mechanism. Without
+      this the marker quietly turns `RemoveIdentity`'s existing prune
+      into a no-op and nothing fails.
 
 **`removeOrphanedIdentity` — the destructive path**
 
@@ -119,6 +153,28 @@ before starting.
       `.gage/config.toml`, `format_version` bumped to 2. Reject v1 in
       the existing check rather than adding a bespoke missing-field
       error — the version marker exists for exactly this.
+- [ ] **`init` mints the id before it creates the identity, not after.**
+      This is the reordering the milestone turns on, and it is not
+      visible from the config schema. Today `cmd/gage/init.go` calls
+      `CreateIdentity(opt.name, device, …)` and only then
+      `gage.Create(spec)` — so the identity file is written before the
+      vault that would carry the id exists. Three edits, and they have to
+      land together:
+      - Mint the UUID in `runInit`, ahead of the `CreateIdentity` call.
+      - Add `ID` to `CreateSpec` so `Create` records the id it was handed
+        rather than minting a second one. Two ids for one vault is the
+        failure this ordering exists to prevent, and the vault would
+        still look fine — the identity would simply be filed under an id
+        nothing ever looks up again.
+      - Pass the id to the failure-path `RemoveIdentity` call as well.
+        It currently rolls back by name; against the new path that is a
+        no-op that silently leaves the generated key behind, which is
+        the one case `init`'s rollback comment says it deliberately
+        cleans up.
+- [ ] `clone` takes the id from the config it just fetched, which is
+      already read to register the vault — no ordering problem there, and
+      worth confirming rather than assuming while `init`'s is being
+      fixed.
 - [ ] Validate the id as a UUID wherever a device name is validated
       today; both are path components arriving from a committed file
       any git-writer can edit.
@@ -130,6 +186,17 @@ before starting.
       `clone`, and `identity add`.
 - [ ] Plaintext marker written into the identities directory at
       creation.
+- [ ] **Decide what the marker does to `RemoveIdentity`'s directory
+      prune, and do it deliberately.** `RemoveIdentity` currently ends
+      with `os.Remove(filepath.Dir(path))` and a comment explaining that
+      it succeeds only when the directory is empty, "which is exactly the
+      wanted semantics." A marker file makes it never empty, so that call
+      silently becomes a no-op and every vault ever removed leaves an
+      identities directory behind holding one marker. Nothing breaks, and
+      that is the problem — it is invisible. Either remove the marker
+      alongside the last identity and keep the prune working, or drop the
+      prune and say the directory is left behind on purpose. Do not leave
+      the existing comment describing behavior that no longer happens.
 - [ ] `removeOrphanedIdentity` compares `r.Pubkey` against the recorded
       `pubkey`, and gates deletion behind `app.Prompter.Confirm` with a
       message naming the path. `app.Prompter` is already on the struct;
@@ -140,6 +207,14 @@ before starting.
       read by a v2 build needs re-creating, not a newer binary. Older
       than this build → re-create, naming `make reset-local-state`; newer
       → upgrade gage, as now.
+
+      **`vaultconfig`'s existing tests assert the current string.**
+      `TestReadRejectsUnrecognizedFormatVersion` checks the message
+      contains `"upgrade gage"` — correct for the newer-than-this-build
+      direction it constructs (`format_version = 99`) and still passing
+      afterwards, but it now needs a sibling for the older direction
+      rather than being left as the only case covered. Update in place
+      rather than deleting, the same way E1 handles M9's bullets.
 
 ## Definition of done
 

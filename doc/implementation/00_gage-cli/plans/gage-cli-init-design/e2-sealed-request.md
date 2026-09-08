@@ -41,11 +41,21 @@ E2 is independent of E0 and E1 and can be worked in parallel with either.
 
 ## Decisions
 
-All settled. The one to keep in front of you while writing tests: **the
-seal provides authentication, not confidentiality.** The plaintext is a
-public key. A test that only proves round-tripping has not tested the
-property the feature depends on — tampering must fail, and a wrong code
-must open nothing.
+**One is open and blocks this milestone: `D-ENROLL-SEAL-COST`.** Resolve
+it in the TDD before writing code here, per the project rule that a
+milestone's decisions are settled in the doc first. It asks what work
+factor a seal is written at — the identity file's 19 is calibrated for a
+*user-chosen* passphrase and buys nothing against an 80-bit generated
+code, while costing ~2s on every open, multiplied by codes × requests —
+and whether one run bounds how many requests it attempts. The answer
+changes this milestone's sealing code and adds or removes test bullets
+below; everything else here is unaffected either way.
+
+The rest are settled. The one to keep in front of you while writing
+tests: **the seal provides authentication, not confidentiality.** The
+plaintext is a public key. A test that only proves round-tripping has not
+tested the property the feature depends on — tampering must fail, and a
+wrong code must open nothing.
 
 ## Tests (write first)
 
@@ -82,6 +92,15 @@ must open nothing.
 - [ ] A tampered sealed blob fails to open rather than opening with
       altered contents. This is the AEAD property the authentication
       claim rests on.
+- [ ] **A request whose scrypt stanza claims an absurd work factor costs
+      a bounded wait, not a hang.** Hand-build a blob claiming 2^30,
+      commit it, and assert the open path refuses it promptly. The open
+      path must call `SetMaxWorkFactor(scryptMaxWorkFactor)` the way
+      `unlock.go` already does for identity files — enrollment is a new
+      decryption path and inherits that guard from nothing. This is the
+      settled half of `D-ENROLL-SEAL-COST`, and it is worth writing early:
+      **one** hostile file is enough, no volume required, and the symptom
+      is a process that appears to have stopped rather than an error.
 - [ ] A request whose sealed `request_id` disagrees with its filename's
       UUID portion is refused with `ErrEnrollmentIDMismatch`. Changing
       only the **epoch** portion is not a mismatch.
@@ -133,6 +152,32 @@ must open nothing.
 
 ## Implementation
 
+**Which of the TDD's exported functions land here.** Stated explicitly
+because the test list above exercises listing and opening, and a reader
+skimming only the bullets would take those for E3/E4 work and ship E2
+without them. E2 delivers three of the six:
+
+| Function | Milestone |
+|---|---|
+| `Vault.PendingEnrollments()` | **E2** — every listing test above calls it |
+| `Vault.OpenEnrollment(codes)` | **E2** — every wrong-code, normalization, tamper, and expiry test calls it |
+| `Vault.ResolveEnrollment(id)` | **E2** |
+| `Vault.Enroll(...)` | E3 |
+| `Vault.ApproveEnrollments(...)` | E4 |
+| `Vault.DenyEnrollment(...)` | E4 |
+
+E4 *wires* the first three into commands; it does not build them. Its
+implementation list names them only to pin the contract that
+`PendingEnrollments` and `OpenEnrollment` take no `Identity`, which is
+what makes the late unlock possible.
+
+- [ ] **A sealing entry point that validates the TTL**, since the test
+      list rejects a zero, negative, or beyond-ceiling TTL "by the
+      library" and there is no command here to reject it from. Sealing is
+      the only E2 function that takes a duration, so the validation lives
+      at its boundary and `Vault.Enroll` inherits it in E3 rather than
+      re-checking. Unexported is fine — E3 is its only caller — but it
+      has to exist, or that bullet has nothing to test.
 - [ ] Code generation: 16 Crockford base32 characters from
       `crypto/rand`, rendered in four hyphenated groups behind a
       cosmetic `GAGE-` prefix.
@@ -143,11 +188,26 @@ must open nothing.
       recipient.
 - [ ] Filename construction and parsing, with the UUID and epoch halves
       validated independently.
+- [ ] `Vault.PendingEnrollments()` — builds `PendingRequest`s from
+      filenames alone, returns zero for a missing `pending/`, skips
+      strays, and reads no git history.
+- [ ] `Vault.OpenEnrollment(codes)` — normalize and validate each code,
+      then try the surviving ones against each request. Takes **no
+      `Identity`**: opening is keyed by the code, and that signature is
+      the contract E4's late unlock rests on, so it is fixed here rather
+      than arrived at there.
 - [ ] `PendingRequest`, `OpenedRequest`, `EnrollmentRequest` types, and
       the typed errors: expired, wrong-code, id-mismatch, clock-skew, and
       no-such-request. Each carries the exit code the TDD's "Library
       surface" table assigns it — the taxonomy is an M0 contract, not a
       per-command choice.
+- [ ] A malformed code returns `ErrEnrollmentCodeWrong` at
+      `LockedOrAuth` — the *same* error as a well-formed code that opens
+      nothing, now settled in the TDD's error list and exit-code table.
+      Validation still runs before any decryption; that buys cost, not a
+      different answer. Both spellings must be indistinguishable to the
+      caller, since E4's retry loop keys on this value and a typo is what
+      the loop is for.
 - [ ] `Vault.ResolveEnrollment(id)` as the single resolution path both
       `approve` and `deny` use, returning `*AmbiguousRequestError` with
       the matches on ambiguity — a value `cmd/gage` renders, mirroring

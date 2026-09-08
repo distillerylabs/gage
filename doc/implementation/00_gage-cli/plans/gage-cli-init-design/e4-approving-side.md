@@ -18,6 +18,11 @@ This is the milestone that makes enrollment actually grant access.
 
 ## Depends on
 
+- **E2** — `PendingEnrollments`, `OpenEnrollment`, `ResolveEnrollment`,
+  and pruning are all built and proven there. E4 wires them to commands
+  and reimplements none of them. Listed explicitly rather than left
+  implicit through E3, because E4 is the milestone that *calls* all four
+  and the boundary is otherwise easy to blur.
 - **E3** — requests exist to approve, and its `Enroll` builds the test
   fixtures.
 - **E1** — approval always re-encrypts and reuses
@@ -123,6 +128,19 @@ like they do:
       success — injected fake `RemoteSyncer`, and assert the warning
       reached the `Prompter`. A silent failed deny leaves the request
       live for every other device.
+- [ ] **`approve` warns when its push fails**, and the local commit
+      stands. Injected fake `RemoteSyncer`. Assert all of it, because
+      approval's local/remote split is the widest in the tool: locally
+      the recipient is listed, every entry is re-encrypted, and the
+      request file is gone; on the remote none of that happened and the
+      request is still pending. The warning must say the approval is
+      local-only and name the push, not just "not pushed" — the joining
+      device is still locked out and `gage sync` will tell it nothing is
+      wrong.
+- [ ] **A re-approval after a failed push, once the push lands, is the
+      already-a-recipient no-op** — not a second grant and not an error.
+      This is what makes the failed-push state self-healing, so it is
+      worth pinning rather than reasoning about.
 
 **The approver's unlock**
 
@@ -217,9 +235,11 @@ like they do:
 
 ## Implementation
 
-- [ ] `PendingEnrollments()` and `OpenEnrollment(codes)` taking **no
-      `Identity`** — that is what makes the late unlock possible, and it
-      is a contract, not an accident.
+- [ ] Wire **E2's** `PendingEnrollments()` and `OpenEnrollment(codes)`
+      into `recipient pending` and `approve`. Both are built and proven
+      in E2; nothing here reimplements them. What E4 depends on is their
+      signature — neither takes an `Identity` — since that is what makes
+      the late unlock possible, and it is a contract, not an accident.
 - [ ] `ApproveEnrollments(approvals []Approval, ident *Identity)
       (ApprovalResult, error)` with `Approval{Request, Label}` and
       per-request `ApprovalOutcome`. `RecipientChange` is deliberately

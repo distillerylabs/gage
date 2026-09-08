@@ -1211,14 +1211,40 @@ union of two recipient lists. The reasoning is in the enrollment doc's
 request, and each attempt is a deliberately slow scrypt KDF. Approving
 3 devices with 10 requests outstanding is 30 runs.
 
-**Knowingly not optimized.** The numbers that make it slow do not occur:
-pending requests expire in 24h by default and are deleted on approval,
-so more than a handful outstanding at once means something unusual is
-already happening. Malformed codes are rejected on length and alphabet
-before any decryption, so the common typo costs nothing. Reducing it
-further would mean either weakening the KDF — the thing protecting an
-offline-attackable blob — or adding unsealed hints about which code
-opens which request, which leaks more than the time is worth.
+**Knowingly not optimized for the benign case.** Pending requests expire
+in 24h by default and are deleted on approval, so more than a handful
+outstanding at once means something unusual is already happening.
+Malformed codes are rejected on length and alphabet before any
+decryption, so the common typo costs nothing.
+
+**Two things this entry originally got wrong**, both found reviewing the
+enrollment plan and both now tracked in the TDD as
+`D-ENROLL-SEAL-COST`:
+
+- **The benign case is slower than "30 runs" makes it sound.** gage
+  seals at the identity file's work factor, ~2s a run, so that example
+  is about a minute of wall clock. Whether it should seal that high is
+  now an open question in its own right: factor 19 is calibrated for a
+  *user-chosen* passphrase, and an enrollment code is 80 bits from
+  `crypto/rand`, where the entropy is doing all the work the KDF is
+  being paid for.
+- **Neither multiplicand is bounded by anything gage controls.** The
+  count comes from a directory any git-writer can fill, and the
+  per-attempt cost comes from a work factor each blob *claims*.
+  `unlock.go` already caps a claimed factor for identity files; the
+  enrollment open path is new code and has to do the same, or one
+  committed blob claiming 2^30 hangs `approve`.
+
+So the remaining accepted risk is narrower than it was: with the claimed
+factor capped and the attempt count bounded, a stuffed `pending/` is a
+bounded refusal that names `approve <ID>`, which is O(1) in directory
+size. That it is *possible* to make approval briefly unpleasant is
+accepted, and is the same class as the filename section's "anyone who
+can rename the file can equally delete it."
+
+What is still ruled out is the shortcut this entry originally described:
+adding unsealed hints about which code opens which request leaks who is
+enrolling, which is the thing the filename scheme exists to prevent.
 
 Recorded so a future reader doesn't mistake it for an oversight.
 

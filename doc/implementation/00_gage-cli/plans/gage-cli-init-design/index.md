@@ -28,11 +28,20 @@ Enrollment's decisions already live there (`Q-ENROLL-VERBS`,
 `A20`). Forking a second register would defeat the thing that register
 is for — being the single place a deferred problem is allowed to live.
 
-**Design decisions are in the TDD, not here.** The eight `D-ENROLL-*`
-decisions are settled in
+**Design decisions are in the TDD, not here.** Eight of the nine
+`D-ENROLL-*` decisions are settled in
 [gage-cli-init-design.md](../../tdds/gage-cli-init-design.md); milestone
 docs reference them rather than re-arguing them. If a decision needs
 revisiting, it changes there and the milestone follows.
+
+**One is open, and it gates E2.** `D-ENROLL-SEAL-COST` — what work
+factor a seal is written at, and whether one `approve` run bounds how
+many requests it attempts. Per this project's rule that a milestone's
+open decisions are resolved in the doc *before* any code is written for
+it, E2 does not start until this is answered. The settled half of it
+(cap the *claimed* work factor on the open path, as `unlock.go` already
+does for identity files) is an E2 implementation item regardless of how
+the open half lands.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
@@ -88,7 +97,7 @@ E1 (A19) ───────────────────────�
 **E1 and E2 are mutually independent** and can be worked in either
 order, or in parallel by two people.
 
-### Two things this plan corrected after review
+### What this plan corrected after review
 
 Recorded because both were wrong in a way a passing test suite would not
 have caught, and someone reading the milestone docs alone would inherit
@@ -110,6 +119,33 @@ the mistake.
   `approve` deliberately defers until after the human says yes. E1's
   phrasing was correct for `recipient add` and wrong when copied into
   E4. See E4's Decisions for the ordering that replaces it.
+
+A second review pass found three more, all of the same character —
+things a passing test suite would not have caught, because the tests
+would have been written against the same wrong premise:
+
+- **Enroll cannot reach the network through `Pull`/`Push`/`tryPull`.**
+  D-ENROLL-REMOTE cited `tryPull`'s `underWriteLock` as precedent for
+  holding the lock across the pull, without noticing that this makes
+  those entry points *uncallable* from inside enroll's own lock:
+  `vaultlock` is not re-entrant, so enroll would block against itself
+  and fail as contention. Enroll uses the unexported `v.pull`/`v.push`.
+  Corrected in the TDD's D-ENROLL-REMOTE and in E3.
+- **`Prompter` does gain a method.** The TDD drew clone's offer as
+  `[Y/n]` and asserted "no new interface surface" on the same page;
+  `Confirm` is specified default-no and says why. Resolved in favor of
+  the transcript: `ConfirmDefaultYes` is added, E3 owns it, and
+  D-ENROLL-PROMPTER is scoped so its (correct) claim about the
+  enrollment *code* stops reading as a claim about the whole feature.
+- **"Already a recipient" was being reported as a name collision.**
+  A device that was added manually and then runs `identity enroll` hit
+  `ErrDeviceNameTaken` and was told to pass `--device` — advice that
+  mints a second identity to request access it already has. It is now a
+  success that does no work, checked by public key before the name
+  check, using the `pubkey` field E0 adds. This is the second consumer
+  of E0's key-not-name comparison, which is worth noting on its own:
+  the field was introduced for `removeOrphanedIdentity` and turns out
+  to fix a second bug of the same shape.
 
 ### One ordering constraint that is easy to miss
 
@@ -138,7 +174,9 @@ files.
 |---|---|---|
 | E0 | `[vault].id` in `.gage/config.toml`; `format_version = 2` | Every later reader of that file |
 | E0 | `$GAGE_DATA/identities/<vault-id>/<device>.age` | E3 (create/reuse). E4 never touches local identities — but it still **depends on E0**, for the `removeOrphanedIdentity` fix that `--device` makes reachable |
-| E0 | `pubkey` in global config's `[vaults.<name>]`, written by `init`, `clone`, `identity add` — and by E3's `enroll` | E0's own `removeOrphanedIdentity`; anything else needing a key-not-name comparison |
+| E0 | `pubkey` in global config's `[vaults.<name>]`, written by `init`, `clone`, `identity add` — and by E3's `enroll` | E0's own `removeOrphanedIdentity`; **E3's already-a-recipient check**, which is the second consumer of the same key-not-name comparison; anything else needing one |
+| E2 | `Vault.PendingEnrollments`, `OpenEnrollment`, `ResolveEnrollment` — **built here, not in E4** | E4 wires all three to commands and reimplements none of them |
+| E3 | `Prompter.ConfirmDefaultYes` — the one default-yes question in `gage` | Nothing else today. Recorded because it is a compile-time break on every `Prompter` implementation, which is the point |
 | E1 | `recipient add` always re-encrypts; `ErrCannotGrantFullAccess` exposed as a **separately callable pre-flight pass**, not buried in `AddRecipient` | E4 reuses the error and the pass, but places it differently — after its own confirmation and unlock, still before the lock and M10's prompt |
 | E2 | Enrollment code: generation, Crockford normalization, validation-before-decrypt | E3 displays one, E4 consumes one |
 | E2 | Sealed payload + `<request-id>-<expires-epoch>.age` filename scheme | E3 writes them, E4 reads and prunes them |

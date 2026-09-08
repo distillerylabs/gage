@@ -79,6 +79,11 @@ are the starting point; these expand them.
       wording. M0's registry test keeps both surfaces honest. (Three
       further `Short`s change in E3/E4 — see the table in D-ENROLL-VERBS.
       This milestone owns only `recipient add`'s.)
+- [ ] **`identity add`'s printed next-command no longer names a flag
+      that fails.** Assert on the output, not just on the parser: the
+      line `identity add` prints is the one a user copies, so a test that
+      only proves `--reencrypt` is rejected leaves the tool actively
+      instructing people to pass it.
 
 **Constructing the refusal state.** The only ways in are a recipient
 added before this milestone, or a hand-edited `.age-recipients`. Use the
@@ -97,6 +102,25 @@ the old behavior first.
       silently changing meaning.
 - [ ] Update `recipientChangeLines` — the with/without distinction it
       renders no longer exists for `add`.
+- [ ] **Grep the whole tree for `--reencrypt` before calling this done.**
+      Removing the flag from the parser is the small half; the flag is
+      also *taught* in prose that will otherwise keep telling people to
+      pass an argument that now fails. At least three sites outside
+      `recipient add` itself:
+      - `identity add`'s closing instruction, which prints the literal
+        next command to run: `gage recipient add <pubkey> --device NAME
+        --reencrypt` (`cmd/gage/identity.go`). This one is the worst of
+        them — it is copy-pasteable, and following it verbatim now
+        produces a usage error at the end of a successful onboarding.
+      - `identity add`'s `Long` help, which repeats the same instruction
+        in prose a few lines above.
+      - `removeOrphanedIdentity`'s "remove it as a recipient first (from
+        another device, with `--reencrypt`)" message
+        (`cmd/gage/vault.go`) — this one is about `recipient remove`,
+        where the flag *stays*, so it is correct as written. Check it
+        rather than assume, and leave it alone.
+      A grep is the check, not reading this list: the point is that the
+      flag's removal is a documentation change as much as a parser one.
 - [ ] Update M9's test list in place: replace the bullets pinning the
       old behavior rather than deleting them, so the change is legible
       to someone reading M9 later.
