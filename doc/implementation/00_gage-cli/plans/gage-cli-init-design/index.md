@@ -21,6 +21,13 @@ the three with a non-obvious home (`ErrEnrollmentCodeWrong` →
 `Ambiguous`). A milestone that adds an error adds its code and a test
 pinning it.
 
+Two errors joined that table on the third review pass —
+`ErrEnrollmentDiverged` and `ErrEnrollmentMalformedRequest`, both
+`Conflict` — and one pre-existing error was added to it rather than
+introduced: enroll's name collision reuses `ErrDeviceNameTaken`, so the
+table now says which code that carries instead of leaving the one reused
+error as the only unlisted one.
+
 **There is still one open-questions register**, and it is the core
 plan's: [open-questions.md](../gage-cli-design/open-questions.md).
 Enrollment's decisions already live there (`Q-ENROLL-VERBS`,
@@ -53,7 +60,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | # | Milestone | Status | Model | Theme |
 |---|---|---|---|---|
 | E0 | [Vault-id keying](e0-vault-id-keying.md) | `[ ]` | **Opus** ⚑ | A20: identities and trust cache keyed by vault id, not local name |
-| E1 | [Unconditional re-encryption](e1-unconditional-reencrypt.md) | `[ ]` | Sonnet* | A19: `recipient add` always re-encrypts |
+| E1 | [Unconditional re-encryption](e1-unconditional-reencrypt.md) | `[ ]` | Sonnet* | A19: `recipient add` always re-encrypts; extract the N-recipient write E4 needs |
 | E2 | [The sealed request](e2-sealed-request.md) | `[ ]` | **Opus** ⚑ | Code generation, the seal, the filename scheme, expiry — library only |
 | E3 | [Joining a vault](e3-joining-side.md) | `[ ]` | Sonnet | `identity enroll`, the clone prompt, publishing a request |
 | E4 | [Approving a device](e4-approving-side.md) | `[ ]` | **Opus** | `recipient pending/approve/deny`, late unlock, atomic batch approval |
@@ -78,7 +85,7 @@ in prose ambiguous about which plan it meant.
 ```
 E0 (A20) ──┬────────────────> E3 ───> E4
            │                   ↑       ↑
-E2 (seal) ─┴───────────────────┘       │
+E2 (seal) ─┴───────────────────┴───────┤
                                        │
 E1 (A19) ──────────────────────────────┘
 ```
@@ -88,10 +95,15 @@ E1 (A19) ───────────────────────�
   migrating files this feature just created.
 - **E2 → E3** — enroll's whole job is producing a sealed request; the
   seal has to exist and be proven before anything publishes one.
-- **E1 → E4** — approval always re-encrypts and needs
-  `ErrCannotGrantFullAccess`. Landing A19 first makes both *existing*
+- **E2 → E4** — E4 calls `PendingEnrollments`, `OpenEnrollment`,
+  `ResolveEnrollment` and pruning directly. Transitive through E3, but
+  drawn because someone parallelizing E3 and E4 across two people would
+  otherwise read E4 as depending only on E3.
+- **E1 → E4** — approval always re-encrypts, needs
+  `ErrCannotGrantFullAccess`, and is built on E1's **N-recipient form**
+  of `AddRecipient`'s body. Landing A19 first makes all three *existing*
   machinery that approval reuses, rather than two commands arriving at
-  the same rule independently.
+  the same rules independently.
 - **E0 → E4** — approval relabels recipients, which is the thing that
   makes E0's `removeOrphanedIdentity` fix urgent (see below).
 
@@ -148,6 +160,66 @@ would have been written against the same wrong premise:
   the field was introduced for `removeOrphanedIdentity` and turns out
   to fix a second bug of the same shape.
 
+A third pass found five more. Four are the same character again — a
+premise that a test written from the same premise would have confirmed —
+and the fifth is a claim about the code that turned out to be false:
+
+- **`Enroll` needs the dirty-tree reset, and its absence wedges the
+  joining device.** `D-ENROLL-REMOTE`'s step list went straight from
+  "take the lock" to "pull", and E3 named `withWriteLock`. But a
+  fast-forward *refuses* over a dirty tree, and a joining device has no
+  other write that would clear one — every path that runs the reset needs
+  an unlock it cannot perform. So one interrupted enroll left the device
+  failing every subsequent enroll with a dirty-tree `Conflict`,
+  recoverable only by hand-deleting a file under `.gage/`. Enroll takes
+  `withVaultWrite`; the step list now says so, and E3 has a test that
+  fails specifically when it doesn't. This is also what makes the TDD's
+  crash-safety story true rather than merely plausible.
+- **A diverged pull was unhandled, and `v.pull` reports it with a nil
+  error.** Reachable by the path the document already accepts: a
+  read-scoped token fails the push, leaving a local commit; the remote
+  moves; the re-run diverges. Enroll would have committed onto it and
+  failed at the push with "run `gage sync`" — the advice
+  `D-ENROLL-REMOTE` spends three paragraphs establishing is wrong for a
+  device that cannot decrypt. Now `ErrEnrollmentDiverged`, refused before
+  anything is created.
+- **The sealed payload is untrusted input, and nothing validated it.**
+  "Every field on `OpenedRequest` is authenticated" is true and was being
+  read as "well-formed", which it is not — a git writer can drop a file
+  in `pending/`, and any code-holder can seal anything. The device name
+  is printed directly above the `[y/N]` that grants vault-wide access, so
+  an unvalidated one could rewrite the question being answered.
+  `devicename.Valid` closes it, but only if it runs before the render;
+  new section in the TDD, new tests in E2 and E4, new
+  `ErrEnrollmentMalformedRequest` kept distinct from a wrong code so the
+  retry loop doesn't spin on a file no code can validate.
+- **Batch approval cannot call `AddRecipient`.** That function is a
+  complete write — lock, trust question, one recipient, one commit — so N
+  calls is N of everything, which is what batch approval exists to avoid,
+  and it has nowhere to delete the pending files in the same commit. An
+  N-recipient form of its body is needed, and it now lands in **E1**,
+  which is already the milestone opening that function. Without this, E4
+  quietly grows a refactor of M9's central write path while being
+  described everywhere as wiring.
+- **The enrollment code does reach the history file.** The TDD claimed it
+  "exists nowhere else — not in the session history file (which already
+  refuses to record values)". The history file records every typed line
+  verbatim and filters nothing; what is true is that no command puts a
+  *decrypted value* on a line. `recipient approve --code GAGE-…` does put
+  a code there. The claim is now scoped to the joining side, which
+  generates codes and never takes one as input, and the approver-side
+  exposure is an
+  [accepted risk](../gage-cli-design/open-questions.md#enrollment-code-history)
+  with a real escape hatch — omit `--code` and answer the masked prompt.
+
+Three smaller corrections landed with them: `Vault.Enroll` takes a
+`context.Context` like every other exported method that blocks on a
+remote and fails when it can't reach one; `gage clone`'s existing
+`--device` flag now carries through to the request the offer publishes;
+and `clone`'s can't-read-anything message is reworded to name `identity
+enroll` rather than only `identity add`, since E3's own test list was
+asserting text that did not exist.
+
 ### One ordering constraint that is easy to miss
 
 E0 has two halves, and they want different timing:
@@ -179,6 +251,9 @@ files.
 | E2 | `Vault.PendingEnrollments`, `OpenEnrollment`, `ResolveEnrollment` — **built here, not in E4** | E4 wires all three to commands and reimplements none of them |
 | E3 | `Prompter.ConfirmDefaultYes` — the one default-yes question in `gage` | Nothing else today. Recorded because it is a compile-time break on every `Prompter` implementation, which is the point |
 | E1 | `recipient add` always re-encrypts; `ErrCannotGrantFullAccess` exposed as a **separately callable pre-flight pass**, not buried in `AddRecipient` | E4 reuses the error and the pass, but places it differently — after its own confirmation and unlock, still before the lock and M10's prompt |
+| E1 | The **N-recipient form** of `AddRecipient`'s body: a slice of recipients, and the extra paths to delete in the same commit. `AddRecipient` becomes its one-recipient caller | E4's `ApproveEnrollments` — one lock, one trust question, one re-encryption pass, one commit, with the approved requests' files removed in it |
+| E2 | Payload validation on the open path — `device`, `pubkey`, `method`, `request_id` checked before `OpenedRequest` is returned; `ErrEnrollmentMalformedRequest` kept distinct from a wrong code | E4, which renders those fields to the approver directly above the `[y/N]` |
+| E3 | `Vault.Enroll(ctx, …)` — the one enrollment method that takes a context, because its fetch is a hard precondition rather than an opportunistic push | `cmd/gage`; the shape matches `Pull`/`Push`/`Sync` |
 | E2 | Enrollment code: generation, Crockford normalization, validation-before-decrypt | E3 displays one, E4 consumes one |
 | E2 | Sealed payload + `<request-id>-<expires-epoch>.age` filename scheme | E3 writes them, E4 reads and prunes them |
 | E2 | ID resolution — exact, substring, candidate list — over the UUID portion only | E4's `approve <ID>` and `deny <ID>` |

@@ -71,6 +71,21 @@ reader of an earlier draft would not expect:
   `[vaults.<name>].pubkey`. The old behavior told such a device to pass
   `--device`, which mints a second identity for no reason.
 
+A second review pass settled three more, all in the TDD now:
+
+- **`Enroll` runs under `withVaultWrite`, not `withWriteLock`** — it
+  takes the ordinary dirty-tree reset every write takes, *before* the
+  pull. This is not tidiness: a fast-forward refuses over a dirty tree,
+  and a joining device has no other write to clear one with, so an
+  interrupted enroll would wedge the device permanently. See the
+  implementation list.
+- **A diverged pull fails with `ErrEnrollmentDiverged`**, before anything
+  is created. `v.pull` reports divergence with a **nil error** and
+  `SyncReport.Diverged` set, so it has to be checked for rather than
+  caught.
+- **`Enroll` takes a `context.Context`**, matching every other exported
+  method that blocks on the network and can fail because of it.
+
 ## Tests (write first)
 
 **The two identity paths**
@@ -121,8 +136,28 @@ reader of an earlier draft would not expect:
       a fresh request and code, and succeeds once the push is allowed.
 - [ ] `identity enroll` warns, and proceeds, when local time is behind
       the vault's HEAD committer timestamp.
+- [ ] **A diverged pull fails with `ErrEnrollmentDiverged`** before any
+      identity is written, anything is sealed, or anything is committed —
+      and the message does **not** say "run `gage sync`", which this
+      device cannot usefully do. Construct it the way it actually
+      happens: enroll with a push that fails, move the bare remote ahead,
+      enroll again.
+- [ ] **The nil-error trap is pinned.** `v.pull` reports divergence with
+      a nil error and `SyncReport.Diverged` set, so assert the *refusal*
+      rather than an error propagating — a test that only checks "some
+      error came back" passes against an implementation that ignores the
+      field entirely and fails later at the push.
 - [ ] Each remote error carries its exit code: `ErrEnrollmentNoRemote` →
-      `Usage`, `ErrEnrollmentRemoteUnreachable` → `Unreachable`.
+      `Usage`, `ErrEnrollmentRemoteUnreachable` → `Unreachable`,
+      `ErrEnrollmentDiverged` → `Conflict`.
+- [ ] **Enroll takes the dirty-tree reset before it pulls.** Leave an
+      unrelated dirty file in the working tree, run `identity enroll`,
+      and assert it succeeds with the ordinary discard warning — not a
+      dirty-working-tree `Conflict` from the fast-forward. This is the
+      bullet that fails if `Enroll` is wired to `withWriteLock` instead
+      of `withVaultWrite`, and it fails for a reason that looks like a
+      remote problem, which is why it is worth stating rather than
+      trusting to inheritance.
 
 **Flags**
 
@@ -161,6 +196,12 @@ reader of an earlier draft would not expect:
 - [ ] `identity enroll --device NAME` seals that name into the request
       and publishes successfully where the default hostname would have
       collided — the recovery the message above points at.
+- [ ] `--device` with a name outside `devicename.Valid`'s allowlist is a
+      usage error that writes nothing, matching `AddIdentity`'s existing
+      treatment rather than discovering it later.
+- [ ] `ErrDeviceNameTaken` carries `exitcode.Conflict` on this path.
+      Pre-existing, reused rather than redefined — asserted so enroll's
+      codes are all pinned in one place.
 
 **Clone integration**
 
@@ -180,8 +221,12 @@ reader of an earlier draft would not expect:
 - [ ] Answering `n` leaves the vault cloned, no identity written,
       nothing pushed — and a later `identity enroll` still works.
 - [ ] A **non-interactive** `clone` never prompts, never writes an
-      identity, never pushes, exits 0, and prints the run-`identity
-      enroll` message — the behavior a scripted clone has today.
+      identity, never pushes, and exits 0 — the behavior a scripted clone
+      has today, with one deliberate difference: the message it prints is
+      the reworded `accessLines`, which now names `identity enroll`
+      alongside the manual path. An earlier draft of this bullet said
+      "the message it prints today", which was wrong — today's names
+      `identity add` only.
 - [ ] **The offer tracks where a `PurposeCreate` can be answered**, not a
       TTY test of its own: `--stdin` gets no offer, `--script FILE` at a
       terminal does. The failure this rules out is offering to enroll and
@@ -190,6 +235,30 @@ reader of an earlier draft would not expect:
 - [ ] A `clone` whose device already holds an identity for that vault is
       **not prompted at all**, and no unlock is attempted during the
       clone — passphrase prompt count zero.
+- [ ] **`clone --device NAME` followed by `y` publishes a request naming
+      NAME**, not the hostname. `clone` resolves the device name already;
+      the offer has to use the one it resolved rather than deriving a
+      second one.
+- [ ] **The reworded `accessLines` names `identity enroll`** and still
+      names the manual path. Assert the text on both the declined and the
+      no-TTY routes — it is the message a user copies, and the E1 bullet
+      about `identity add`'s printed next-command exists because this
+      class of instruction goes stale silently.
+
+**Session mode**
+
+`identity enroll` is registered `AvailBoth`, and the session case has a
+wrinkle one-shot does not: a joining device **cannot** `use` the vault.
+`Session.Use` unlocks, and this device holds no key the vault accepts —
+which is the entire reason it is enrolling.
+
+- [ ] **`identity enroll -u NAME` works in a session against a vault that
+      was never unlocked**, routing through `Session.VaultWithoutUnlocking`
+      rather than `Session.Vault`. Without this the command is registered
+      for a mode it cannot actually run in.
+- [ ] **`use <vault>` on a vault this device cannot decrypt still fails**
+      as it does today, and the failure names `identity enroll`. Enroll is
+      not a way to unlock; it is what you run instead.
 
 **The two secrets**
 
@@ -242,13 +311,71 @@ the real behavior, which is stronger than what the doc had claimed.
 - [ ] No test asserts a stray surviving to expire on its own epoch. That
       was the old, incorrect story; a stray outlives only the interval
       before the next local write.
+- [ ] **A stray does not wedge the device.** Construct one, then run
+      `identity enroll` again on that same machine and assert it
+      succeeds. On a joining device this is the only write available, so
+      this is the test that proves the reset is in enroll's own preamble
+      rather than in some other path that will never run here.
+
+**Two devices enrolling at once**
+
+The TDD argues at length that `.gitattributes` deliberately does *not*
+cover `pending/`, because a union of two devices' requests is the correct
+merge outcome — unlike a union of two recipient lists. Nothing tested it.
+
+- [ ] **Two devices enroll against the same remote and both requests
+      survive.** Ephemeral bare repo, two working copies, both push;
+      assert both files are present after the merge and neither is
+      truncated or conflicted. This is the whole justification for the
+      `.gitattributes` omission, and it is currently an argument with no
+      assertion under it.
+- [ ] **Neither merged request grants anything** — inertness holds across
+      a merge, which is what makes the union safe rather than merely
+      convenient.
 
 ## Implementation
 
-- [ ] `Vault.Enroll(device, ttl, Prompter) (EnrollmentRequest, error)`,
-      ordered per `D-ENROLL-REMOTE`: remote check → lock → fetch+pull →
-      **already-a-recipient check → name-collision check** → identity →
-      seal/write/commit → push → release.
+- [ ] `Vault.Enroll(ctx, device, ttl, Prompter) (EnrollmentRequest,
+      error)`, ordered per `D-ENROLL-REMOTE`: remote check → lock →
+      **dirty-tree reset** → fetch+pull → **already-a-recipient check →
+      name-collision check** → identity → seal/write/commit → push →
+      release.
+
+      The `ctx` is new since the first draft of this doc. Every other
+      exported method that blocks on a remote and *fails* when it can't
+      reach one takes one; the opportunistic pushes don't, because
+      `pushAfterWrite` warns and proceeds and has nothing worth
+      cancelling. Enroll's fetch is a hard precondition, so it takes one.
+
+- [ ] **Run the whole sequence under `withVaultWrite`, not the bare
+      `withWriteLock`.** `withVaultWrite` is lock **plus**
+      `resetDirtyWorkTree` (`internal/gage/vault.go`), and enroll needs
+      the reset for a reason specific to the device running it:
+
+      - `gitrepo.FastForward` returns `ErrDirtyWorkTree` over a dirty
+        tree, mapped to `Conflict` — so a stray `pending/` file from an
+        interrupted enroll makes the *next* enroll fail at the pull.
+      - A joining device has no other write that would clear it. Every
+        path that runs the reset needs an unlock this device cannot
+        perform; it is not a recipient, which is the whole reason it is
+        enrolling.
+
+      Without the reset in enroll's own preamble, one interrupted enroll
+      wedges the device permanently, recoverable only by hand-deleting a
+      file under `.gage/` that nothing in the tool's output ever names.
+      This is also what makes the crash-safety tests below true: on a
+      joining device, "the next write on that machine" *is* the next
+      enroll.
+
+- [ ] **Check `SyncReport.Diverged` after the pull** and fail with
+      `ErrEnrollmentDiverged` before anything is created. `v.pull`
+      returns a **nil error** in that case, so an implementation that
+      only inspects the error walks straight past it, commits onto the
+      diverged branch, and fails at the push with the standard "run `gage
+      sync`" advice — which `D-ENROLL-REMOTE` establishes at length is
+      exactly wrong for a device that cannot decrypt. The message says
+      what a joining device can act on: the unpublished local commit is
+      an inert `pending/` file, so discard it and enroll again.
 - [ ] **Reach the network through the unexported `v.pull` / `v.push`, not
       `Pull` / `Push` / `tryPull`.** Those three take the write lock
       themselves via `underWriteLock`, and `vaultlock` is not re-entrant —
@@ -295,9 +422,26 @@ the real behavior, which is stronger than what the doc had claimed.
 - [ ] Enroll records this device's `pubkey` (and `device`/`method`) into
       global config's `[vaults.<name>]`, the same as `identity add` —
       see E0's note on the fourth writer.
-- [ ] Clone's post-success branch: `Prompter.Confirm` when interactive
-      and this device holds no identity; today's message otherwise. The
-      TTY test lives in `cmd/gage`, never in the library.
+- [ ] Clone's post-success branch: `Prompter.ConfirmDefaultYes` when
+      interactive and this device holds no identity; the reworded message
+      otherwise. **Not `Confirm`** — that is the default-no method, and
+      wiring the offer to it is the silent failure the `[Y/n]` test below
+      exists to catch. The TTY test lives in `cmd/gage`, never in the
+      library.
+- [ ] **Enroll under the device name `clone` already resolved.** `clone`
+      carries a `--device` flag today (`cmd/gage/clone.go`), and the
+      offer has to thread that name through rather than re-deriving it
+      from the hostname — otherwise `clone --device X` followed by a
+      `y` publishes a request naming something else.
+- [ ] **Reword `accessLines`** (`cmd/gage/clone.go`), which today says
+      "run `gage identity add` here… then have someone who already has
+      access add it with `gage recipient add`". That is still correct and
+      still supported, but it is no longer the whole answer: `identity
+      enroll` is the one that also publishes, and it is what someone who
+      declined the offer or ran without a terminal should be pointed at.
+      Keep the manual path in the message for the read-only-remote and
+      air-gapped cases. The test bullets below assert this text, so it is
+      a change with a definition of done rather than a judgment call.
 - [ ] Output labels for both secrets, per "Which secret is which".
 
 ## Definition of done

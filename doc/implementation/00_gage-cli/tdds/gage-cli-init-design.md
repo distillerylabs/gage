@@ -126,9 +126,23 @@ GAGE-7K4M-9QX2-P3RH-8WVN
   any decryption is attempted**, so a typo costs nothing instead of N
   scrypt runs across N pending requests.
 - **The library never persists the code.** It is returned once from
-  `Enroll` for `cmd/gage` to display, and it exists nowhere else — not
-  in the vault, not in local state, not in the session history file
-  (which already refuses to record values).
+  `Enroll` for `cmd/gage` to display, and the *joining* device writes it
+  nowhere — not in the vault, not in local state, not in the session
+  history file. That is a property of the joining side specifically:
+  enroll generates the code and never takes one as input, so there is no
+  line for a history file to record it from.
+
+  **The approving side is different, and the difference is not the
+  library's to fix.** `gage recipient approve --code GAGE-…` puts the
+  code on a command line, which in a session lands in the history file
+  verbatim and in a one-shot run lands in the user's own shell history —
+  neither of which `internal/gage` can see. Recorded as an accepted risk
+  rather than papered over; the exposure is bounded (device-local, mode
+  `0600` for gage's own file, dead in 24h, and the request is deleted on
+  approval) and the approver who wants none of it omits `--code` and
+  answers the masked `Prompter.Value` prompt instead, which is already
+  the fallback. See "The enrollment code in command history" under
+  "Accepted risks".
 
 The alternative was a diceware-style word list, which is genuinely
 easier to read aloud. It was rejected for now because it means shipping
@@ -483,21 +497,83 @@ Order of operations, with the reasons that fix each position:
 
 1. **Remote configured?** Else `ErrEnrollmentNoRemote` — before anything,
    and before the lock, since it needs no vault state.
-2. **Take the vault write lock**, and hold it through step 7.
-3. **Fetch + fast-forward pull.** Fails with
-   `ErrEnrollmentRemoteUnreachable` if the remote can't be reached. Also
-   the first point at which a bad or missing token is discovered, which
-   is as early as it can honestly be discovered (below).
-4. **Already-a-recipient check, then device-name collision check** —
+2. **Take the vault write lock**, and hold it through step 8.
+3. **Discard an unexpectedly dirty working tree**, warning once — the
+   ordinary preamble every write already has, not a step invented here.
+   It is `withVaultWrite`'s reset and it must run *before* the pull; see
+   "The reset is not optional here" below.
+4. **Fetch + fast-forward pull.** Fails with
+   `ErrEnrollmentRemoteUnreachable` if the remote can't be reached, and
+   with `ErrEnrollmentDiverged` if the fetch leaves the two sides
+   diverged rather than fast-forwardable. Also the first point at which a
+   bad or missing token is discovered, which is as early as it can
+   honestly be discovered (below).
+5. **Already-a-recipient check, then device-name collision check** —
    both against the recipient list as of the pull just performed rather
    than a stale one. The pubkey question comes first, because its answer
    makes the name question moot and its "no" is the one that must not be
    reported as a name conflict (D-ENROLL-COLLISIONS). Both run before
-   step 5, so neither costs a prompt.
-5. **Create or reuse the identity** — the only step that prompts.
-6. **Seal, write to `pending/`, commit.**
-7. **Push**, then release the lock — on every exit path, error paths
+   step 6, so neither costs a prompt.
+6. **Create or reuse the identity** — the only step that prompts.
+7. **Seal, write to `pending/`, commit.**
+8. **Push**, then release the lock — on every exit path, error paths
    included.
+
+**The reset is not optional here, and it is the one step this list used
+to omit.** Every mutating method in `gage` runs `resetDirtyWorkTree`
+under the lock before it writes anything — that is what `withVaultWrite`
+*is* (`internal/gage/vault.go`), and it is why "no write folds a previous
+write's leftovers into its own commit" is structural rather than a rule
+each verb remembers. Enroll is a write and gets the same preamble, so it
+takes `withVaultWrite`, not the bare `withWriteLock`.
+
+Skipping it fails in two ways at once, and the second one is the reason
+this is spelled out rather than left to inheritance:
+
+- **A fast-forward refuses over a dirty tree.** `gitrepo.FastForward`
+  returns `ErrDirtyWorkTree`, which `syncStateError` maps to `Conflict`.
+  So a stray file in `pending/` — precisely what a killed enroll leaves —
+  makes the *next* enroll fail at step 4 with a dirty-working-tree error.
+- **A joining device has no other write to clear it with.** Every other
+  path that would run the reset (`insert`, `recipient add`, anything that
+  commits) needs an unlock this device cannot perform. It is not a
+  recipient; that is the whole reason it is enrolling. Without the reset
+  in enroll's own preamble, one interrupted enroll wedges the device
+  permanently, recoverable only by deleting a file by hand — and the file
+  is under `.gage/`, which nothing in the tool's output ever mentions.
+
+This is also what makes "Clock skew"'s crash-safety story true. That
+section says a stray is discarded by the next write on that machine; on a
+joining device, the next write *is* the next enroll, and only because the
+reset runs here.
+
+**A divergence is refused, not merged, and gets its own error.** Step 4
+can find three states, and only two of them were previously named. A
+clean fast-forward proceeds; an unreachable remote fails with
+`ErrEnrollmentRemoteUnreachable`; and a *diverged* branch fails with
+`ErrEnrollmentDiverged`, which is new here.
+
+Divergence is reachable rather than exotic, and by the path this document
+already accepts: a read-scoped token fails the push at step 8, leaving a
+local commit behind (see below); the remote then moves; the re-run finds
+two sides that have both advanced. Note that `v.pull` reports this
+condition with a **nil error** and `SyncReport.Diverged` set, so an
+implementation that only checks the error proceeds straight past it,
+commits onto the diverged branch, and fails at the push — landing on the
+standard "origin has diverged — run `gage sync`" advice that the top of
+this decision spends three paragraphs establishing is exactly wrong for a
+device that cannot decrypt anything.
+
+Failing at step 4 instead keeps the property the rest of this ordering
+exists for: nothing is generated, prompted for, or written that cannot be
+published. What the error says is what a joining device can actually act
+on — the unpublished local commit is inert (it is a `pending/` file and
+nothing else), so the fix is to discard it and enroll again, not to
+resolve a merge. Merging was considered and rejected: two devices'
+pending files are disjoint and would merge cleanly, but that is a
+property of the *common* divergence rather than of divergence, and a
+device that cannot decrypt has no business in a code path whose failure
+mode is an entry conflict.
 
 **The lock wraps the pull, not just the commit**, and an earlier draft of
 this section had that wrong. A fast-forward pull mutates the working
@@ -524,7 +600,9 @@ fails as a contended lock, reporting that some other process holds
 something this process is holding.
 
 Enroll therefore calls the unexported `v.pull` / `v.push` inside its own
-`withWriteLock`, which is the same shape `underWriteLock` itself has. The
+`withVaultWrite`, which is the same shape `underWriteLock` itself has,
+plus the dirty-tree reset every write takes (see "The reset is not
+optional here"). The
 requirement is recorded here rather than left to be discovered because
 the failure is a timeout rather than a deadlock: it looks like
 contention, it takes `vaultLockTimeout` to appear, and the obvious fix
@@ -538,7 +616,7 @@ resolution by holding it. The concurrency model is
 same-user-multiple-terminals, so "my other pane waits while I type a
 passphrase" is expected rather than surprising.
 
-**A read-scoped token still fails at step 7, and that is accepted rather
+**A read-scoped token still fails at step 8, and that is accepted rather
 than solved.** A token with read access clones and fetches fine and
 cannot push, so someone with one gets through the passphrase prompt,
 gets a key written to disk and a local commit, and only then learns they
@@ -565,8 +643,8 @@ So the requirement is legibility and cheap recovery, not prediction:
   does mint a fresh request and code (D-ENROLL-COLLISIONS); the
   unpublished one is inert and expires.
 
-Step 2 narrows the window: an unusable token is usually caught at the
-fetch, before the passphrase prompt. What survives to step 7 is the
+Step 4 narrows the window: an unusable token is usually caught at the
+fetch, before the passphrase prompt. What survives to step 8 is the
 narrower case of a token that can read but not write.
 
 ### `[x]` D-ENROLL-VERBS — command naming
@@ -759,6 +837,50 @@ method     = "passphrase"
 created    = "2026-09-07T10:12:00Z"
 expires    = "2026-09-08T10:12:00Z"
 ```
+
+### The sealed payload is untrusted input
+
+**Authenticated is not the same as well-formed**, and conflating the two
+is the one way this feature's confirmation prompt could be turned against
+the person reading it. What the seal proves is that the blob has not been
+altered since it was written by someone holding the code — nothing about
+what the fields *contain*. Two suppliers of a malformed one need no
+attack at all: any git writer can drop a file into `pending/`, and anyone
+who legitimately holds a code can seal whatever they like under it.
+
+So every field is validated on the way out of `OpenEnrollment`, before
+`OpenedRequest` is returned and therefore before anything is rendered:
+
+- **`device`** against `devicename.Valid` — the same allowlist
+  `vaultconfig.Read` already applies to a committed, git-writable
+  recipient label, and for the same reason (Q-DEVICE-NAME). It is a
+  filesystem path component and a `config.toml` value eventually, but
+  the check has to happen *earlier* than either of those uses, because
+  the name is displayed to the approver first. The allowlist is
+  `a-z0-9._-`, which excludes control characters and escape sequences —
+  so validating here is what stops a sealed device name from redrawing
+  the `[y/N]` prompt it is printed above.
+- **`pubkey`** against `agekey.ValidateRecipient`, the check
+  `AddRecipient` already performs. Same argument: it is shown before it
+  is used.
+- **`method`** against the single-value allowlist (`passphrase` today),
+  the treatment `--type` and `--method` already get.
+- **`request_id`** as a UUID, before it is compared against the
+  filename's UUID portion.
+
+A payload that fails any of these is `ErrEnrollmentMalformedRequest`,
+deliberately **not** `ErrEnrollmentCodeWrong`: the code worked. It opened
+a request that is not one `gage` could have produced, which is a fact
+about the vault a human should look at rather than something to retype a
+code over. The distinction matters to `cmd/gage`'s retry loop, which
+keys on the wrong-code error and would otherwise sit re-prompting for a
+correct code against a file no code can ever make valid.
+
+This is the same posture as everything else in this document that reads
+from the repository: `.gage/config.toml`'s device names are validated on
+read, filenames are parsed and skipped rather than trusted, and the
+sealed `expires` is preferred over the filename's. The payload is one
+more committed, git-writable surface, and it gets the same treatment.
 
 ### The filename: `<request-id>-<expires-epoch>.age`
 
@@ -1243,10 +1365,10 @@ has two different non-interactive outcomes and both are correct:
   committed, and pushed. This is the path a CI-ish re-run after a failed
   push takes, and it is the reason enroll is scriptable at all.
 
-**A refusal costs nothing that matters.** It lands at step 5 of
+**A refusal costs nothing that matters.** It lands at step 6 of
 D-ENROLL-REMOTE's order, so the lock is released, no identity is
 written, and nothing is sealed, committed, or pushed. What does survive
-is the fast-forward from step 3 — the vault is simply more up to date
+is the fast-forward from step 4 — the vault is simply more up to date
 than it was, which is not a side effect anyone needs to undo.
 
 ### What "not a recipient yet" actually means
@@ -1519,11 +1641,30 @@ $ gage recipient approve --code GAGE-7K4M-... --code GAGE-2NPT-...
 
 Each device generated its own code, so approving N devices means N codes
 — but it means *one* decrypt-and-rewrite of every entry, one commit, and
-one push, rather than N. This reuses the existing all-or-nothing
-`--reencrypt` machinery unchanged: every entry re-encrypted in the
-working tree first, then the recipient files, every touched entry, and
-the removal of every approved request's file land in exactly one commit.
-A crash partway leaves HEAD untouched and every request still pending.
+one push, rather than N: every entry re-encrypted in the working tree
+first, then the recipient files, every touched entry, and the removal of
+every approved request's file land in exactly one commit. A crash partway
+leaves HEAD untouched and every request still pending.
+
+**That is the existing all-or-nothing machinery, but it is not
+`AddRecipient` as it stands today**, and an earlier draft's "reuses it
+unchanged" was wrong in a way worth correcting here rather than
+discovering in E4. `AddRecipient` is a complete write: it takes the lock,
+runs the reset, asks M10's question, appends **one** recipient, commits,
+and regenerates the cache (`internal/gage/recipient.go`). Calling it N
+times would take N locks, ask N trust questions, run N re-encryption
+passes and produce N commits — the exact shape batch approval exists to
+avoid.
+
+What is needed is an N-recipient form of that body: the same sequence,
+with the append taking a slice and the commit taking the pending files to
+delete alongside the entries it rewrites. `AddRecipient` becomes its
+one-recipient caller, which keeps a single implementation of "add
+recipients and re-encrypt" rather than two that must be kept honest
+against each other. The extraction belongs with A19's work on
+`recipient add` rather than with approval — see the plan's E1 — so that
+approval remains what this document describes it as: a wiring of existing
+machinery.
 
 Denying is the same shape without the code, since refusing something
 requires no proof of anything:
@@ -1715,7 +1856,12 @@ gage identity enroll [--use NAME] [--device NAME] [--ttl DURATION]
     Fetches and fast-forwards before committing, and fails outright if
     the remote is unreachable — unlike a read, an unpublished enrollment
     request accomplishes nothing, so producing a key and a local commit
-    it cannot publish would be worse than stopping. See D-ENROLL-REMOTE.
+    it cannot publish would be worse than stopping. It fails the same way,
+    with its own error, if the fetch leaves the two sides diverged rather
+    than fast-forwardable: `gage sync` is not an answer available to a
+    device that cannot decrypt, and the local commit in the way is an
+    unpublished pending/ file that is inert and safe to discard. See
+    D-ENROLL-REMOTE.
 
     Requires git *write* access. A token that can read but not write is
     only discovered at the push, which reports that the identity was
@@ -1736,14 +1882,23 @@ gage identity enroll [--use NAME] [--device NAME] [--ttl DURATION]
     key check cannot run and this is the only check left; see
     D-ENROLL-COLLISIONS.
 
-gage clone <remote-url> [--name NAME] [--dir PATH]
+gage clone <remote-url> [--name NAME] [--dir PATH] [--device NAME]
 
     Unchanged, except for what happens after a successful clone when this
     device can't read the vault. Interactively, clone offers to enroll
-    ([Y/n]) and runs the same path `gage identity enroll` does on yes. With no
-    TTY, or on no, it prints the message it prints today and exits 0.
+    ([Y/n]) and runs the same path `gage identity enroll` does on yes —
+    under the device name clone already resolved, so an explicit --device
+    carries through to the request rather than being re-derived. With no
+    TTY, or on no, it prints its can't-read-anything message and exits 0.
 
-    No flag gates this — see "Why there is no --enroll flag". The
+    That message is reworded. It names `gage identity add` today, which
+    is still correct and still supported, but it is no longer the whole
+    answer: `gage identity enroll` is the one that also publishes, and it
+    is what someone who declined the offer or ran without a terminal
+    should be pointed at. The manual path stays in the message for the
+    read-only-remote and air-gapped cases (D-ENROLL-PRINT-ONLY).
+
+    No flag gates the offer — see "Why there is no --enroll flag". The
     condition is one clone already detects and already reports.
 
 gage recipient pending [--use NAME]
@@ -1865,7 +2020,10 @@ type PendingRequest struct {
 }
 
 // OpenedRequest is a PendingRequest whose seal a code has opened. Every
-// field here is authenticated.
+// field here is authenticated — and validated: authenticated says the
+// bytes are unaltered, not that they are well-formed, so device, pubkey,
+// method and request_id are all checked before one of these is returned.
+// See "The sealed payload is untrusted input".
 type OpenedRequest struct {
     ID      string
     Device  string
@@ -1911,7 +2069,14 @@ type AmbiguousRequestError struct {
     Matches []PendingRequest
 }
 
-func (v *Vault) Enroll(device string, ttl time.Duration, p Prompter) (EnrollmentRequest, error)
+// Enroll takes a context because it is the one write in gage that
+// blocks on the network and *fails* when it can't reach it. Every other
+// exported method that touches a remote takes one (Pull, Push, Sync,
+// SyncResolving); the writes that push opportunistically do not, because
+// pushAfterWrite warns and proceeds and so has nothing a caller would
+// want to cancel. Enroll's fetch is a hard precondition, which puts it
+// on the first list.
+func (v *Vault) Enroll(ctx context.Context, device string, ttl time.Duration, p Prompter) (EnrollmentRequest, error)
 func (v *Vault) PendingEnrollments() ([]PendingRequest, error)
 
 // ResolveEnrollment applies the resolution order in "An ID always means
@@ -1965,6 +2130,27 @@ var ErrEnrollmentNoRemote   = errors.New("gage: this vault has no remote to publ
 // network — and cmd/gage decides which to say. See D-ENROLL-REMOTE.
 var ErrEnrollmentRemoteUnreachable = errors.New("gage: could not reach this vault's remote, so the enrollment request was not published")
 
+// Distinct again from both: the remote was reached, but the two sides
+// have diverged and the pull was not a fast-forward. Separate because
+// the advice a joining device can act on is unique to it — the standard
+// "run gage sync" is wrong for a device that cannot decrypt, and the
+// local commit in the way is an unpublished pending/ file, which is
+// inert and safe to discard. Note that v.pull reports this with a nil
+// error and SyncReport.Diverged set, so it has to be checked for rather
+// than caught. See D-ENROLL-REMOTE.
+var ErrEnrollmentDiverged = errors.New("gage: this vault's local and remote histories have diverged, so the enrollment request was not published")
+
+// Raised when a code opens a request whose sealed payload is not
+// something gage could have written — a device name outside the
+// filesystem-safe allowlist, a pubkey that is not an age recipient, an
+// unknown method, a request_id that is not a UUID.
+//
+// Deliberately *not* ErrEnrollmentCodeWrong: the code worked. Reporting
+// it as a wrong code would put cmd/gage's retry loop into a re-prompt no
+// correct code can ever satisfy. See "The sealed payload is untrusted
+// input".
+var ErrEnrollmentMalformedRequest = errors.New("gage: this enrollment request's sealed contents are malformed")
+
 // Raised when a request's device name — the one it was sealed with — now
 // labels a different recipient. Recoverable by the approver alone, via
 // --device; the key was authenticated, the label was not.
@@ -2016,6 +2202,9 @@ a non-obvious home:
 | `ErrCannotGrantFullAccess` | `Conflict` | Pre-existing damage surfacing; needs a different human |
 | `ErrEnrollmentNoRemote` | `Usage` | The vault was never configured for this; `gage git set-remote` |
 | `ErrEnrollmentRemoteUnreachable` | `Unreachable` | The code that already exists for exactly this |
+| `ErrEnrollmentDiverged` | `Conflict` | Vault state a human resolves — the same answer the base design gives divergence everywhere else |
+| `ErrEnrollmentMalformedRequest` | `Conflict` | A file in the vault a human must look at; never a usage mistake, and never a retryable code |
+| `ErrDeviceNameTaken` (pre-existing) | `Conflict` | Enroll reuses `AddIdentity`'s error rather than minting a second one; listed so this feature's codes are all in one place |
 | `ErrEnrollmentNoSuchRequest` | `NotFound` | Matches the entry resolver's answer to the same question |
 | `ErrEnrollmentTooManyPending` | `Conflict` | Vault state a human resolves, in place, by naming an ID — the same shape as `ErrEnrollmentNameTaken`'s `--device`, and unlike the `Usage` rows, which reject a command line before anything is read |
 | An ambiguous ID | `Ambiguous` | Likewise — a candidate list, not a failure |

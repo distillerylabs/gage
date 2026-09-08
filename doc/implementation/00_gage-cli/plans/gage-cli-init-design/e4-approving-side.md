@@ -28,7 +28,10 @@ This is the milestone that makes enrollment actually grant access.
 - **E1** — approval always re-encrypts and reuses
   `ErrCannotGrantFullAccess`, **and needs its pre-flight callable on its
   own** rather than only from inside `AddRecipient`: approval runs it at
-  a different point in the sequence than `recipient add` does.
+  a different point in the sequence than `recipient add` does. E1 also
+  lands the **N-recipient form** of `AddRecipient`'s body that this
+  milestone's one-commit batch is built on — see "The batch path is
+  not `AddRecipient`" below.
 - **E0** — `recipient approve --device` relabels recipients, which is
   precisely what makes E0's `removeOrphanedIdentity` fix necessary. **Do
   not ship E4 without it**, or approval introduces a new route to an
@@ -86,6 +89,30 @@ like they do:
 - **Two `[y/N]` questions can appear**, and must not be collapsed: "let
   this device in" and M10's "do you trust the list you're about to
   encrypt to" are different questions.
+
+### The batch path is not `AddRecipient`
+
+Settled after this doc was first written, and it changes what "wires
+E2's primitives to commands" means in one place.
+
+`AddRecipient` is a complete write: lock, dirty-tree reset,
+`requireRecipientsInSync`, M10's trust question, duplicate check, append
+**one** recipient, one commit, regenerate the cache. Calling it once per
+approved request would take N locks, ask N trust questions, run N
+re-encryption passes and produce N commits — the exact thing batch
+approval exists to avoid, and incompatible with "removal of every
+approved request's file lands in the same commit."
+
+`ApproveEnrollments` therefore calls **E1's N-recipient form**: the same
+sequence, with a slice of recipients and the pending files to delete
+passed to the commit. E1 owns that extraction; this milestone consumes
+it. If E1 shipped without it, stop and add it there rather than growing a
+second implementation here — two functions that both mean "add
+recipients and re-encrypt" is how they drift.
+
+**What this does not change** is where the authoritative duplicate check
+lives. It is still inside that shared body, still under the lock, and it
+still returns `ErrRecipientExists`.
 
 ## Tests (write first)
 
@@ -207,11 +234,14 @@ like they do:
       approve is refused with `ErrEnrollmentNameTaken` **before the
       confirmation and before any unlock** — this one genuinely can come
       first, since it reads only the plaintext recipient list.
-- [ ] The authoritative check inside `AddRecipient`, under the lock,
-      still fires when another writer takes the name in the window — and
-      returns the pre-existing `ErrRecipientExists`, not
+- [ ] The authoritative check **in the shared recipient-write body**,
+      under the lock, still fires when another writer takes the name in
+      the window — and returns the pre-existing `ErrRecipientExists`, not
       `ErrEnrollmentNameTaken`. Two errors for one condition is
-      deliberate; see the TDD's "Library surface".
+      deliberate; see the TDD's "Library surface". (Phrased against the
+      shared body rather than `AddRecipient` because approval does not
+      call `AddRecipient` — see "The batch path is not `AddRecipient`".
+      The check is the same code; the entry point is not.)
 - [ ] `approve --device <other-name>` applies that same request,
       recording the approver's label. The recipient's pubkey is the
       sealed one, unchanged — relabeling changes the name and nothing
@@ -219,6 +249,19 @@ like they do:
 - [ ] `--device` with a run resolving to more than one request is a
       usage error naming the ID form; with exactly one request it
       applies.
+- [ ] **`--device` with an invalid name is rejected at the command line**,
+      at `exitcode.Usage`, before the code is tried and before any
+      confirmation. Today that validation lives inside the recipient
+      write, which would surface it after the approver has already
+      answered `[y/N]` and typed their passphrase — a rejection of the
+      command line should cost neither.
+- [ ] **A request whose sealed payload is malformed is refused with
+      `ErrEnrollmentMalformedRequest`, and its contents are never
+      rendered.** E2 proves the validation; this proves the command never
+      prints an unvalidated device name. Use a payload carrying ANSI
+      escapes: the approve confirmation is the one screen in `gage` whose
+      correctness depends on a human reading it, and it sits directly
+      below that field.
 - [ ] Approving a request whose **pubkey is already a recipient**
       succeeds with no work — request cleared, zero entries
       re-encrypted, no new recipient, outcome reports `Added: false`.
@@ -254,6 +297,11 @@ like they do:
       (ApprovalResult, error)` with `Approval{Request, Label}` and
       per-request `ApprovalOutcome`. `RecipientChange` is deliberately
       *not* reused — it names one device, and a batch resolves N.
+      Implemented over **E1's N-recipient form**, handing it the labels
+      to add and the pending files to delete, so the whole batch is one
+      lock, one trust question, one re-encryption pass and one commit.
+      It does **not** call `AddRecipient` — see this milestone's
+      Decisions.
 - [ ] `DenyEnrollment(id string, p Prompter) error` — takes a
       `Prompter` despite holding no `Identity`; the TDD records why that
       is a deliberate exception rather than an erosion of the
@@ -276,6 +324,16 @@ like they do:
 - [ ] Codes gathered from `--code` or, when absent, `Prompter.Value`,
       with the retry loop around `ErrEnrollmentCodeWrong` owned by
       `cmd/gage`. **No `Prompter` change**, and no new `UnlockKind`.
+
+      **A code passed as `--code` lands in command history** — verbatim
+      in the session history file, and in the user's own shell history for
+      a one-shot run. That is an accepted risk rather than something this
+      milestone fixes
+      ([register entry](../gage-cli-design/open-questions.md#enrollment-code-history));
+      what makes it acceptable is that omitting `--code` falls through to
+      the masked `Prompter.Value` prompt, which records nothing. Do not
+      add a bullet asserting the code never reaches the history file —
+      that claim is true of E3's generating side and false here.
 
 ## Definition of done
 

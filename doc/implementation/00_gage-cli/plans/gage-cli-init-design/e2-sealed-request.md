@@ -48,6 +48,18 @@ is a public key. A test that only proves round-tripping has not tested
 the property the feature depends on — tampering must fail, and a wrong
 code must open nothing.
 
+**Authenticated is not well-formed, and the payload is untrusted input.**
+Settled after this doc was first written; the TDD's "The sealed payload
+is untrusted input" carries it. The seal proves the bytes are unaltered
+since sealing, not that the fields mean anything — and two people can
+supply a malformed one without any attack: a git writer can drop a file
+into `pending/`, and anyone legitimately holding a code can seal whatever
+they like. Every field is therefore validated before `OpenedRequest` is
+returned, which is *before* E4 renders any of it to the approver. That
+ordering is the point: the device name is displayed above the `[y/N]`
+that decides whether to grant vault-wide access, and `devicename.Valid`'s
+allowlist is what keeps escape sequences out of it.
+
 **`D-ENROLL-SEAL-COST` was added after this doc was first written**, and
 lands squarely in this milestone. Three things, and the reasoning for
 each is in the TDD rather than restated here:
@@ -121,6 +133,14 @@ each is in the TDD rather than restated here:
       generous ceiling with 32 requests pending, at the real factor. This
       is the case the factor was chosen for, and it regresses invisibly
       if someone later "hardens" the seal back to 19.
+
+      **This is the one wall-clock assertion in the plan, so give it
+      room.** At factor 14 the fixtures alone are 32 seals (~2s), and the
+      Windows runner is the slow one. The ceiling wants to be generous
+      enough that only a return to 19 — a ~32× regression — trips it,
+      which is what the test is actually for. A tight bound here buys
+      nothing and costs a flaky suite, which this project's convention of
+      injected seams over timing exists to avoid.
 - [ ] **More than 32 live requests is refused** with
       `ErrEnrollmentTooManyPending` at `exitcode.Conflict`, **before any
       decryption**, naming the ID form.
@@ -135,6 +155,35 @@ each is in the TDD rather than restated here:
 - [ ] A request whose sealed `request_id` disagrees with its filename's
       UUID portion is refused with `ErrEnrollmentIDMismatch`. Changing
       only the **epoch** portion is not a mismatch.
+
+**The payload is untrusted input**
+
+Hand-build each of these: seal a payload with a known code and a bad
+field, the way both a git writer and a code-holder can.
+
+- [ ] A sealed `device` outside `devicename.Valid`'s allowlist is refused
+      with `ErrEnrollmentMalformedRequest`, **not**
+      `ErrEnrollmentCodeWrong` — the code worked. The distinction is what
+      keeps E4's retry loop from re-prompting for a correct code against
+      a file no code can validate.
+- [ ] Specifically, a `device` carrying **ANSI escapes or a newline** is
+      refused. This is the case the check exists for: E4 prints the
+      device name directly above the prompt that grants vault-wide
+      access, so a name that can move the cursor can rewrite the question
+      the human is answering.
+- [ ] A sealed `pubkey` that is not a valid age recipient is refused the
+      same way, by `agekey.ValidateRecipient` — before display, not at
+      `AddRecipient` two milestones and one confirmation later.
+- [ ] A `method` outside the allowlist (`passphrase` today) and a
+      `request_id` that is not a UUID are each refused.
+- [ ] `ErrEnrollmentMalformedRequest` maps to `exitcode.Conflict` — vault
+      state a human looks at, never a retryable code.
+- [ ] **A malformed request does not poison the run.** With one bad file
+      and one good one in `pending/`, opening still yields the good
+      request. A refusal that took the whole directory down would hand
+      any git writer a denial of service on approval, which is the thing
+      the bound in `D-ENROLL-SEAL-COST` exists to prevent by a different
+      route.
 
 **Expiry and the filename**
 
@@ -177,9 +226,17 @@ each is in the TDD rather than restated here:
 
 **Code hygiene**
 
-- [ ] The generated code appears in the return value and nowhere else —
-      not in the vault, not in local state, not in the session history
-      file.
+- [ ] The generated code appears in the return value and nowhere else on
+      the **generating** side: not in the vault, not in any file this
+      milestone writes, not in local state.
+
+      Scoped deliberately. An earlier version of this bullet also claimed
+      the session history file, which E2 cannot test — it builds no
+      commands — and which turned out to be false on the *approving*
+      side, where `--code` is a typed command line that `history.add`
+      records verbatim. That is E4's surface and an accepted risk rather
+      than a test; see
+      [the register entry](../gage-cli-design/open-questions.md#enrollment-code-history).
 
 ## Implementation
 
@@ -217,6 +274,24 @@ what makes the late unlock possible.
 - [ ] The sealed payload as TOML — `request_id`, `device`, `pubkey`,
       `method`, `created`, `expires` — encrypted to a single scrypt
       recipient at `enrollmentScryptWorkFactor`.
+- [ ] **Payload validation on the open path**, before `OpenedRequest` is
+      returned: `devicename.Valid` on `device`,
+      `agekey.ValidateRecipient` on `pubkey`, the single-value allowlist
+      on `method`, UUID on `request_id`. Failures are
+      `ErrEnrollmentMalformedRequest` at `Conflict`, and a malformed file
+      is skipped rather than failing the whole open — the same posture
+      the filename parser already takes toward strays.
+- [ ] **A scrypt recipient at an explicit work factor**, which does not
+      exist yet. `PassphraseRecipient` hardcodes `scryptWorkFactor` —
+      the mutable test hook (`internal/gage/crypt.go`) — so sealing
+      through it is exactly the collapse `D-ENROLL-SEAL-COST` forbids: a
+      suite that lowers the identity factor would silently lower the
+      seal's. Give it an explicit-factor form and let the existing
+      function be the caller that passes `scryptWorkFactor`. This is a
+      change to a shared crypto constructor on `CreateIdentity`'s path,
+      so it is called out rather than left to be discovered mid-task; the
+      "two work factors are independent" test above is what proves it
+      landed.
 - [ ] `enrollmentScryptWorkFactor = 14` as its own const, carrying
       D-ENROLL-SEAL-COST's reasoning in its comment — including the
       coupling that licenses it (the code is generated, uniform, ~80

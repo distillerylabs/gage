@@ -1247,6 +1247,46 @@ enrolling, which is the thing the filename scheme exists to prevent.
 Recorded so a future reader doesn't mistake it for an oversight.
 
 
+### The enrollment code reaches command history on the approving device {#enrollment-code-history}
+
+`gage recipient approve --code GAGE-…` puts the code on a command line.
+In a session that line is recorded verbatim — `history.add` writes the
+typed line and nothing filters arguments (`cmd/gage/history.go`) — and in
+a one-shot run it lands in the user's own shell history, which `gage`
+cannot see at all.
+
+**The enrollment doc originally claimed the code "exists nowhere else…
+not in the session history file (which already refuses to record
+values)".** That claim is true of the *joining* device, which generates
+the code and never takes one as input, and it was read across to the
+approving device, which does. The history file's guarantee is narrower
+than the parenthetical suggested: it never contains a decrypted value
+because no command ever puts one on a line, not because it filters
+anything.
+
+**Accepted rather than fixed**, and the exposure is genuinely small:
+
+- The file is `0600` and device-local; `gage` tightens the mode on every
+  open rather than trusting an existing file.
+- The code is dead in 24 hours by default and the request it opens is
+  deleted on approval, so what a recovered code can do is nothing.
+- Cracking the seal was never the interesting attack anyway — what a code
+  buys is the ability to forge a *request*, which still has to be
+  approved by a human.
+
+**And there is an escape hatch that costs nothing.** Omitting `--code`
+makes `cmd/gage` ask through `Prompter.Value`, which is masked and never
+recorded. An approver who cares reaches for the prompt, which is already
+the specified fallback rather than something added for this.
+
+Filtering `--code` out of `history.add` was considered and not taken: it
+would make the history writer argument-aware for the first time, for a
+partial fix that leaves the shell-history half — the larger half —
+untouched. Recorded here so the narrowed claim in
+[gage-cli-init-design.md](../../tdds/gage-cli-init-design.md)'s
+D-ENROLL-CODE-FORMAT has somewhere to point.
+
+
 ### A hostname device name discloses whose machine it is
 
 `device` defaults to the normalized hostname and is written into the

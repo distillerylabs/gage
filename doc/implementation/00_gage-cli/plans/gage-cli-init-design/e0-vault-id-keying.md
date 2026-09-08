@@ -136,6 +136,17 @@ before starting.
 - [ ] When `pubkey` is absent from global config (older entry,
       hand-edited), gage says so and **keeps** the file rather than
       guessing.
+- [ ] **The pending-enrollment state**, which E3 newly makes common: this
+      device has a recorded `pubkey` that is *not* in the recipient list,
+      because its request is still waiting for approval. That is
+      indistinguishable from a genuine orphan by any check available
+      here, so `vault remove` will offer to delete it — which is correct
+      as far as it goes, but the confirmation is the only thing standing
+      between the user and a key whose approval is in flight. Assert the
+      `Confirm` fires and names the path, and that answering no keeps the
+      file. This is a distinct case from the two-registrations bullet
+      below, which reaches the same state by a different route; both
+      matter, and only one of them existed before enrollment.
 - [ ] `vault remove` still leaves the vault's own files and repository
       untouched in every one of the above.
 - [ ] **One vault registered twice under two local names shares one
