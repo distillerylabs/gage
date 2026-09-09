@@ -24,6 +24,7 @@ func newIdentityCommand(app *App) *cobra.Command {
 		Short: "Manage this device's identities for a vault",
 	}
 	parent.AddCommand(newIdentityAddCommand(app))
+	parent.AddCommand(newIdentityEnrollCommand(app))
 	parent.AddCommand(newIdentityListCommand(app))
 	return parent
 }

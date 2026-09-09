@@ -160,6 +160,19 @@ type Vault struct {
 	// against onDecrypt.
 	onEnrollmentDecrypt func()
 
+	// onEnrollPulled, if set, is called from inside Enroll's own write
+	// lock, immediately after the catch-up pull and before anything is
+	// generated. Test-only; nil everywhere else.
+	//
+	// It exists because D-ENROLL-REMOTE's "the lock wraps the pull, not
+	// just the commit" is a claim about a window that has no observable
+	// return value: an implementation that pulled outside the lock and
+	// took it afterwards produces the same request. A test re-acquires
+	// the vault lock from this hook and asserts contention, which is the
+	// same technique the --reencrypt tests use against
+	// onReencryptEntry.
+	onEnrollPulled func()
+
 	// onMoveDestCommitted, if set on the *source* vault Move/Copy was
 	// called on, is called once the destination's write-and-commit
 	// sequence has succeeded, before the source-side removal (Move) or

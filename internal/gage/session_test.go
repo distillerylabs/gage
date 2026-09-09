@@ -124,7 +124,8 @@ func (p *scriptedPrompter) Choose(list CandidateList) (string, error) {
 	return list.Candidates[p.chooseIndex].ID, nil
 }
 
-func (p *scriptedPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (p *scriptedPrompter) Confirm(prompt string) (bool, error)           { return true, nil }
+func (p *scriptedPrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
 
 // ConfirmRecipientChange approves M10's trust-cache question, the same
 // way Confirm answers yes: none of the session tests are about it, and a

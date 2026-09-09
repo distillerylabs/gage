@@ -67,6 +67,12 @@ func (f *fakePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, erro
 
 func (f *fakePrompter) Confirm(prompt string) (bool, error) { return true, nil }
 
+// ConfirmDefaultYes answers clone's enrollment offer with yes. It is a
+// separate method from Confirm on purpose (see gage.Prompter), so a
+// fake that answered one and not the other would hide the wiring these
+// tests are about.
+func (f *fakePrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
+
 // ConfirmRecipientChange approves M10's trust-cache question. The
 // interesting answers live in their own fakes: decliningPrompter
 // (trustcache_cli_test.go) says no, which is what proves --yes is doing

@@ -201,14 +201,29 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		// The wording is deliberately identical to `identity enroll`'s up
+		// to its second clause: enroll *is* this command plus publishing,
+		// and the listing is where that relationship shows without prose.
+		// See D-ENROLL-VERBS.
 		Name:         "identity add",
-		Short:        "Register a new identity for this device and print its public key",
+		Short:        "Register this device's identity and print its public key",
 		Group:        GroupIdentity,
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "identity enroll",
+		Short:        "Register this device's identity and publish a request to join",
+		Group:        GroupIdentity,
+		Availability: AvailBoth,
+	},
+	{
+		// "the keys this machine holds" against `recipient list`'s "the
+		// keys this vault is encrypted to": the two answer different
+		// questions and diverge constantly, so the contrast belongs in
+		// the grammatical subject rather than in "identities" versus
+		// "devices", which reads as a synonym.
 		Name:         "identity list",
-		Short:        "List the identities this device holds for a vault",
+		Short:        "List the keys this machine holds for a vault",
 		Group:        GroupIdentity,
 		Availability: AvailBoth,
 	},

@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -147,6 +148,34 @@ func HeadCommit(dir string) (message, authorName, authorEmail string, err error)
 		return "", "", "", fmt.Errorf("gitrepo: reading HEAD commit: %w", err)
 	}
 	return commit.Message, commit.Author.Name, commit.Author.Email, nil
+}
+
+// HeadCommitterTime returns HEAD's committer timestamp — the one field
+// enrollment's clock-skew heuristic reads.
+//
+// The committer's time rather than the author's: a rebase or an amend
+// preserves authorship but restamps the committer, so the committer's
+// clock is the one that actually last touched this branch. One field, no
+// history walk; a repository with no commits yet reports the zero time
+// and no error, since "there is nothing to compare against" is not a
+// failure a caller should have to distinguish.
+func HeadCommitterTime(dir string) (time.Time, error) {
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("gitrepo: opening %s: %w", dir, err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("gitrepo: reading HEAD: %w", err)
+	}
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return time.Time{}, fmt.Errorf("gitrepo: reading HEAD commit: %w", err)
+	}
+	return commit.Committer.When, nil
 }
 
 // HeadHash returns dir's current HEAD commit as a string — how a caller

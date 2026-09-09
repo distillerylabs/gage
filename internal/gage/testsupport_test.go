@@ -94,6 +94,11 @@ func (f *fakePrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 
 func (f *fakePrompter) Confirm(prompt string) (bool, error) { return true, nil }
 
+// ConfirmDefaultYes answers yes, like Confirm. Nothing in the library
+// asks it — clone's offer is cmd/gage's — so this exists to satisfy the
+// interface rather than to prove anything.
+func (f *fakePrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
+
 // ConfirmRecipientChange answers M10's trust-cache question yes, the
 // same way Confirm answers yes: a fake that blocked every write over a
 // recipient change would fail most of this package's tests for a reason
@@ -114,7 +119,8 @@ type mismatchedPrompter struct{}
 func (mismatchedPrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 	return UnlockResponse{Kind: "yubikey"}, nil
 }
-func (mismatchedPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (mismatchedPrompter) Confirm(prompt string) (bool, error)           { return true, nil }
+func (mismatchedPrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
 func (mismatchedPrompter) ConfirmRecipientChange(w RecipientChangeWarning) (bool, error) {
 	return true, nil
 }
