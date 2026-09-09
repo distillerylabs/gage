@@ -67,8 +67,8 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 |---|---|---|---|---|
 | E0 | [Vault-id keying](e0-vault-id-keying.md) | `[x]` | **Opus** ⚑ | A20: identities, trust cache and vault lock keyed by vault id, not local name |
 | E1a | [Unconditional re-encryption](e1a-unconditional-reencrypt.md) | `[x]` | Sonnet | A19: `recipient add` always re-encrypts |
-| E1b | [The shared recipient write](e1b-shared-recipient-write.md) | `[ ]` | Sonnet* ⚑ | The N-recipient form of `AddRecipient`'s body, which E4's batch approval calls |
-| E2 | [The sealed request](e2-sealed-request.md) | `[ ]` | **Opus** ⚑ | Code generation, the seal, the filename scheme, expiry — library only |
+| E1b | [The shared recipient write](e1b-shared-recipient-write.md) | `[x]` | Sonnet* ⚑ | The N-recipient form of `AddRecipient`'s body, which E4's batch approval calls |
+| E2 | [The sealed request](e2-sealed-request.md) | `[x]` | **Opus** ⚑ | Code generation, the seal, the filename scheme, expiry — library only |
 | E3 | [Joining a vault](e3-joining-side.md) | `[ ]` | Sonnet | `identity enroll`, the clone prompt, publishing a request |
 | E4 | [Approving a device](e4-approving-side.md) | `[ ]` | **Opus** | `recipient pending/approve/deny`, late unlock, atomic batch approval |
 
@@ -251,6 +251,23 @@ remote and fails when it can't reach one; `gage clone`'s existing
 and `clone`'s can't-read-anything message is reworded to name `identity
 enroll` rather than only `identity add`, since E3's own test list was
 asserting text that did not exist.
+
+**Implementing E2 found one more**, of the first kind rather than the
+third — a rule that reads fine and cannot be satisfied:
+
+- **The clock-skew check as the TDD stated it was unsatisfiable.** It
+  asked for "`expires` in the past *and* `created` in the past by less
+  than its own TTL", and since `expires` is `created + ttl` the two halves
+  contradict each other: no payload can meet both. The case it was aiming
+  at — a device whose clock is slow — turns out to be genuinely
+  undetectable as well, because a payload sealed by a two-day-slow clock
+  is byte-for-byte indistinguishable from one that sat two days on a
+  correct one. What is detectable is the thing the same paragraph already
+  named in prose, and what E2's own test list already asked for:
+  `expires` preceding `created`, a request expired before it was written.
+  Corrected in the TDD's "Clock skew, in the direction the ceiling doesn't
+  cover"; no milestone's test list changed, which is what makes this a
+  documentation defect rather than a design one.
 
 A fourth pass found eight more. Three of them made a milestone
 **unbuildable as written** — a test list asking for something the

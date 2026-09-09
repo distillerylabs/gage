@@ -145,6 +145,21 @@ type Vault struct {
 	// crash test would silently start proving something else.
 	onReencryptEntry func(done int)
 
+	// onEnrollmentDecrypt, if set, is called once per attempted scrypt
+	// run on the enrollment open path — one call per (code, request)
+	// pair actually tried. Test-only; nil everywhere else.
+	//
+	// It exists because several of enrollment's claims are about work
+	// *not* done: a code failing length or alphabet validation costs no
+	// decryption, an oversized file is never opened, the 32-request bound
+	// refuses before any KDF run, and an ID-scoped run costs one attempt
+	// per code however full the directory is. None of those is observable
+	// from a return value — a correct answer arrived at expensively looks
+	// exactly like a correct answer — so the count is the only honest
+	// assertion available. It is the same technique M7's index tests use
+	// against onDecrypt.
+	onEnrollmentDecrypt func()
+
 	// onMoveDestCommitted, if set on the *source* vault Move/Copy was
 	// called on, is called once the destination's write-and-commit
 	// sequence has succeeded, before the source-side removal (Move) or

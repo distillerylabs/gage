@@ -1996,15 +1996,27 @@ because it was pruned.
 is always in the future, which is the whole problem. Two cheap measures
 make it legible rather than baffling:
 
-- **At approve time, diagnose it.** Both `created` and `expires` are in
-  the seal. A request whose `expires` is in the past *and* whose
-  `created` is also in the past by less than its own TTL was expired
-  before it was written. That is not an expiry, it is a wrong clock, so
-  it gets its own error — `ErrEnrollmentClockSkew`, declared under
-  "Library surface" — rather than being reported as a stale request. The
-  two are separated because their fixes share nothing: one says fix that
-  machine's clock and enroll again, the other says ask for a fresh
-  request.
+- **At approve time, diagnose what can be diagnosed.** Both `created` and
+  `expires` are in the seal, so a request whose `expires` precedes its own
+  `created` was expired before it was written. That is not an expiry, it
+  is a wrong clock, so it gets its own error — `ErrEnrollmentClockSkew`,
+  declared under "Library surface" — rather than being reported as a stale
+  request. The two are separated because their fixes share nothing: one
+  says fix that machine's clock and enroll again, the other says ask for a
+  fresh request.
+
+  **The ordinary slow clock is not detectable, and an earlier draft of
+  this bullet claimed otherwise.** It asked for "`expires` in the past
+  *and* `created` in the past by less than its own TTL", which is a
+  condition no payload can satisfy: `expires` is `created + ttl`, so
+  `now - created < ttl` implies `now < expires` and the first half fails.
+  Worse, the case it was aiming at genuinely cannot be told apart — a
+  device two days slow with a 24h TTL seals a payload that is internally
+  consistent and byte-for-byte indistinguishable from one that sat two
+  days on a correct clock. What survives is the check above, which needs
+  no reference clock at all and is exactly the phrase this section already
+  used: expired before it was written. Found while implementing E2, whose
+  own test list already said this and is unchanged.
 - **At enroll time, warn on the available signal.** A freshly cloned or
   fetched vault carries commit timestamps written by other devices. If
   local time is meaningfully behind HEAD's committer timestamp, this

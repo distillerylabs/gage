@@ -21,20 +21,39 @@ import (
 // that number is what it is).
 const testScryptWorkFactor = 10
 
-// TestMain lowers scryptWorkFactor for this package's entire test binary
-// before any test runs. Every test in this package that unlocks a vault
-// — which is most of them — goes through this without doing anything
-// itself.
+// testEnrollmentWorkFactor is what this package's own tests seal
+// enrollment requests at, for the same reason and with the same
+// consequences as testScryptWorkFactor: a real scrypt pass, run small.
 //
-// Three tests keep the shipped factor honest despite it:
-// TestScryptWorkFactorIsDeliberate checks the constant this variable is
-// a copy of, TestOnlyTheTestHookWritesScryptWorkFactor checks that no
-// non-test code can move the copy, and
-// TestShippedWorkFactorReachesARealAgeFile restores the shipped factor
-// for one encryption and reads it back off the age header.
+// It is a separate knob rather than a reuse of the one above, which is
+// the whole point of enrollment having its own live variable and setter.
+// Sharing one would mean the two factors were one factor, and
+// TestEnrollmentAndIdentityWorkFactorsAreIndependent exists to catch
+// exactly that collapse.
+const testEnrollmentWorkFactor = 10
+
+// TestMain lowers both of gage's scrypt work factors for this package's
+// entire test binary before any test runs. Every test that unlocks a
+// vault — which is most of them — and every test that seals an
+// enrollment request goes through this without doing anything itself.
+//
+// The enrollment half is not a nicety: E2's fixtures alone are 32 seals,
+// and later milestones build pending requests through Enroll across most
+// of their lists, on three platforms.
+//
+// Tests keep both shipped factors honest despite it:
+// TestScryptWorkFactorIsDeliberate and
+// TestEnrollmentScryptWorkFactorIsDeliberate check the constants these
+// variables are copies of, TestOnlyTheTestHooksWriteTheWorkFactors checks
+// that no non-test code can move either copy, and
+// TestShippedWorkFactorReachesARealAgeFile /
+// TestShippedEnrollmentWorkFactorReachesARealAgeFile restore the shipped
+// values for one encryption each and read them back off the age header.
 func TestMain(m *testing.M) {
 	restore := SetScryptWorkFactorForTests(testScryptWorkFactor)
+	restoreEnrollment := SetEnrollmentWorkFactorForTests(testEnrollmentWorkFactor)
 	code := m.Run()
+	restoreEnrollment()
 	restore()
 	os.Exit(code)
 }

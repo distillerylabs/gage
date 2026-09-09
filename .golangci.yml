@@ -77,6 +77,15 @@ linters:
             _test.go file. It exists only so a test binary can avoid
             gage's real, deliberately expensive KDF cost — see
             identityfile.go.
+        # gage's second work factor, guarded identically. It is a separate
+        # rule rather than one loosened pattern because the two hooks are
+        # separate on purpose (D-ENROLL-SEAL-COST): merging them here
+        # would be the first step toward merging the factors themselves.
+        - pattern: '^gage\.SetEnrollmentWorkFactorForTests$'
+          msg: >-
+            SetEnrollmentWorkFactorForTests must never be called outside a
+            _test.go file. It exists only so a test binary can avoid
+            paying the sealing KDF cost per request — see enrollseal.go.
 
     errcheck:
       # Blank-identifier assignments (`_ = f.Close()`) are a deliberate,
