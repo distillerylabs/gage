@@ -148,7 +148,13 @@ untouched rather than half-migrated.
       — never a decryption failure on an entry UUID partway through a
       write. `Vault.RequireFullAccess` is that pass, exported and
       separately callable because E4 places the same check at a
-      different point in `recipient approve`'s sequence
+      different point in `recipient approve`'s sequence. It reads
+      entries off disk, so the pre-lock refusal is gated on a clean
+      working tree: an interrupted self-removal leaves `entries/`
+      unreadable by this device while HEAD is fine, and refusing on that
+      would report damage the dirty-tree reset below is about to undo.
+      On a dirty tree the check runs just after that reset instead —
+      inside the lock, still before any write and any confirmation
 - [x] `gage recipient add` commits the updated `.age-recipients` and
       `config.toml` together — alongside every re-encrypted entry, since
       A19 there is no add that does not re-encrypt

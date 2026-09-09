@@ -582,6 +582,154 @@ func TestRequireFullAccessIsCallableOnItsOwn(t *testing.T) {
 	}
 }
 
+// interruptSelfRemoval leaves the vault in the one state where entries/
+// and HEAD disagree about who can read the vault: laptop's own
+// `recipient remove --reencrypt`, killed partway through the pass.
+//
+// HEAD is untouched, so it still lists d and is still entirely readable
+// by it. The working tree is not: it holds however many entries the pass
+// got through, encrypted to the reduced list that excludes d. This is
+// the dirty tree the design doc calls the likeliest one there is, and
+// the one withVaultWrite's reset exists to discard.
+func interruptSelfRemoval(t *testing.T, v *Vault, d testDevice) {
+	t.Helper()
+
+	id := unlockAsWith(t, v, d, newTrustPrompter(true))
+	v.onReencryptEntry = crashAfter(1)
+	crashed := runAndRecoverCrash(t, func() {
+		_, _ = v.RemoveRecipient(d.name, true, &id)
+	})
+	v.onReencryptEntry = nil
+	_ = id.Close()
+
+	if !crashed {
+		t.Fatal("the crash seam never fired; the self-removal ran to completion")
+	}
+	clean, err := gitrepo.IsClean(v.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean {
+		t.Fatal("the interrupted self-removal left a clean working tree; " +
+			"there is nothing here for the reset to discard")
+	}
+}
+
+// TestAddIsNotRefusedOverATreeTheResetDiscards is the pre-flight's
+// interaction with withVaultWrite's dirty-tree reset.
+//
+// RequireFullAccess reads entries off disk, and an interrupted
+// self-removal is exactly the state where disk and HEAD disagree about
+// who can read them: entries/ holds ciphertext written to the reduced
+// list, while HEAD still lists this device and is entirely readable by
+// it. The reset discards precisely that, so a refusal raised on it would
+// send the operator to another device to repair a vault that was never
+// damaged — and the identical command succeeds the moment any other
+// write happens to reset the tree first, which is the tell that the
+// refusal was about the tree rather than about access.
+func TestAddIsNotRefusedOverATreeTheResetDiscards(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	seedEntries(t, v, &id, 3)
+	// A second recipient, so removing laptop-1's own key is not the
+	// last-recipient refusal instead.
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
+		t.Fatalf("AddRecipient phone-1: %v", err)
+	}
+	_ = id.Close()
+
+	interruptSelfRemoval(t, v, laptop)
+
+	third := newTestDevice(t, "personal", "phone-2")
+	id = unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	defer func() { _ = id.Close() }()
+
+	change, err := v.AddRecipient("phone-2", third.pubkey, &id)
+	if errors.Is(err, ErrCannotGrantFullAccess) {
+		t.Fatalf("the add was refused over a working tree the reset discards: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("AddRecipient after an interrupted self-removal: %v", err)
+	}
+	if change.Reencrypted != 3 {
+		t.Errorf("Reencrypted = %d, want 3 — the add re-encrypts the entries at HEAD, "+
+			"not the ones the reset threw away", change.Reencrypted)
+	}
+	if !listHas(configPubkeys(t, v), third.pubkey) || !listHas(readRecipientsFile(t, v), third.pubkey) {
+		t.Error("the new recipient is missing from one of the two recipient files")
+	}
+}
+
+// TestAddIsStillRefusedOnADirtyTreeWhenAccessIsGenuinelyPartial is the
+// other half, and the one that keeps the fix above from being a way to
+// switch the refusal off.
+//
+// The unreadable entry here is committed, so the reset cannot make it go
+// away. Deferring the check past the reset must therefore still reach
+// it: what moves is where the refusal is raised, never whether it is.
+func TestAddIsStillRefusedOnADirtyTreeWhenAccessIsGenuinelyPartial(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAs(t, v, laptop)
+	seedEntries(t, v, &id, 2)
+	_ = id.Close()
+
+	hidden := hideOneEntryFrom(t, v, laptop)
+
+	// Dirty the tree with something the reset will discard, so the
+	// pre-lock pass is the one that has to stand down — while the
+	// committed entry it would have found is still there afterwards.
+	stray := filepath.Join(v.Path, "left-behind.txt")
+	if err := os.WriteFile(stray, []byte("uncommitted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if clean, err := gitrepo.IsClean(v.Path); err != nil {
+		t.Fatal(err)
+	} else if clean {
+		t.Fatal("the working tree is clean; this test needs a dirty one")
+	}
+
+	beforeHash := headHash(t, v)
+	beforeCount := commitCount(t, v)
+
+	p := newTrustPrompter(true)
+	id = unlockAsWith(t, v, laptop, p)
+	defer func() { _ = id.Close() }()
+
+	_, err := v.AddRecipient("phone-1", phone.pubkey, &id)
+	if !errors.Is(err, ErrCannotGrantFullAccess) {
+		t.Fatalf("AddRecipient on a dirty tree from a partially admitted device = %v, "+
+			"want ErrCannotGrantFullAccess — the reset must not swallow a real refusal", err)
+	}
+	if got := exitcode.CodeOf(err); got != exitcode.Conflict {
+		t.Errorf("exit code = %d, want Conflict (%d)", got, exitcode.Conflict)
+	}
+	if !strings.Contains(err.Error(), "1 of 3") {
+		t.Errorf("error = %q, want it to say how many entries are unreadable", err)
+	}
+	if strings.Contains(err.Error(), hidden.String()) {
+		t.Errorf("error = %q, want it not to name an entry UUID", err)
+	}
+
+	// Still before the confirmation, and still with nothing written: the
+	// refusal moved past the reset, not past the guarantees.
+	if len(p.changes) != 0 {
+		t.Errorf("the operator was asked to review a recipient change before being refused: %+v", p.changes)
+	}
+	if got := headHash(t, v); got != beforeHash {
+		t.Errorf("HEAD = %s after the refusal, want %s (untouched)", got, beforeHash)
+	}
+	if got := commitCount(t, v); got != beforeCount {
+		t.Errorf("commit count = %d after the refusal, want %d (nothing committed)", got, beforeCount)
+	}
+	if listHas(configPubkeys(t, v), phone.pubkey) {
+		t.Error(".gage/config.toml gained the new key despite the refusal")
+	}
+}
+
 // TestRecipientRemoveWithoutReencryptIsRejected is the design's "removing
 // a recipient REQUIRES --reencrypt (gage refuses to silently leave old
 // ciphertext readable by a removed party)": rejected outright, and

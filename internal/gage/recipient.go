@@ -190,12 +190,42 @@ func (v *Vault) AddRecipient(device, pubkey string, ident *Identity) (RecipientC
 	// mid-write naming an entry UUID. E4 runs the same pass from its own
 	// position in `recipient approve`'s sequence, which is why it is a
 	// separate callable pass rather than part of the body below.
-	if err := v.RequireFullAccess(ident); err != nil {
-		return RecipientChange{}, err
+	//
+	// It is only authoritative against a clean working tree, which is
+	// why it is gated on one. RequireFullAccess reads entries off disk,
+	// and an interrupted `recipient remove <this device> --reencrypt`
+	// leaves entries/ holding ciphertext written to the reduced list
+	// while HEAD — the state withVaultWrite is about to reset back to —
+	// still lists this device and is still entirely readable by it.
+	// Refusing on that would send the operator to another device to
+	// repair a vault that was never damaged. So on a dirty tree the
+	// refusal moves inside the lock, to just after the reset: later
+	// than the plan's "before the lock", but still before the first byte
+	// is written and still before any confirmation is shown, which is
+	// what the ordering is actually for.
+	clean, err := gitrepo.IsClean(v.Path)
+	if err != nil {
+		return RecipientChange{}, exitcode.Wrap(exitcode.Internal,
+			fmt.Errorf("gage: checking %q's working tree: %w", v.Name, err))
+	}
+	if clean {
+		if err := v.RequireFullAccess(ident); err != nil {
+			return RecipientChange{}, err
+		}
 	}
 
 	change := RecipientChange{Device: device, Pubkey: pubkey}
-	err := v.withVaultWrite(ident.warnTo(), func() error {
+	err = v.withVaultWrite(ident.warnTo(), func() error {
+		// The pre-flight, if the tree above was dirty. withVaultWrite has
+		// now reset it, so this is the first look at the state the
+		// re-encryption will actually read — and it runs ahead of
+		// everything below for the same reason the pre-lock pass runs
+		// ahead of the lock: a refusal here has still disturbed nothing.
+		if !clean {
+			if err := v.RequireFullAccess(ident); err != nil {
+				return err
+			}
+		}
 		// M10's precondition, first: this verb rebuilds .age-recipients
 		// from config.toml, so running it over a divergence would erase
 		// the stray key and commit the result as an ordinary recipient

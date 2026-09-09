@@ -1517,7 +1517,12 @@ gage recipient verify [--use NAME]
     cannot decrypt every entry is refused before the vault lock is taken
     and before any confirmation is shown, with an error naming how many
     entries it cannot read — never a bare decryption failure on an
-    opaque entry UUID partway through a write.
+    opaque entry UUID partway through a write. The one exception is a
+    dirty working tree, where the check would be reading ciphertext the
+    reset below is about to discard: there the refusal is deferred until
+    just after that reset, so an interrupted re-encryption cannot be
+    misreported as lost access. It still lands before anything is
+    written and before any confirmation.
 
     Re-encryption is all-or-nothing: every entry is re-encrypted in the
     working tree first, and the recipient-list files

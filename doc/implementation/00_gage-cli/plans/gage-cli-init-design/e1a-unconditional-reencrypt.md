@@ -79,6 +79,23 @@ are the starting point; these expand them.
       `withUnlockedVault` — because the check is a decryption pass and
       has no identity-free form. E4 inherits the error but **not** this
       ordering; see its own list.
+- [x] **That refusal is not raised over a working tree the reset is
+      about to discard.** `RequireFullAccess` reads entries off disk,
+      and an interrupted `recipient remove <this device> --reencrypt`
+      leaves `entries/` holding ciphertext written to the reduced list
+      while HEAD still lists this device and is entirely readable by it
+      — the dirty tree the design doc calls the likeliest one there is,
+      and the one `withVaultWrite` resets away. Refusing on it sends the
+      operator to another device to repair a vault that was never
+      damaged. So the pre-lock pass is gated on a clean tree; on a dirty
+      one the refusal moves to just after the reset, inside the lock.
+      Later than the bullet above, and still before the first byte and
+      before any confirmation — which is what that ordering is for.
+- [x] **The deferral is not a way to switch the refusal off.** A
+      genuinely partial actor on a dirty tree is still refused, with the
+      same error, the same count, and the same nothing-changed
+      guarantees. What moves is where the refusal is raised, never
+      whether it is.
 - [x] The error maps to `exitcode.Conflict`.
 - [x] That error names **how many entries are unreadable**, and never
       surfaces a bare decryption failure on an entry UUID.
@@ -161,3 +178,13 @@ longer describes a flag that does not exist.
   the lock and before M10's prompt. Keep the pre-flight a separately
   callable pass rather than burying it inside `AddRecipient`, or E4
   cannot place it where it needs to go.
+
+  **E4 needs the clean-tree gate too.** `RequireFullAccess` is honest
+  only about the tree it can see, so any caller placing it before
+  `withVaultWrite` inherits the interrupted-re-encryption false
+  positive above, and has to make the same split: refuse pre-lock on a
+  clean tree, defer to just after the reset on a dirty one. The gate
+  lives in `AddRecipient` rather than in `RequireFullAccess` itself
+  because the two verbs put it at different points; if E4 ends up
+  writing the same six lines, that is the moment to lift them into one
+  helper — not before.

@@ -1756,6 +1756,14 @@ So the order is:
    is what that guarantee was always actually about: the refusal never
    arrives mid-write, on an opaque entry UUID, after a human has answered
    the question about trusting the list.
+
+   **Gated on a clean working tree, as in `recipient add`** (E1a). The
+   pre-flight reads entries off disk, so on a tree left dirty by an
+   interrupted re-encryption it would be judging ciphertext the write
+   lock's reset is about to discard, and would report a device that can
+   read all of HEAD as one that cannot. On a dirty tree the check moves
+   into step 7, immediately after the reset and the fast-forward and
+   still before M10's prompt and the first byte written.
 7. Take the lock, **fetch and fast-forward**, re-verify each seal under
    it, then write. See "Approval fetches before it commits" below.
 
