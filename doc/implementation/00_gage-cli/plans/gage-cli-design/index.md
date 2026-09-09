@@ -21,13 +21,12 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 **All twelve milestones were built and shipped** — M0 through M12 are
 implemented, and `make lint`/`make test` pass on the Linux/macOS/Windows
-matrix. Two things qualify that, and both are recorded below rather than
+matrix. One thing qualifies that, and it is recorded below rather than
 left to be discovered: behavior that shipped *after* the plan was
-finished is under "Post-plan changes," and three milestones (M1, M2, M9)
-have since had their contracts amended, so they carry work that is
-decided but not yet built — see "Accepted, not yet implemented." The aim
-is for this file to describe the tool as it actually is, including where
-it currently disagrees with the design doc.
+finished is under "Post-plan changes." Three milestones (M1, M2, M9)
+have since had their contracts amended; all of that work has now landed,
+so "Accepted, not yet implemented" is empty and kept only as a record.
+The aim is for this file to describe the tool as it actually is.
 
 ---
 
@@ -52,14 +51,15 @@ it currently disagrees with the design doc.
 
 **† These milestones shipped complete, then had their contracts
 amended.** [A19](open-questions.md#a19) makes re-encryption
-unconditional on `gage recipient add` (M9) — applied to the design doc,
-not yet in the code; see "Accepted, not yet implemented" below.
+unconditional on `gage recipient add` (M9) — **implemented** in
+[E1a](../gage-cli-init-design/e1a-unconditional-reencrypt.md), together
+with the `ErrCannotGrantFullAccess` refusal it requires.
 [A20](open-questions.md#a20) keys the identities directory by a vault id
 rather than by the local vault name (M1's config schema and
 `format_version`, M2's identity paths) — **implemented** in
 [E0](../gage-cli-init-design/e0-vault-id-keying.md), together with
-[Q-ORPHAN-BY-NAME](open-questions.md#q-orphan-by-name), so those two
-milestones' amended contracts are now what the code does.
+[Q-ORPHAN-BY-NAME](open-questions.md#q-orphan-by-name). Both amended
+contracts are now what the code does.
 
 **Model column.** `⚑` marks a milestone worth an Opus review pass over
 its *tests* before moving on, even where Sonnet wrote them. `*` marks a
@@ -312,16 +312,14 @@ yet. This section exists so that gap is visible rather than inferred
 from a mismatch between the TDD and the binary — and it should be empty
 most of the time.
 
-**One item remains.** A19 is `E1a` in
+**This section is now empty.** Both items that stood here are done:
+A19 landed as `E1a` and A20 as `E0`, both in
 [plans/gage-cli-init-design/](../gage-cli-init-design/index.md), which
-also covers the device-enrollment feature that raised it. The summary
-here is the standing record; the milestone doc carries the test list.
+also covers the device-enrollment feature that raised them. Their
+entries are kept below as a record of what changed, the way the
+amendment register keeps applied entries.
 
-A20 was the other item and is **done** — `E0`, landed with
-Q-ORPHAN-BY-NAME. Its former entry is kept below as a record of what
-changed, the way the amendment register keeps applied entries.
-
-### A19 — `gage recipient add` always re-encrypts
+### A19 — `gage recipient add` always re-encrypts — **done (E1a)**
 
 Full reasoning in [open-questions.md](open-questions.md#a19) and in the
 design doc's "Why adding a recipient always re-encrypts". Short version:
@@ -332,26 +330,33 @@ the first entry the acting identity can't read — it's contagious and
 unrepairable. A partially-admitted device can't fix itself or grant full
 access to anyone else.
 
-Work remaining, all in M9's surface:
+Applied, all in M9's surface:
 
-- `Vault.AddRecipient` drops its `reencrypt bool` parameter and always
+- `Vault.AddRecipient` dropped its `reencrypt bool` parameter and always
   re-encrypts. `RemoveRecipient` is untouched — its flag stays mandatory
-  and means something different.
-- A pre-flight check that the acting identity can decrypt every entry,
-  failing with a new `ErrCannotGrantFullAccess` **before** the vault lock
-  and **before** the trust-cache confirmation, naming the count of
-  unreadable entries.
-- `cmd/gage`'s `recipient add` loses `--reencrypt`; passing it becomes a
-  usage error rather than being silently accepted.
-- M9's three A19 test bullets go green, and the existing tests pinning
-  the old behavior (`add` without re-encryption leaving entries
-  unreadable) are replaced rather than deleted — the replacement asserts
-  no invocation of `add` can produce a partial recipient.
+  and means something different. `commitRecipientList` lost the
+  parameter too: no path through the shared tail skips the pass.
+- `Vault.RequireFullAccess` is the pre-flight — every entry read with the
+  acting identity, failing with `ErrCannotGrantFullAccess` **before** the
+  vault lock and **before** the trust-cache confirmation, naming the
+  count of unreadable entries. Exported and standalone, because E4 runs
+  the same pass later in `recipient approve`'s sequence. It counts only
+  entries the identity is not a recipient of; a corrupt entry is a
+  different problem, and `reencryptTo` still names it.
+- `cmd/gage`'s `recipient add` lost `--reencrypt`; passing it is a usage
+  error rather than being silently accepted. Every prose site that
+  taught the flag on `add` lost it too, including `identity add`'s
+  copy-pasteable next command.
+- M9's three A19 test bullets are green, and the tests pinning the old
+  behavior (`add` without re-encryption leaving entries unreadable) were
+  replaced rather than deleted — the replacement asserts no invocation of
+  `add` can produce a partial recipient.
 
 Device enrollment ([gage-cli-init-design.md](../../tdds/gage-cli-init-design.md))
-already specifies `recipient approve` this way, so implementing A19 first
-keeps the two doors consistent rather than letting `add` remain the
-vector that creates partial recipients.
+already specifies `recipient approve` this way, so landing A19 first
+made `ErrCannotGrantFullAccess` and the always-re-encrypt behavior
+existing machinery for E4 to reuse, rather than leaving `add` as the
+vector that keeps creating partial recipients.
 
 ### A20 — the identities directory is keyed by a vault id — **done (E0)**
 

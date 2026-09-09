@@ -25,30 +25,37 @@ func newRecipientCommand(app *App) *cobra.Command {
 	return parent
 }
 
+// newRecipientAddCommand builds `gage recipient add`, which takes no
+// --reencrypt flag: adding a recipient always re-encrypts (A19). The
+// flag is not accepted-and-ignored, because a script that passed it was
+// asking for a behavior that used to be optional and is now the only
+// one — silently accepting it would let the command line and the
+// operation quietly drift apart. Cobra rejects the unknown flag as a
+// usage error, which is the loud version.
 func newRecipientAddCommand(app *App) *cobra.Command {
 	var (
-		useFlag       string
-		deviceFlag    string
-		reencryptFlag bool
+		useFlag    string
+		deviceFlag string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "add <pubkey>",
 		Short: commandShort("recipient add"),
 		Long: commandShort("recipient add") + ".\n\n" +
-			"Without --reencrypt the new recipient can read everything written from now\n" +
-			"on, but nothing that already exists — the existing entries stay encrypted to\n" +
-			"the old list. With --reencrypt every entry is decrypted and rewritten to the\n" +
-			"new list, and all of it lands in a single commit or none of it does.",
+			"Every entry is decrypted and rewritten to the new list, so the new recipient\n" +
+			"can read the vault's whole history — there is no way to add a recipient who\n" +
+			"can read only part of it. All of it lands in a single commit or none of it\n" +
+			"does. Adding a recipient therefore requires being able to read every entry\n" +
+			"yourself; run it from a device that can.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pubkey := args[0]
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				change, err := v.AddRecipient(deviceFlag, pubkey, reencryptFlag, ident)
+				change, err := v.AddRecipient(deviceFlag, pubkey, ident)
 				if err != nil {
 					return err
 				}
-				writeOut(app.Out, recipientChangeLines("added", change, reencryptFlag))
+				writeOut(app.Out, recipientChangeLines("added", change))
 				return nil
 			})
 		},
@@ -56,8 +63,6 @@ func newRecipientAddCommand(app *App) *cobra.Command {
 
 	addUseFlag(cmd, &useFlag)
 	cmd.Flags().StringVar(&deviceFlag, "device", "", "the device name to label this key with")
-	cmd.Flags().BoolVar(&reencryptFlag, "reencrypt", false,
-		"also re-encrypt every existing entry so the new recipient can read the vault's history")
 	// A bare public key says nothing about whose it is, and the label is
 	// what every later `recipient remove`/`list` addresses it by, so
 	// there is no sensible default to invent.
@@ -95,7 +100,7 @@ func newRecipientRemoveCommand(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				writeOut(app.Out, recipientChangeLines("removed", change, reencryptFlag))
+				writeOut(app.Out, recipientChangeLines("removed", change))
 				return nil
 			})
 		},
@@ -109,20 +114,22 @@ func newRecipientRemoveCommand(app *App) *cobra.Command {
 
 // recipientChangeLines renders what a completed add or remove did.
 //
-// It says the commit is local on purpose. The guarantee --reencrypt
+// There is no with/without-re-encryption distinction left to render:
+// add always re-encrypts (A19) and remove has always required it, so
+// the count line is unconditional.
+//
+// It says the commit is local on purpose. The guarantee re-encryption
 // makes is about HEAD — every entry and both recipient files in one
 // commit or none — while publishing it is the ordinary post-write push,
 // which warns and proceeds when the remote is unreachable. Saying
 // "committed locally" is what keeps a failed push legible as a
 // publishing problem rather than a half-done migration.
-func recipientChangeLines(verb string, change gage.RecipientChange, reencrypted bool) []string {
-	lines := []string{fmt.Sprintf("gage: %s recipient %q (%s)", verb, change.Device, change.Pubkey)}
-	if reencrypted {
-		lines = append(lines, fmt.Sprintf(
-			"gage: re-encrypted %d %s; committed locally as %s",
-			change.Reencrypted, plural(change.Reencrypted, "entry", "entries"), shortHash(change.Commit)))
+func recipientChangeLines(verb string, change gage.RecipientChange) []string {
+	return []string{
+		fmt.Sprintf("gage: %s recipient %q (%s)", verb, change.Device, change.Pubkey),
+		fmt.Sprintf("gage: re-encrypted %d %s; committed locally as %s",
+			change.Reencrypted, plural(change.Reencrypted, "entry", "entries"), shortHash(change.Commit)),
 	}
-	return lines
 }
 
 func plural(n int, one, many string) string {

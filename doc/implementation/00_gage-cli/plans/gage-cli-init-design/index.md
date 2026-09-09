@@ -66,7 +66,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | # | Milestone | Status | Model | Theme |
 |---|---|---|---|---|
 | E0 | [Vault-id keying](e0-vault-id-keying.md) | `[x]` | **Opus** ⚑ | A20: identities, trust cache and vault lock keyed by vault id, not local name |
-| E1a | [Unconditional re-encryption](e1a-unconditional-reencrypt.md) | `[ ]` | Sonnet | A19: `recipient add` always re-encrypts |
+| E1a | [Unconditional re-encryption](e1a-unconditional-reencrypt.md) | `[x]` | Sonnet | A19: `recipient add` always re-encrypts |
 | E1b | [The shared recipient write](e1b-shared-recipient-write.md) | `[ ]` | Sonnet* ⚑ | The N-recipient form of `AddRecipient`'s body, which E4's batch approval calls |
 | E2 | [The sealed request](e2-sealed-request.md) | `[ ]` | **Opus** ⚑ | Code generation, the seal, the filename scheme, expiry — library only |
 | E3 | [Joining a vault](e3-joining-side.md) | `[ ]` | Sonnet | `identity enroll`, the clone prompt, publishing a request |
@@ -77,7 +77,7 @@ amendments to already-shipped milestones (E0 → M1/M2, E1a/E1b → M9) that
 enrollment depends on. They live in this plan because nothing else is
 going to sequence them, and because all three were raised *by* designing
 enrollment. The core plan's "Accepted, not yet implemented" section
-points here.
+points here; E0 and E1a have landed, which is what emptied it.
 
 **E1 was split into E1a and E1b**, following M8a/M8b's precedent in the
 core plan. E1a is A19 — a behavior change with a user-visible surface.

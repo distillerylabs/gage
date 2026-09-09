@@ -818,13 +818,11 @@ answered; A15–A18 alongside the milestones that needed them.
 
 A19 and A20 are the only amendments here that change shipped behavior
 rather than describing it. `[x]` in this section has always meant "the
-TDD says this," never "the code does"; that distinction matters for
-exactly those two entries. **A20 is now implemented** (E0), together with
-Q-ORPHAN-BY-NAME, which it carried the `pubkey` field for. **A19 is
-not** — it is sequenced as E1a in
-[plans/gage-cli-init-design/](../gage-cli-init-design/index.md), and the
-outstanding work is listed under "Accepted, not yet implemented" in
-[index.md](index.md).
+TDD says this," never "the code does"; that distinction mattered for
+exactly those two entries, and **both are now implemented** — A20 in E0,
+together with Q-ORPHAN-BY-NAME, which it carried the `pubkey` field for,
+and A19 in E1a. "Accepted, not yet implemented" in
+[index.md](index.md) is now empty.
 
 A21 runs the other way: the code was right and the doc was wrong, so
 applying it changed nothing but prose. A22 is the one entry deliberately
@@ -1031,12 +1029,12 @@ being no per-vault spelling.
 
 ### `[x]` A19 — Make re-encryption unconditional on `recipient add` {#a19}
 
-**Accepted and applied to the design doc.** Per this section's
-convention, `[x]` means the TDD now says this — it does **not** mean the
-code does. This is the one amendment here that changes shipped behavior
-rather than documenting it, so it carries an implementation gap until
-the work below lands; that gap is tracked under "Accepted, not yet
-implemented" in [index.md](index.md).
+**Accepted, applied to the design doc, and implemented in
+[E1a](../gage-cli-init-design/e1a-unconditional-reencrypt.md).** Per this
+section's convention, `[x]` means the TDD now says this — for this entry
+the code now does too, so the implementation gap it used to carry is
+closed and "Accepted, not yet implemented" in [index.md](index.md) is
+empty.
 
 **Applied to the design doc as:** `--reencrypt` removed from
 `gage recipient add` in "Recipient / access management"; a new
@@ -1068,14 +1066,15 @@ that state is a problem in three compounding ways:
    sees every entry, and gets decryption failures on an arbitrary-looking
    subset. The dividing line — written before or after admission — is not
    the title, the age, or anything `ls` shows.
-3. **It's contagious and unrepairable.** `reencryptTo`
-   (`internal/gage/recipient.go:409`) decrypts every entry with the
-   acting identity and hard-fails on the first one it can't read. So a
-   partially-admitted device cannot repair itself *and cannot grant full
-   access to anyone else* — its re-encryption pass dies partway, after
-   the trust-cache prompt and inside the write lock, with an error naming
-   an opaque entry UUID. Each generation is harder to diagnose than the
-   last.
+3. **It's contagious and unrepairable.** `reencryptTo` decrypts every
+   entry with the acting identity and hard-fails on the first one it
+   can't read. So a partially-admitted device cannot repair itself *and
+   cannot grant full access to anyone else* — before E1a its
+   re-encryption pass died partway, after the trust-cache prompt and
+   inside the write lock, with an error naming an opaque entry UUID.
+   Each generation is harder to diagnose than the last. That failure is
+   what `RequireFullAccess` now replaces with a refusal that names a
+   count, before anything happens.
 
 **What it costs.** Every `recipient add` rewrites every entry: a larger
 repo over time, and a no-op-plaintext revision in each entry's history
@@ -1087,12 +1086,9 @@ worked around: an actor who can't read every entry can no longer add a
 recipient at all. That must fail before the lock and before any
 confirmation, naming the count of unreadable entries rather than
 surfacing a decryption error — `ErrCannotGrantFullAccess` in the
-enrollment doc's spelling.
-
-**If this is declined**, the enrollment doc should be revisited too:
-`approve` having no flag while `add` has one is defensible (the new door
-picks the better default) but leaves `add` as the vector that keeps
-creating partial recipients, so most of the benefit is lost.
+enrollment doc's spelling. Shipped in E1a as `Vault.RequireFullAccess`,
+exported and standalone so E4 can place the same pass later in
+`recipient approve`'s sequence.
 
 **Affected:** design doc "Recipient / access management" and the
 `--reencrypt` bullets under "A few decisions worth calling out"; M9's

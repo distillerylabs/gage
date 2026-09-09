@@ -51,7 +51,7 @@ func newIdentityAddCommand(app *App) *cobra.Command {
 			"Generates a fresh keypair for this device, wraps its private half with a\n" +
 			"passphrase you choose, and prints the public half. The vault does not yet\n" +
 			"trust that key: hand it to a device that can already read the vault and run\n" +
-			"`gage recipient add <pubkey> --device NAME --reencrypt` there.\n\n" +
+			"`gage recipient add <pubkey> --device NAME` there.\n\n" +
 			"This is also the recovery path for a lost identity file — register a fresh\n" +
 			"identity under a new name rather than restoring the old key from a backup.",
 		Args: cobra.NoArgs,
@@ -112,7 +112,7 @@ func runIdentityAdd(app *App, use, deviceFlag, methodFlag string) error {
 		fmt.Sprintf("gage: registered %q as this device's identity for vault %q", device, v.Name),
 		fmt.Sprintf("gage: public key %s", pubkey),
 		fmt.Sprintf("gage: from a device that can already read %q, run:", v.Name),
-		fmt.Sprintf("gage:   gage recipient add %s --device %s --reencrypt", pubkey, device),
+		fmt.Sprintf("gage:   gage recipient add %s --device %s", pubkey, device),
 	})
 	return nil
 }

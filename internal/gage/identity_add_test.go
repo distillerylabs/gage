@@ -129,7 +129,7 @@ func TestEachDeviceHasItsOwnIdentityFile(t *testing.T) {
 	phone := newTestDevice(t, "personal", "phone-1")
 
 	id := unlockAs(t, v, laptop)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 	entryID, err := v.Insert(sampleEntry(time.Now()), true, &id)
@@ -245,7 +245,7 @@ func TestRecoveringALostIdentityFileNeedsNoFileRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, true, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient --reencrypt: %v", err)
 	}
 	_ = id.Close()
@@ -270,7 +270,7 @@ func TestRecoveringALostIdentityFileNeedsNoFileRestore(t *testing.T) {
 	// Step two, from a surviving recipient: add the new key, with
 	// --reencrypt so the recovered device gets history back too.
 	idPhone := unlockAs(t, v, phone)
-	if _, err := v.AddRecipient("laptop-1-new", newPubkey, true, &idPhone); err != nil {
+	if _, err := v.AddRecipient("laptop-1-new", newPubkey, &idPhone); err != nil {
 		t.Fatalf("the surviving recipient could not add the recovered device: %v", err)
 	}
 	_ = idPhone.Close()

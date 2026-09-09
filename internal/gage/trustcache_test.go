@@ -806,7 +806,7 @@ func TestALocalRecipientAddRegeneratesTheCache(t *testing.T) {
 	id := unlockAsWith(t, v, laptop, p)
 	defer func() { _ = id.Close() }()
 
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 	if _, err := v.Insert(sampleEntry(time.Now()), true, &id); err != nil {
@@ -828,24 +828,19 @@ func TestALocalRecipientAddRegeneratesTheCache(t *testing.T) {
 // key is still there afterwards for verify to keep reporting, rather
 // than having been rebuilt away."
 //
-// Both verbs, and every reencrypt setting either one has: the rebuild
-// that erases the evidence lives in the shared tail all three paths
-// commit through, so covering only the plain add would leave the more
-// destructive verb unguarded. There is deliberately no plain `remove`
-// case — M9 refuses a removal without --reencrypt outright, since the
-// removed key would still open every entry that already exists, so
-// "remove over a divergence" has exactly one form to guard.
+// Both verbs: the rebuild that erases the evidence lives in the shared
+// tail both paths commit through, so covering only `add` would leave the
+// more destructive verb unguarded. Each verb has exactly one form to
+// guard — A19 removed `add`'s no-reencrypt case, and M9 refuses a
+// removal without --reencrypt outright, since the removed key would
+// still open every entry that already exists.
 func TestRecipientAddAndRemoveRefuseOverAFailingVerify(t *testing.T) {
 	cases := []struct {
 		name string
 		run  func(v *Vault, id *Identity, phone testDevice) error
 	}{
 		{"add", func(v *Vault, id *Identity, phone testDevice) error {
-			_, err := v.AddRecipient("phone-1", phone.pubkey, false, id)
-			return err
-		}},
-		{"add --reencrypt", func(v *Vault, id *Identity, phone testDevice) error {
-			_, err := v.AddRecipient("phone-1", phone.pubkey, true, id)
+			_, err := v.AddRecipient("phone-1", phone.pubkey, id)
 			return err
 		}},
 		{"remove --reencrypt", func(v *Vault, id *Identity, phone testDevice) error {
@@ -866,7 +861,7 @@ func TestRecipientAddAndRemoveRefuseOverAFailingVerify(t *testing.T) {
 			// "remove" needs something to remove; the add cases need the
 			// name free, so only that one gets it up front.
 			if strings.HasPrefix(tc.name, "remove") {
-				if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+				if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 					t.Fatalf("seeding the recipient to remove: %v", err)
 				}
 			}
@@ -970,7 +965,7 @@ func TestReencryptRefusalHappensBeforeAnyEntryIsRewritten(t *testing.T) {
 	id = unlockAsWith(t, v, laptop, newTrustPrompter(true))
 	defer func() { _ = id.Close() }()
 
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, true, &id); !errors.Is(err, ErrRecipientsOutOfSync) {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); !errors.Is(err, ErrRecipientsOutOfSync) {
 		t.Fatalf("AddRecipient --reencrypt = %v, want ErrRecipientsOutOfSync", err)
 	}
 	if reencrypted != 0 {
@@ -1151,83 +1146,74 @@ func TestRepairDoesNotRegenerateTheTrustCache(t *testing.T) {
 // when it is perfectly consistent — both files edited, `verify` passing,
 // so requireRecipientsInSync has nothing to object to. Regenerating the
 // cache at the end of an add would bless that key along with the
-// operator's own, silently and permanently. With --reencrypt it is
-// worse still: every existing entry is rewritten to a list nobody here
-// approved before the blessing lands.
+// operator's own, silently and permanently. Since A19 it is worse still:
+// every existing entry is rewritten to a list nobody here approved
+// before the blessing lands, and that now happens on every add rather
+// than on an opt-in one — which is why the two cases this test used to
+// run are one.
 //
 // So the blocking check runs here too, and it runs before anything is
 // written.
 func TestRecipientAddDoesNotLaunderSomeoneElsesChange(t *testing.T) {
-	cases := []struct {
-		name      string
-		reencrypt bool
-	}{
-		{"add", false},
-		{"add --reencrypt", true},
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	if _, err := v.Insert(sampleEntry(time.Now()), true, &id); err != nil {
+		t.Fatalf("seeding an entry: %v", err)
+	}
+	_ = id.Close()
+
+	// Another device's change, arriving the way a pull delivers one:
+	// both files, committed together, `verify` still green.
+	stranger := newTrustKey(t)
+	commitRoutineRecipientChange(t, v, "stranger", stranger)
+
+	commits := commitCount(t, v)
+	cacheBefore, _ := trustCacheOf(t, v, laptop)
+
+	reencrypted := 0
+	v.onReencryptEntry = func(done int) { reencrypted = done }
+	defer func() { v.onReencryptEntry = nil }()
+
+	p := newTrustPrompter(false)
+	id = unlockAsWith(t, v, laptop, p)
+	defer func() { _ = id.Close() }()
+
+	_, err := v.AddRecipient("phone-1", phone.pubkey, &id)
+	if !errors.Is(err, ErrRecipientChangeDeclined) {
+		t.Fatalf("add over an unreviewed change = %v, want ErrRecipientChangeDeclined", err)
+	}
+	if len(p.changes) != 1 {
+		t.Fatalf("asked %d times about the pulled change, want exactly 1", len(p.changes))
+	}
+	if !strings.Contains(p.changes[0].Diff, "stranger") {
+		t.Errorf("the question asked was not about the pulled key:\n%s", p.changes[0].Diff)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
-			phone := newTestDevice(t, "personal", "phone-1")
+	// Declined: nothing written, and in particular nothing re-encrypted.
+	// The check has to sit ahead of the rewrite pass, not beside the
+	// recipient-file write.
+	if reencrypted != 0 {
+		t.Errorf("%d entries were re-encrypted before the refusal", reencrypted)
+	}
+	if n := commitCount(t, v); n != commits {
+		t.Errorf("commit count = %d, want %d; a declined add commits nothing", n, commits)
+	}
+	if listHas(readRecipientsFile(t, v), phone.pubkey) {
+		t.Error("the new recipient was added despite the refusal")
+	}
 
-			id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
-			if _, err := v.Insert(sampleEntry(time.Now()), true, &id); err != nil {
-				t.Fatalf("seeding an entry: %v", err)
-			}
-			_ = id.Close()
-
-			// Another device's change, arriving the way a pull delivers
-			// one: both files, committed together, `verify` still green.
-			stranger := newTrustKey(t)
-			commitRoutineRecipientChange(t, v, "stranger", stranger)
-
-			commits := commitCount(t, v)
-			cacheBefore, _ := trustCacheOf(t, v, laptop)
-
-			reencrypted := 0
-			v.onReencryptEntry = func(done int) { reencrypted = done }
-
-			p := newTrustPrompter(false)
-			id = unlockAsWith(t, v, laptop, p)
-			defer func() { _ = id.Close() }()
-
-			_, err := v.AddRecipient("phone-1", phone.pubkey, tc.reencrypt, &id)
-			if !errors.Is(err, ErrRecipientChangeDeclined) {
-				t.Fatalf("%s over an unreviewed change = %v, want ErrRecipientChangeDeclined", tc.name, err)
-			}
-			if len(p.changes) != 1 {
-				t.Fatalf("asked %d times about the pulled change, want exactly 1", len(p.changes))
-			}
-			if !strings.Contains(p.changes[0].Diff, "stranger") {
-				t.Errorf("the question asked was not about the pulled key:\n%s", p.changes[0].Diff)
-			}
-
-			// Declined: nothing written, and in particular nothing
-			// re-encrypted. The check has to sit ahead of the rewrite
-			// pass, not beside the recipient-file write.
-			if reencrypted != 0 {
-				t.Errorf("%d entries were re-encrypted before the refusal", reencrypted)
-			}
-			if n := commitCount(t, v); n != commits {
-				t.Errorf("commit count = %d, want %d; a declined add commits nothing", n, commits)
-			}
-			if listHas(readRecipientsFile(t, v), phone.pubkey) {
-				t.Error("the new recipient was added despite the refusal")
-			}
-
-			// And above all: the pulled key is still unreviewed.
-			cacheAfter, ok := trustCacheOf(t, v, laptop)
-			if !ok {
-				t.Fatal("the trust cache vanished")
-			}
-			if string(cacheAfter.KnownConfig) != string(cacheBefore.KnownConfig) {
-				t.Error("a declined add regenerated the cache")
-			}
-			if strings.Contains(string(cacheAfter.KnownConfig), stranger) {
-				t.Error("another device's unreviewed key was laundered into the trust cache by a local add")
-			}
-		})
+	// And above all: the pulled key is still unreviewed.
+	cacheAfter, ok := trustCacheOf(t, v, laptop)
+	if !ok {
+		t.Fatal("the trust cache vanished")
+	}
+	if string(cacheAfter.KnownConfig) != string(cacheBefore.KnownConfig) {
+		t.Error("a declined add regenerated the cache")
+	}
+	if strings.Contains(string(cacheAfter.KnownConfig), stranger) {
+		t.Error("another device's unreviewed key was laundered into the trust cache by a local add")
 	}
 }
 
@@ -1250,7 +1236,7 @@ func TestConfirmingLetsTheAddThroughAndRegeneratesOnce(t *testing.T) {
 	id = unlockAsWith(t, v, laptop, p)
 	defer func() { _ = id.Close() }()
 
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient after confirming the pulled change: %v", err)
 	}
 	if len(p.changes) != 1 {

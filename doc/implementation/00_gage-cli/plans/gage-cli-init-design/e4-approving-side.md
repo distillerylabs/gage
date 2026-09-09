@@ -113,7 +113,7 @@ Approval rewrites **every entry**. A commit that touches every entry made
 onto a stale tip does not diverge in one place, it diverges in all of
 them — every entry another device touched meanwhile becomes an entry
 conflict the approver answers `[l/r/b]` to, one at a time, through `gage
-sync`. `recipient add --reencrypt` has the same shape and gets away with
+sync`. `recipient add` has the same shape and gets away with
 it because it is rare; approval is the ordinary way a device joins a
 vault, so its stale-tip case is a Tuesday rather than a corner.
 

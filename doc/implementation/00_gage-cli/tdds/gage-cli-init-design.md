@@ -27,7 +27,8 @@ and the awkward one is in the middle:
    hand. A 62-character `age1...` string, moved between two machines
    over whatever channel the user improvises — a chat message, an email
    to themselves, a photo of a terminal, retyping it.
-4. `gage recipient add <pubkey> --reencrypt` on the authorized device.
+4. `gage recipient add <pubkey> --device NAME` on the authorized
+   device, which re-encrypts the whole vault to include it.
 5. `gage sync` on the new device, which can now decrypt.
 
 Steps 1 and 2 are two commands where the user has one intention ("put
@@ -1788,8 +1789,8 @@ disproportionate outcome for a command whose whole job is to let one more
 device in, and it is entirely avoidable: catching up first costs one
 fetch.
 
-`recipient add --reencrypt` has the same shape and does not do this. The
-difference is frequency, not mechanism. `--reencrypt` is a rare
+`recipient add` has the same shape and does not do this. The difference
+is frequency, not mechanism. Adding a recipient by hand is a rare
 deliberate act; approval is the ordinary way a device joins a vault, so
 its stale-tip case stops being a corner and starts being a Tuesday.
 
@@ -2630,7 +2631,7 @@ which is what the message is for.
 
 **`identity enroll` takes the per-vault write lock** for its commit, like every
 other write. **`approve` holds it across the whole re-encryption
-sequence**, exactly as `recipient add --reencrypt` does today — and
+sequence**, exactly as `recipient add` does today — and
 re-reads each sealed request under that lock before trusting what it
 showed the human a moment earlier.
 

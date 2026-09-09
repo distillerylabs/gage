@@ -46,7 +46,7 @@ Details: [Identities and recipients](identities-and-recipients.md).
 
 | Command | Description |
 |---|---|
-| `recipient add <pubkey-or-name> [--use NAME] [--reencrypt]` | Authorize a public key to read this vault. |
+| `recipient add <pubkey-or-name> [--use NAME]` | Authorize a public key and re-encrypt the vault to include it. |
 | `recipient remove <pubkey-or-name> [--use NAME] --reencrypt` | Revoke a recipient and re-encrypt the vault without its key. |
 | `recipient list [--use NAME]` | List every device this vault is encrypted to. |
 | `recipient verify [--use NAME]` | Check `.age-recipients` and `config.toml` still agree. |

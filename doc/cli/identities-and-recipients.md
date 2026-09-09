@@ -42,26 +42,32 @@ exactly one identity file surviving forever has no real recovery story.
 ## Recipients: who can decrypt a vault
 
 ```
-gage recipient add <pubkey-or-name> [--use NAME] [--reencrypt]
+gage recipient add <pubkey-or-name> [--use NAME]
 gage recipient remove <pubkey-or-name> [--use NAME] --reencrypt
 gage recipient list [--use NAME]
 gage recipient verify [--use NAME]
 ```
 
-- **`recipient add`** authorizes a public key to read future writes to the
-  vault. Add `--reencrypt` to also decrypt and re-write every existing
-  entry so the new recipient can read history too — without it, they can
-  only read entries written after they were added.
+- **`recipient add`** authorizes a public key and re-encrypts every
+  existing entry to include it, so the new recipient can read the vault's
+  whole history. There is no flag for this and no way to skip it: a
+  recipient who can read only part of a vault isn't an access tier anyone
+  chose, and the state spreads — a partially admitted device can neither
+  repair its own access nor grant full access to anyone else. The other
+  side of that rule is that adding a recipient requires being able to read
+  every entry yourself; run it from a device that can. If you can't, `gage`
+  says so — naming how many entries are unreadable — before it changes
+  anything.
 - **`recipient remove`** *requires* `--reencrypt` — `gage` refuses to
   silently leave old ciphertext readable by someone you just revoked. It
   prints a clear warning either way: **removing a recipient revokes future
   access only.** Anything they already read can't be unread.
-- **`--reencrypt` is all-or-nothing.** Every entry is re-encrypted in the
+- **Re-encryption is all-or-nothing.** Every entry is re-encrypted in the
   working tree, and the recipient list plus every touched entry land in
   exactly one commit — nothing commits until the whole operation succeeds.
   If it's interrupted (crash, kill, power loss), the vault is left exactly
-  as it was before the command ran; re-running `--reencrypt` starts
-  cleanly from scratch.
+  as it was before the command ran; re-running the command starts cleanly
+  from scratch.
 - **`recipient verify`** checks that `.age-recipients` and
   `.gage/config.toml` agree on who's a recipient. It needs no unlock (both
   files are plaintext), so it works before any identity is available and is

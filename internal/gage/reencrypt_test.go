@@ -100,7 +100,7 @@ func TestInterruptedReencryptLeavesHEADUntouched(t *testing.T) {
 
 	v.onReencryptEntry = crashAfter(2)
 	crashed := runAndRecoverCrash(t, func() {
-		_, _ = v.AddRecipient("phone-1", phone.pubkey, true, &id)
+		_, _ = v.AddRecipient("phone-1", phone.pubkey, &id)
 	})
 	v.onReencryptEntry = nil
 	if !crashed {
@@ -158,12 +158,12 @@ func TestRetryingReencryptAfterAnInterruptionSucceeds(t *testing.T) {
 	baseCount := commitCount(t, v)
 
 	v.onReencryptEntry = crashAfter(2)
-	if !runAndRecoverCrash(t, func() { _, _ = v.AddRecipient("phone-1", phone.pubkey, true, &id) }) {
+	if !runAndRecoverCrash(t, func() { _, _ = v.AddRecipient("phone-1", phone.pubkey, &id) }) {
 		t.Fatal("the crash seam never fired")
 	}
 	v.onReencryptEntry = nil
 
-	change, err := v.AddRecipient("phone-1", phone.pubkey, true, &id)
+	change, err := v.AddRecipient("phone-1", phone.pubkey, &id)
 	if err != nil {
 		t.Fatalf("retrying --reencrypt after an interruption: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestReencryptAbortsWholeOperationWhenOneEntryFails(t *testing.T) {
 	beforeHash := headHash(t, v)
 	beforeCount := commitCount(t, v)
 
-	_, err := v.AddRecipient("phone-1", phone.pubkey, true, &id)
+	_, err := v.AddRecipient("phone-1", phone.pubkey, &id)
 	if err == nil {
 		t.Fatal("--reencrypt succeeded with an undecryptable entry in the vault")
 	}
@@ -272,7 +272,7 @@ func TestReencryptLandsEverythingInExactlyOneCommit(t *testing.T) {
 	defer func() { _ = id2.Close() }()
 
 	before := commitCount(t, v)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, true, &id2); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id2); err != nil {
 		t.Fatalf("AddRecipient --reencrypt: %v", err)
 	}
 
@@ -339,7 +339,7 @@ func TestReencryptHoldsTheVaultLockThroughout(t *testing.T) {
 		}
 		observations = append(observations, err)
 	}
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, true, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient --reencrypt: %v", err)
 	}
 	v.onReencryptEntry = nil
@@ -461,7 +461,7 @@ func TestDirtyWorkTreeResetIsAlsoRunByReencrypt(t *testing.T) {
 	defer func() { _ = id2.Close() }()
 
 	before := commitCount(t, v)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, true, &id2); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id2); err != nil {
 		t.Fatalf("AddRecipient --reencrypt over a dirty tree: %v", err)
 	}
 

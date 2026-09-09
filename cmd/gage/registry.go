@@ -214,7 +214,7 @@ var registry = []CommandInfo{
 	},
 	{
 		Name:         "recipient add",
-		Short:        "Authorize a public key to read this vault",
+		Short:        "Authorize a public key and re-encrypt the vault to include it",
 		Group:        GroupRecipient,
 		Availability: AvailBoth,
 	},
