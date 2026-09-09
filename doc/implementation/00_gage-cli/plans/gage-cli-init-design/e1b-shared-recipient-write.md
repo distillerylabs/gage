@@ -184,6 +184,17 @@ its second caller needs.
 - [x] The same holds for a failure **in the deletion step specifically** —
       a path that cannot be removed does not leave a commit behind with
       the recipients added and the file still present.
+- [x] And for a failure **after a deletion that succeeded** — the window
+      neither bullet above reaches, since one fails before the deletion
+      runs and the other fails inside it. Without this the "no paths
+      deleted" assertion above is true only because nothing was deleted.
+      What it pins is that the deletion is uncommitted rather than undone:
+      no commit is salvaged, and the next write's reset restores the path
+      instead of folding it into that write's own commit. The seam has to
+      leave the tree stageable — corrupting `.gage/config.toml` does,
+      replacing `.age-recipients` with a directory does not, and with the
+      latter "nothing was committed" is the seam's doing rather than the
+      code's.
 - [x] A **declined** trust question leaves the same nothing: no commit,
       no partial re-encryption, no cache regeneration.
 

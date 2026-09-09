@@ -667,6 +667,104 @@ func TestABatchWhoseDeletionFailsCommitsNothing(t *testing.T) {
 	}
 }
 
+// TestABatchThatFailsAfterDeletingCommitsNothing closes the window the
+// two tests above leave open. TestInterruptedBatchLeavesHEADUntouched
+// dies during the re-encryption, which is *before* deleteVaultPaths runs
+// at all, and TestABatchWhoseDeletionFailsCommitsNothing dies inside it —
+// so neither exercises a write that deleted the paths successfully and
+// then failed on its way to the commit. Without this, "no paths deleted"
+// holds in those tests only because the deletion never happened, which is
+// a weaker claim than the one commitRecipientList makes.
+//
+// What must hold is that the deletion is *uncommitted*, not undone: HEAD
+// keeps the file, the working tree does not, and the next write's
+// dirty-tree reset restores it rather than folding it into that write's
+// own commit. That is the whole reason deleteVaultPaths needs no rollback
+// of its own.
+//
+// The failure is produced through the existing onReencryptEntry seam and
+// is a real one: on the last entry, .gage/config.toml is overwritten with
+// invalid TOML, so writeRecipientFiles fails in readVaultConfig — after
+// the deletion, before the commit.
+//
+// Corrupting *that* file rather than .age-recipients is the point. A
+// .age-recipients replaced by a directory would fail the write too, but it
+// also makes the tree unstageable, so "nothing was committed" would be
+// the seam's doing rather than the code's. Invalid TOML leaves every path
+// in the tree an ordinary file that CommitAll would happily sweep up if
+// anything asked it to — and it needs no repair afterwards, because the
+// reset under test is what restores it.
+func TestABatchThatFailsAfterDeletingCommitsNothing(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAs(t, v, laptop)
+	defer func() { _ = id.Close() }()
+	entries := seedEntries(t, v, &id, 2)
+	commitVaultFile(t, v, "pending/one.txt", "a request-shaped file")
+
+	beforeHash := headHash(t, v)
+	beforeCount := commitCount(t, v)
+
+	// Recorded rather than fataled: this runs inside the write, and
+	// killing the goroutine from in there would report a broken seam as a
+	// broken guarantee.
+	var sabotage error
+	v.onReencryptEntry = func(done int) {
+		if done < len(entries) || sabotage != nil {
+			return
+		}
+		sabotage = os.WriteFile(v.vaultConfigPath(), []byte("this is not toml\x00"), 0o600)
+	}
+	defer func() { v.onReencryptEntry = nil }()
+
+	_, _, err := addBatch(t, v, &id, batchOf(phone), recipientWrite{
+		message:     "gage: recipient approve phone-1",
+		deletePaths: []string{"pending/one.txt"},
+	})
+	v.onReencryptEntry = nil
+	if sabotage != nil {
+		t.Fatalf("setting up the failure: %v", sabotage)
+	}
+	if err == nil {
+		t.Fatal("a batch that could not write the recipient files reported success")
+	}
+
+	// The deletion did happen — otherwise this test proves nothing about
+	// the window after it.
+	if vaultFileExists(t, v, "pending/one.txt") {
+		t.Fatal("the write failed before the deletion; the window after it is still unexercised")
+	}
+	if got := headHash(t, v); got != beforeHash {
+		t.Errorf("HEAD = %s after a failure past the deletion, want %s (untouched)", got, beforeHash)
+	}
+	if got := commitCount(t, v); got != beforeCount {
+		t.Errorf("commit count = %d, want %d — a failure past the deletion may not salvage a commit", got, beforeCount)
+	}
+
+	// An ordinary write next. Its reset is what makes the uncommitted
+	// deletion harmless, and it also restores the file the seam corrupted.
+	if _, err := v.Insert(sampleEntry(time.Now().Add(time.Hour)), true, &id); err != nil {
+		t.Fatalf("the write after a failure past the deletion: %v", err)
+	}
+	if !vaultFileExists(t, v, "pending/one.txt") {
+		t.Error("the reset did not restore the path the failed batch deleted; an uncommitted deletion must not survive")
+	}
+	if listHas(readRecipientsFile(t, v), phone.pubkey) {
+		t.Error(".age-recipients still names the recipient the failed batch was adding")
+	}
+	if listHas(configPubkeys(t, v), phone.pubkey) {
+		t.Error(".gage/config.toml names the recipient the failed batch was adding")
+	}
+	paths := commitPaths(t, v, headHash(t, v))
+	for _, unwanted := range []string{"pending/one.txt", ".age-recipients", ".gage/config.toml"} {
+		if listHas(paths, unwanted) {
+			t.Errorf("the next write's commit contains %s (it touched %v); the failed batch's leftovers were folded in",
+				unwanted, paths)
+		}
+	}
+}
+
 // TestADeclinedTrustQuestionAbortsTheWholeBatch: the same nothing as
 // M9's declined add — no commit, no partial re-encryption, no cache
 // regeneration — now for a call carrying several recipients.
