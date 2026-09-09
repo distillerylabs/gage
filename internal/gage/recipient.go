@@ -3,6 +3,7 @@ package gage
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -226,64 +227,147 @@ func (v *Vault) AddRecipient(device, pubkey string, ident *Identity) (RecipientC
 				return err
 			}
 		}
-		// M10's precondition, first: this verb rebuilds .age-recipients
-		// from config.toml, so running it over a divergence would erase
-		// the stray key and commit the result as an ordinary recipient
-		// change. Under the lock so it can't race a concurrent repair,
-		// and ahead of everything else — including the re-encryption
-		// pass — so a refusal leaves nothing half-migrated.
-		if err := v.requireRecipientsInSync(); err != nil {
-			return err
-		}
-		// And M10's blocking check, second. The precondition above only
-		// catches a list that disagrees with itself; a change pulled from
-		// another device is perfectly consistent and still unreviewed
-		// here. Without this, the cache regeneration at the tail of this
-		// method would bless that key along with the one the operator
-		// actually named — and would do it after rewriting every entry
-		// to it. Ordering is the point: it runs before the first byte,
-		// so a declined answer leaves nothing to undo, and after
-		// requireRecipientsInSync so nobody is asked to approve an
-		// operation that is about to be refused.
-		if err := v.confirmRecipientTrust(ident.frontend()); err != nil {
-			return err
-		}
 
-		current, err := v.Recipients()
-		if err != nil {
-			return err
-		}
-		for _, r := range current {
-			if r.Pubkey == pubkey {
-				return exitcode.Wrap(exitcode.Conflict,
-					fmt.Errorf("%w: %s is already listed as %q", ErrRecipientExists, pubkey, r.Device))
-			}
-			if r.Device == device {
-				return exitcode.Wrap(exitcode.Conflict,
-					fmt.Errorf("%w: %q is already a recipient of this vault", ErrRecipientExists, device))
-			}
-		}
-
-		updated := append(append([]VaultRecipient{}, current...), VaultRecipient{Device: device, Pubkey: pubkey})
-
-		n, hash, err := v.commitRecipientList(updated, "gage: recipient add "+device+" (reencrypt)", ident)
+		n, hash, err := v.addRecipientsLocked(
+			[]VaultRecipient{{Device: device, Pubkey: pubkey}},
+			recipientWrite{message: "gage: recipient add " + device + " (reencrypt)"},
+			ident)
 		if err != nil {
 			return err
 		}
 		change.Reencrypted = n
 		change.Commit = hash
-
-		// The operator just reviewed this list by typing the command, so
-		// M10's cache is regenerated as the last step. Without it, `gage
-		// recipient add` would warn them about their own add at their
-		// very next write, which is the fastest way to teach someone to
-		// stop reading the warning.
-		return v.noteRecipientsReviewed()
+		return nil
 	})
 	if err != nil {
 		return RecipientChange{}, err
 	}
 	return change, nil
+}
+
+// recipientWrite is everything one N-recipient write does besides adding
+// to the list: what its single commit says, what else that commit
+// removes, and what a failed push should tell the human it cost.
+//
+// The three arrive together, in one value, because they are three
+// answers to the same question — "what is this particular write?" — and
+// because they were always going to be added at different times: the
+// slice and the deletions for approval's commit, the clause for the
+// warning that commit's failed push has to produce. Reaching the same
+// commit through two mechanisms is how those drift apart.
+type recipientWrite struct {
+	// message is the single commit's message.
+	message string
+
+	// deletePaths are vault-relative paths removed in that same commit,
+	// alongside the recipient files and the re-encrypted entries. E4's
+	// approval passes the approved requests' files; nothing else has a
+	// use for it yet.
+	deletePaths []string
+
+	// pushClause is what a failed push says was left unpublished. Empty
+	// means unpushedWriteClause, which is what `recipient add` and
+	// `recipient remove` have always said.
+	pushClause string
+}
+
+// addRecipientsLocked is the N-recipient write itself: one trust
+// question, one re-encryption pass, one commit — however many recipients
+// are in add.
+//
+// It runs with the vault write lock already held, and that is the point
+// of the split rather than an implementation detail. `recipient add`
+// wraps it in withVaultWrite; E4's approval takes the lock itself so it
+// can fetch and re-verify the sealed requests under the same lock before
+// calling this. A form that took the lock for its caller would force
+// approval's fetch either outside the lock or into `recipient add`.
+//
+// It is unexported because its only other caller lives in this package.
+// There is no batch `recipient add`: this is one function grown to the
+// shape its second caller needs, not a new verb.
+func (v *Vault) addRecipientsLocked(add []VaultRecipient, w recipientWrite, ident *Identity) (reencrypted int, commit string, err error) {
+	// M10's precondition, first: these verbs rebuild .age-recipients
+	// from config.toml, so running one over a divergence would erase the
+	// stray key and commit the result as an ordinary recipient change.
+	// Under the lock so it can't race a concurrent repair, and ahead of
+	// everything else — including the re-encryption pass — so a refusal
+	// leaves nothing half-migrated.
+	if err := v.requireRecipientsInSync(); err != nil {
+		return 0, "", err
+	}
+	// And M10's blocking check, second — once for the whole batch. The
+	// precondition above only catches a list that disagrees with itself;
+	// a change pulled from another device is perfectly consistent and
+	// still unreviewed here. Without this, the cache regeneration at the
+	// tail of this function would bless that key along with the ones the
+	// operator actually named — and would do it after rewriting every
+	// entry to it. Ordering is the point: it runs before the first byte,
+	// so a declined answer leaves nothing to undo, and after
+	// requireRecipientsInSync so nobody is asked to approve an operation
+	// that is about to be refused.
+	if err := v.confirmRecipientTrust(ident.frontend()); err != nil {
+		return 0, "", err
+	}
+
+	current, err := v.Recipients()
+	if err != nil {
+		return 0, "", err
+	}
+
+	// The duplicate check runs against the growing list, so it covers
+	// both collisions with what the vault already lists and collisions
+	// *within* the batch — the case a batch of one could not have. A
+	// request list naming the same device twice must not become a
+	// recipient list naming it twice.
+	updated := append([]VaultRecipient{}, current...)
+	for _, r := range add {
+		// Re-validated here rather than trusted from the caller: this is
+		// the function that writes the list, a device name in it becomes
+		// a filesystem path component, and vaultconfig refuses to read
+		// back a config carrying an invalid one — so a bad name written
+		// here is a vault nobody can open.
+		if !devicename.Valid(r.Device) {
+			return 0, "", exitcode.Newf(exitcode.Usage, "gage: device name %q is invalid", r.Device)
+		}
+		if err := agekey.ValidateRecipient(r.Pubkey); err != nil {
+			return 0, "", exitcode.Wrap(exitcode.Usage, err)
+		}
+
+		for i, existing := range updated {
+			inBatch := i >= len(current)
+			switch {
+			case existing.Pubkey == r.Pubkey && inBatch:
+				return 0, "", exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+					"%w: %s appears twice in this change, as %q and %q",
+					ErrRecipientExists, r.Pubkey, existing.Device, r.Device))
+			case existing.Pubkey == r.Pubkey:
+				return 0, "", exitcode.Wrap(exitcode.Conflict,
+					fmt.Errorf("%w: %s is already listed as %q", ErrRecipientExists, r.Pubkey, existing.Device))
+			case existing.Device == r.Device && inBatch:
+				return 0, "", exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+					"%w: %q appears twice in this change, with two different keys", ErrRecipientExists, r.Device))
+			case existing.Device == r.Device:
+				return 0, "", exitcode.Wrap(exitcode.Conflict,
+					fmt.Errorf("%w: %q is already a recipient of this vault", ErrRecipientExists, r.Device))
+			}
+		}
+		updated = append(updated, r)
+	}
+
+	reencrypted, commit, err = v.commitRecipientList(updated, w, ident)
+	if err != nil {
+		return 0, "", err
+	}
+
+	// The operator just reviewed this list — by typing the command, or
+	// by approving the requests — so M10's cache is regenerated as the
+	// last step, once. Without it, a write would warn them about their
+	// own change at their very next write, which is the fastest way to
+	// teach someone to stop reading the warning.
+	if err := v.noteRecipientsReviewed(); err != nil {
+		return 0, "", err
+	}
+	return reencrypted, commit, nil
 }
 
 // RemoveRecipient removes the recipient query names — a device name or a
@@ -357,7 +441,8 @@ func (v *Vault) RemoveRecipient(query string, reencrypt bool, ident *Identity) (
 			"gage: removing %q revokes future access only — anything %s already read can't be unread.",
 			removed.Device, removed.Device)
 
-		n, hash, err := v.commitRecipientList(updated, "gage: recipient remove "+removed.Device+" (reencrypt)", ident)
+		n, hash, err := v.commitRecipientList(updated,
+			recipientWrite{message: "gage: recipient remove " + removed.Device + " (reencrypt)"}, ident)
 		if err != nil {
 			return err
 		}
@@ -420,10 +505,20 @@ func confirmSelfRemoval(removed VaultRecipient, vault string, ident *Identity) e
 // Getting it backwards is precisely the half-migrated state this
 // milestone exists to rule out.
 //
+// The paths w asks it to delete land in that same commit, between the
+// two — after the entries, before the recipient files — so a deletion
+// that cannot be performed aborts with HEAD untouched rather than
+// leaving a commit that admits the recipients and keeps the file. For
+// E4 that file is a request the joining device is still waiting on.
+//
 // It runs with the vault write lock already held, by withVaultWrite.
-func (v *Vault) commitRecipientList(updated []VaultRecipient, message string, ident *Identity) (reencrypted int, commit string, err error) {
+func (v *Vault) commitRecipientList(updated []VaultRecipient, w recipientWrite, ident *Identity) (reencrypted int, commit string, err error) {
 	reencrypted, err = v.reencryptTo(updated, ident)
 	if err != nil {
+		return 0, "", err
+	}
+
+	if err := v.deleteVaultPaths(w.deletePaths); err != nil {
 		return 0, "", err
 	}
 
@@ -431,16 +526,39 @@ func (v *Vault) commitRecipientList(updated []VaultRecipient, message string, id
 		return 0, "", err
 	}
 
-	hash, err := gitrepo.CommitAll(v.Path, message)
+	hash, err := gitrepo.CommitAll(v.Path, w.message)
 	if err != nil {
 		return 0, "", exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: committing the recipient change: %w", err))
 	}
 	// A failed push here is a publishing problem, not a half-done
 	// migration: the guarantee is about HEAD, and HEAD already has all
-	// of it. pushAfterWrite warns and proceeds, as it does after every
-	// other write.
-	v.pushAfterWrite(ident.warnTo())
+	// of it. The push warns and proceeds, as it does after every other
+	// write — saying what this particular caller wants said about what
+	// is now local-only.
+	v.pushAfterWriteSaying(ident.warnTo(), w.pushClause)
 	return reencrypted, hash, nil
+}
+
+// deleteVaultPaths removes vault-relative paths as part of the write
+// that is about to commit, so they are gone from the working tree by the
+// time CommitAll sweeps it.
+//
+// os.Remove, never RemoveAll: the caller hands it files it committed
+// itself, and a caller that hands it a directory by mistake should get
+// an error rather than have the tree beneath it deleted. An already
+// absent path is not an error — the goal is that it not be in the
+// commit, and it isn't.
+//
+// Nothing here is undone on a later failure, and nothing needs to be: a
+// failure before the commit leaves these deletions in the working tree
+// only, where the next write's dirty-tree reset restores them from HEAD.
+func (v *Vault) deleteVaultPaths(paths []string) error {
+	for _, p := range paths {
+		if err := os.Remove(filepath.Join(v.Path, filepath.FromSlash(p))); err != nil && !os.IsNotExist(err) {
+			return exitcode.Wrap(exitcode.Internal, fmt.Errorf("gage: removing %s: %w", p, err))
+		}
+	}
+	return nil
 }
 
 // RequireFullAccess is A19's pre-flight: can ident actually read every

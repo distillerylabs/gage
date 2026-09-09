@@ -134,42 +134,42 @@ its second caller needs.
 
 **The N-recipient form**
 
-- [ ] **Several recipients land in one commit**, and every one of them
+- [x] **Several recipients land in one commit**, and every one of them
       can read every pre-existing entry. Exercise the form directly at
       the library level — E4 is what puts a command on it, and a test
       that waits for E4 leaves this milestone shipping an untested
       function.
-- [ ] **One re-encryption pass for the batch**, not N. Assert on the
+- [x] **One re-encryption pass for the batch**, not N. Assert on the
       count of entry rewrites, not on wall-clock time: N passes over the
       same entries produce the same end state and a different commit
       count, which is what makes this worth pinning rather than assuming.
-- [ ] **One trust question for the batch.** M10's
+- [x] **One trust question for the batch.** M10's
       `ConfirmRecipientChange` is asked at most once however many
       recipients are added, and declining it aborts the whole batch with
       nothing committed.
-- [ ] **One lock acquisition and one dirty-tree reset**, so the warning
+- [x] **One lock acquisition and one dirty-tree reset**, so the warning
       about discarded leftovers cannot appear N times for one operation.
-- [ ] **The extra paths are deleted in that same commit** as the
+- [x] **The extra paths are deleted in that same commit** as the
       recipient files and the re-encrypted entries. Assert the mechanism
       with an ordinary file rather than a pending request, so this
       milestone's tests do not depend on a feature two milestones away.
-- [ ] **A caller-supplied failed-push clause reaches the warning**, and
+- [x] **A caller-supplied failed-push clause reaches the warning**, and
       the default is today's text. Two assertions: a call passing a
       clause warns with it, and `AddRecipient` — passing none — produces
       the byte-for-byte message M9 already produces. Injected fake
       `RemoteSyncer`, not a real failure. E4 is what needs the first
       half; the second half is what keeps this milestone's "nothing
       observable changed" claim true.
-- [ ] **The divergence branch is untouched.** A push that fails as a
+- [x] **The divergence branch is untouched.** A push that fails as a
       divergence still warns with `report.Summary()` whatever clause was
       supplied — the clause describes what did not get published, not
       what went wrong, and a diverged push has its own established
       sentence.
-- [ ] **A duplicate *within* the batch is refused** — the same pubkey
+- [x] **A duplicate *within* the batch is refused** — the same pubkey
       twice, or two entries claiming one device name — before anything is
       written. The existing check only ever compared against the recipient
       list, because a batch of one has nothing to collide with.
-- [ ] A recipient in the batch that **already exists in the vault** is
+- [x] A recipient in the batch that **already exists in the vault** is
       refused with the pre-existing `ErrRecipientExists`, unchanged. (E4
       turns that case into a no-op *before* it reaches here, by dropping
       the request from the batch; this level still refuses it, which is
@@ -177,31 +177,31 @@ its second caller needs.
 
 **Atomicity — the property that must not be lost**
 
-- [ ] **An injected failure partway leaves HEAD untouched**: no
+- [x] **An injected failure partway leaves HEAD untouched**: no
       recipients added, no entries rewritten, no paths deleted. This is
       M9's existing guarantee re-asserted on the new shape, and it is the
       reason this milestone is flagged for a review pass.
-- [ ] The same holds for a failure **in the deletion step specifically** —
+- [x] The same holds for a failure **in the deletion step specifically** —
       a path that cannot be removed does not leave a commit behind with
       the recipients added and the file still present.
-- [ ] A **declined** trust question leaves the same nothing: no commit,
+- [x] A **declined** trust question leaves the same nothing: no commit,
       no partial re-encryption, no cache regeneration.
 
 **`AddRecipient` is unchanged**
 
-- [ ] **Every M9 test for `recipient add` still passes**, untouched. This
+- [x] **Every M9 test for `recipient add` still passes**, untouched. This
       milestone's correctness criterion is that nothing observable
       changed, so the existing suite is the primary assertion and this
       bullet is a reminder not to "update" a test to match a regression.
-- [ ] `AddRecipient`'s duplicate check under the lock still returns
+- [x] `AddRecipient`'s duplicate check under the lock still returns
       `ErrRecipientExists`, and its trust question, cache regeneration and
       commit message are what they were.
-- [ ] `RemoveRecipient` is untouched — it is not a caller of the new form
+- [x] `RemoveRecipient` is untouched — it is not a caller of the new form
       and gains nothing here.
 
 ## Implementation
 
-- [ ] **Extract the N-recipient, lock-held body** of `AddRecipient` per
+- [x] **Extract the N-recipient, lock-held body** of `AddRecipient` per
       "What the shape actually is": the append takes a slice, the
       duplicate check covers the slice and the existing list, and
       `commitRecipientList` gains both the extra paths to delete in the
@@ -214,17 +214,17 @@ its second caller needs.
       re-verify the seals, and only then call this. An extraction that
       swallowed the wrapper would force approval's fetch either outside
       the lock or into `recipient add`, and both are wrong.
-- [ ] `AddRecipient` becomes the one-recipient caller. Its signature and
+- [x] `AddRecipient` becomes the one-recipient caller. Its signature and
       behavior are unchanged; it wraps the value in a one-element slice,
       passes no extra paths, and passes no push clause so the default
       stands.
-- [ ] **Unexported.** E4's `ApproveEnrollments` is its only other caller
+- [x] **Unexported.** E4's `ApproveEnrollments` is its only other caller
       and lives in the same package, so there is no reason to widen the
       library's surface for it.
-- [ ] Give `pushAfterWrite` a sibling taking the caller's failed-push
+- [x] Give `pushAfterWrite` a sibling taking the caller's failed-push
       clause, with the existing function delegating to it and keeping its
       current text. The divergence branch stays as it is.
-- [ ] Keep `commitRecipientList`'s all-or-nothing property intact — the
+- [x] Keep `commitRecipientList`'s all-or-nothing property intact — the
       working tree is written first, then everything lands in exactly one
       commit, and a failure anywhere before that leaves HEAD alone. If
       the extra-paths parameter makes that awkward, that is the signal to
