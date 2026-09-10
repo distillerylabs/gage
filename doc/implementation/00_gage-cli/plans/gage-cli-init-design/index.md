@@ -69,8 +69,8 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | E1a | [Unconditional re-encryption](e1a-unconditional-reencrypt.md) | `[x]` | Sonnet | A19: `recipient add` always re-encrypts |
 | E1b | [The shared recipient write](e1b-shared-recipient-write.md) | `[x]` | Sonnet* ⚑ | The N-recipient form of `AddRecipient`'s body, which E4's batch approval calls |
 | E2 | [The sealed request](e2-sealed-request.md) | `[x]` | **Opus** ⚑ | Code generation, the seal, the filename scheme, expiry — library only |
-| E3 | [Joining a vault](e3-joining-side.md) | `[ ]` | Sonnet | `identity enroll`, the clone prompt, publishing a request |
-| E4 | [Approving a device](e4-approving-side.md) | `[ ]` | **Opus** | `recipient pending/approve/deny`, late unlock, atomic batch approval |
+| E3 | [Joining a vault](e3-joining-side.md) | `[x]` | Sonnet | `identity enroll`, the clone prompt, publishing a request |
+| E4 | [Approving a device](e4-approving-side.md) | `[x]` | **Opus** | `recipient pending/approve/deny`, late unlock, atomic batch approval |
 
 **E0, E1a and E1b are prerequisites, not enrollment.** They are
 amendments to already-shipped milestones (E0 → M1/M2, E1a/E1b → M9) that

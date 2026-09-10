@@ -2372,9 +2372,39 @@ func (v *Vault) ResolveEnrollment(id string) (PendingRequest, error)
 // what makes the late unlock possible, so it is fixed here rather than
 // arrived at in E4.
 func (v *Vault) OpenEnrollment(requests []PendingRequest, codes []string) ([]OpenedRequest, error)
-func (v *Vault) ApproveEnrollments(approvals []Approval, ident *Identity) (ApprovalResult, error)
+
+// CheckEnrollmentLabels is the device-name collision pre-check, run
+// after the open and before the render, holding no Identity: it reads
+// the recipient list, which is plaintext. It lives here rather than in
+// cmd/gage so a second frontend inherits the check instead of
+// reimplementing it; "cmd/gage's pre-check" below describes where in the
+// sequence it runs, not which package holds it. The authoritative check
+// stays under the write lock and still returns ErrRecipientExists.
+func (v *Vault) CheckEnrollmentLabels(approvals []Approval) error
+
+// ApproveEnrollments takes a context because it fetches before it
+// writes, and that fetch is a hard precondition whose failure changes
+// the outcome — the same test that puts Enroll, Pull, Push and Sync on
+// this list. It takes the codes because it re-opens each sealed request
+// under the write lock and writes what *that* open says, not what was
+// displayed a moment earlier; nothing else in reach carries a code, and
+// OpenEnrollment does not report which code opened which request. See
+// "Approval fetches before it commits" and E4's "Settled at the start of
+// implementation".
+func (v *Vault) ApproveEnrollments(ctx context.Context, approvals []Approval, codes []string, ident *Identity) (ApprovalResult, error)
+
+// DenyEnrollment deliberately takes no context: it performs no fetch,
+// and its push rides pushAfterWriteSaying, which mints its own like
+// every other write.
 func (v *Vault) DenyEnrollment(id string, p Prompter) error
 ```
+
+**The three signatures above supersede an earlier draft of this block**,
+which predated "Approval fetches before it commits" and "The batch path
+is not `AddRecipient`". As drafted, `ApproveEnrollments` had no context
+to fetch with and no code to re-verify with, so two things this document
+requires of it were unimplementable. Corrected here rather than left for
+E4 to discover.
 
 `ApproveEnrollments` returns `ApprovalResult` rather than the existing
 `RecipientChange`. An earlier draft reused `RecipientChange` on the

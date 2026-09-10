@@ -511,6 +511,11 @@ func confirmSelfRemoval(removed VaultRecipient, vault string, ident *Identity) e
 // leaving a commit that admits the recipients and keeps the file. For
 // E4 that file is a request the joining device is still waiting on.
 //
+// Expired enrollment requests are pruned in the same window, and for the
+// same reason they are deleted there rather than anywhere else: this is
+// the one function every recipient change passes through, and pruning is
+// specified to ride a write that was happening anyway.
+//
 // It runs with the vault write lock already held, by withVaultWrite.
 func (v *Vault) commitRecipientList(updated []VaultRecipient, w recipientWrite, ident *Identity) (reencrypted int, commit string, err error) {
 	reencrypted, err = v.reencryptTo(updated, ident)
@@ -519,6 +524,16 @@ func (v *Vault) commitRecipientList(updated []VaultRecipient, w recipientWrite, 
 	}
 
 	if err := v.deleteVaultPaths(w.deletePaths); err != nil {
+		return 0, "", err
+	}
+
+	// The "next recipient change" half of the TDD's pruning rule, in the
+	// one place all three recipient writes pass through: `recipient
+	// add`, `recipient remove` and E4's approval. gage prunes
+	// opportunistically when it is already writing and already holds the
+	// lock, rather than taking the lock to do housekeeping alone — so
+	// this rides the commit below rather than producing a second one.
+	if _, err := v.prunePendingEnrollments(); err != nil {
 		return 0, "", err
 	}
 

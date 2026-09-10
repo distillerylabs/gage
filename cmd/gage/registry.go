@@ -240,14 +240,36 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		// "the keys this vault is encrypted to", against `identity
+		// list`'s "the keys this machine holds for a vault". The two
+		// answer different questions and diverge constantly; the
+		// previous wording read as a synonym of it.
 		Name:         "recipient list",
-		Short:        "List every device this vault is encrypted to",
+		Short:        "List the keys this vault is encrypted to",
 		Group:        GroupRecipient,
 		Availability: AvailBoth,
 	},
 	{
 		Name:         "recipient verify",
 		Short:        "Check .age-recipients and config.toml still agree",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient pending",
+		Short:        "List enrollment requests waiting to be approved",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient approve",
+		Short:        "Admit an enrolling device and re-encrypt the vault to include it",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient deny",
+		Short:        "Remove an enrollment request without granting anything",
 		Group:        GroupRecipient,
 		Availability: AvailBoth,
 	},

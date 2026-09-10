@@ -22,6 +22,9 @@ func newRecipientCommand(app *App) *cobra.Command {
 	parent.AddCommand(newRecipientRemoveCommand(app))
 	parent.AddCommand(newRecipientListCommand(app))
 	parent.AddCommand(newRecipientVerifyCommand(app))
+	parent.AddCommand(newRecipientPendingCommand(app))
+	parent.AddCommand(newRecipientApproveCommand(app))
+	parent.AddCommand(newRecipientDenyCommand(app))
 	return parent
 }
 
