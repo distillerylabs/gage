@@ -320,6 +320,49 @@ func TestApproveRefusesAWrongCodeWithoutRetryingWhenItCameFromAFlag(t *testing.T
 	}
 }
 
+// TestApproveDeduplicatesARequestOpenedByTwoCodes.
+//
+// One code passed twice — a copy-paste, or two of the spellings the
+// normalizer accepts — opens the same request twice. Left as two entries
+// it renders the confirmation screen as "2 pending requests" showing one
+// device twice, costs a [y/N] and a passphrase, and only then dies under
+// the lock as a within-batch duplicate recipient: an error that is false
+// (the vault lists that key nowhere) and that arrives after everything
+// it should have been cheap enough to precede. The screen it corrupts is
+// the one screen in gage whose correctness depends on a human reading
+// it.
+//
+// "Every supplied --code must open something" is untouched by this, and
+// the test above is what pins it: a code that opens nothing still fails
+// the whole run. What is dropped here is only the second sighting of a
+// request already in the batch.
+func TestApproveDeduplicatesARequestOpenedByTwoCodes(t *testing.T) {
+	_, _, _, code := enrolledDevice(t, "personal", "phone-1")
+
+	p := &countingApprovalPrompter{fakePrompter: fakePrompter{passphrases: []string{testPassphrase}}}
+	res, _ := runCLIWithPrompter(t, []string{
+		"recipient", "approve", "--code", code, "--code", code,
+	}, "", false, p)
+
+	if res.Code != 0 {
+		t.Fatalf("approve with one code repeated: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "opened 1 pending request.") {
+		t.Errorf("the confirmation screen reported one request as several:\n%s", res.Stdout)
+	}
+	if len(p.confirms) != 1 {
+		t.Fatalf("the approver was asked to confirm %d times, want 1", len(p.confirms))
+	}
+
+	list := runCLI(t, []string{"recipient", "list"}, "")
+	if got := strings.Count(list.Stdout, "phone-1"); got != 1 {
+		t.Errorf("phone-1 is listed %d times after approval, want 1:\n%s", got, list.Stdout)
+	}
+	if pend := runCLI(t, []string{"recipient", "pending"}, ""); !strings.Contains(pend.Stdout, "no pending") {
+		t.Errorf("the approved request survived:\n%s", pend.Stdout)
+	}
+}
+
 // TestApproveReadsTheCodeThroughThePrompterWhenNoFlagIsGiven, and
 // cmd/gage — not the library — owns the retry loop around a wrong one.
 func TestApproveReadsTheCodeThroughThePrompterWhenNoFlagIsGiven(t *testing.T) {

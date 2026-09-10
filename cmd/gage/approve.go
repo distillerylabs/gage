@@ -259,12 +259,31 @@ func openWithCodes(app *App, v *gage.Vault, scope []gage.PendingRequest, codes [
 	}
 
 	var opened []gage.OpenedRequest
+	seen := make(map[string]bool, len(scope))
 	for _, code := range codes {
 		got, err := v.OpenEnrollment(scope, []string{code})
 		if err != nil {
 			return nil, nil, err
 		}
-		opened = append(opened, got...)
+		// One code supplied twice — a copy-paste, or two of the
+		// spellings normalizeEnrollmentCode accepts — opens the same
+		// request each time. A batch carrying it twice renders one
+		// device as two on the confirmation screen and is then refused
+		// under the lock as a within-batch duplicate recipient: an error
+		// that is false, and that arrives after the [y/N] and the
+		// passphrase.
+		//
+		// This drops only the second sighting of a request already in
+		// the batch. The rule above is untouched, because it is enforced
+		// by the call rather than by the count: a code that opens
+		// nothing still fails the whole run.
+		for _, r := range got {
+			if seen[r.ID] {
+				continue
+			}
+			seen[r.ID] = true
+			opened = append(opened, r)
+		}
 	}
 	return opened, codes, nil
 }
