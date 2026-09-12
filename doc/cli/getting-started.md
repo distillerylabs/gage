@@ -83,8 +83,34 @@ Inside a session you unlock a vault once and run as many commands against it
 as you like, with no unlock cost. See [Session mode and scripting](session-mode.md)
 for the full picture, including non-interactive automation.
 
+## Add a second device
+
+On the new machine, clone the vault and let `gage` set up an enrollment
+request:
+
+```
+$ gage clone https://github.com/you/personal-vault.git
+gage: cloned "personal" to ~/.local/share/gage/vaults/personal
+This device holds no identity for "personal", so it can't read anything here yet.
+Set up an enrollment request now? [Y/n] y
+...
+  Enrollment code:  GAGE-7K4M-9QX2-P3RH-8WVN
+```
+
+Send that code to the machine that already has access — over chat, in
+person, however you'd normally reach yourself — and approve it there:
+
+```
+$ gage sync
+$ gage recipient approve --code GAGE-7K4M-9QX2-P3RH-8WVN
+```
+
+Back on the new device, `gage sync` and you can read the vault. The full
+story, including denying requests and what the code does and doesn't
+prove, is in [Adding a device](enrollment.md).
+
 ## Next steps
 
-- Give another device (or another person) access: [Identities and recipients](identities-and-recipients.md).
+- Give another device (or another person) access: [Adding a device](enrollment.md) and [Identities and recipients](identities-and-recipients.md).
 - Set up a remote so your vault syncs between machines: [Git remotes and authentication](git-and-auth.md).
 - Learn the full entry format (descriptions, structured fields, generated passwords): [Entries](entries.md).

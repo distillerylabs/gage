@@ -7,8 +7,8 @@ different set of people than the rest of a vault, the answer is a
 other.
 
 ```
-gage mv <query> --to-vault <name> [--use NAME] [--yes]   # move
-gage cp <query> --to-vault <name> [--use NAME] [--yes]   # copy, keeping the original
+gage mv <query> --to-vault <name> [--use NAME]   # move
+gage cp <query> --to-vault <name> [--use NAME]   # copy, keeping the original
 ```
 
 Both decrypt the entry from its source vault (which has to be unlocked) and
@@ -27,8 +27,9 @@ Both commands take two per-vault write locks (source and destination),
 acquired in a fixed order, so two simultaneous moves between the same pair
 of vaults in opposite directions can't deadlock.
 
-`--yes` skips the recipient-change confirmation for the destination vault,
-same as on other write commands — see [Identities and recipients](identities-and-recipients.md#the-recipient-change-confirmation).
+The global `--yes` flag skips the recipient-change confirmation for the
+destination vault, same as on other write commands — see
+[Identities and recipients](identities-and-recipients.md#the-recipient-change-confirmation).
 
 ## Why not finer-grained sharing?
 

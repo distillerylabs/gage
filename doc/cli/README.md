@@ -17,12 +17,13 @@ directory is written for people *using* `gage`, not developing it.
 4. [Addressing entries](addressing-entries.md) — how a typed query resolves to an entry, and what happens when it's ambiguous.
 5. [Session mode and scripting](session-mode.md) — the interactive REPL, one-shot invocation, and non-interactive automation.
 6. [Identities and recipients](identities-and-recipients.md) — how a device proves it can decrypt a vault, and who else is allowed to.
-7. [Sharing entries between vaults](sharing.md) — `mv`/`cp`, and why gage has no per-directory sharing.
-8. [Sync and conflicts](sync.md) — how push/pull happen automatically, and how to resolve a real conflict.
-9. [Git remotes and authentication](git-and-auth.md) — `git set-remote`, `auth login`, and the HTTPS/token model.
-10. [Configuration and file locations](configuration.md) — the global config file, XDG paths, and environment variables.
-11. [Command reference](command-reference.md) — every command and flag in one place.
-12. [Exit codes](exit-codes.md) — the taxonomy scripts and CI can rely on.
+7. [Adding a device](enrollment.md) — `identity enroll`, enrollment codes, and the `recipient pending`/`approve`/`deny` flow.
+8. [Sharing entries between vaults](sharing.md) — `mv`/`cp`, and why gage has no per-directory sharing.
+9. [Sync and conflicts](sync.md) — how push/pull happen automatically, and how to resolve a real conflict.
+10. [Git remotes and authentication](git-and-auth.md) — `git set-remote`, `auth login`, and the HTTPS/token model.
+11. [Configuration and file locations](configuration.md) — the global config file, XDG paths, and environment variables.
+12. [Command reference](command-reference.md) — every command and flag in one place.
+13. [Exit codes](exit-codes.md) — the taxonomy scripts and CI can rely on.
 
 ## Conventions used in these docs
 

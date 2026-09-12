@@ -45,6 +45,22 @@ never silently pre-empt it.
   (`exitcode.Ambiguous` — see [Exit codes](exit-codes.md)) instead of
   hanging waiting for input.
 
+## Enrollment request IDs reuse the same order
+
+`recipient approve <ID>` and `recipient deny <ID>` address a pending
+enrollment request rather than an entry, and they reuse this ordering
+rather than inventing one: exact UUID, then substring of the UUID, then a
+candidate list (never a guess), then not-found. The eight-character prefix
+`recipient pending` displays is the substring case.
+
+Two details are specific to requests. Matching runs against the **UUID
+portion of the filename only** — a pending file is named
+`<uuid>-<expires-epoch>.age`, and a short numeric id like `1788` could
+otherwise match one request's expiry and another's id, with `deny` deleting
+whichever it hit first. And there is no matching on device name: the name
+is sealed inside the request, which is the whole point of the filename
+scheme. See [Adding a device](enrollment.md#addressing-a-request-by-id).
+
 ## Why `ls`/`search`/`show` need an unlock
 
 Because titles live inside encrypted payloads, even *listing* entries
