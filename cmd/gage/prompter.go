@@ -142,9 +142,18 @@ func (p *terminalPrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, 
 // is nothing to check a new passphrase against, so a typo here would
 // otherwise be discovered only at the next unlock — by which point the
 // key it protects is unrecoverable.
+//
+// The second line labels the answer at its point of use: this is the one
+// place in gage where two different secrets can end up on one screen a
+// few lines apart — this passphrase, which the user chooses and never
+// sends, and `identity enroll`'s code, which gage generates and which is
+// meant to be sent. The failure mode being designed against is someone
+// pasting one into a chat window believing it was the other, so each
+// says which it is where it appears. See "Which secret is which".
 func (p *terminalPrompter) newPassphrase(req gage.UnlockRequest) (gage.UnlockResponse, error) {
 	_, _ = fmt.Fprintf(p.out, "gage: creating identity %q for vault %q.\n", req.Device, req.Vault)
 	_, _ = fmt.Fprintln(p.out, "gage: this passphrase protects this device's private key. It cannot be recovered or reset.")
+	_, _ = fmt.Fprintln(p.out, "gage: it stays on this device and is never sent to anyone.")
 
 	for attempt := 1; attempt <= maxPassphraseAttempts; attempt++ {
 		first, err := p.readSecret("Choose a passphrase: ")
@@ -185,6 +194,30 @@ func (p *terminalPrompter) Confirm(prompt string) (bool, error) {
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// ConfirmDefaultYes asks a yes/no question whose default is yes, and it
+// is deliberately the only one in gage: clone's offer to set up an
+// enrollment request. A bare Enter accepts.
+//
+// Confirm's default-no rule is right for every question that is about to
+// do something a user might not want. This one is the opposite shape —
+// clone has just told the user this device cannot read the vault, and
+// the offer is the answer to the problem it reported — so making them
+// type `y` to accept advice they just asked for would be the wrong
+// default rather than the safe one. Nothing else moves: Confirm still
+// renders [y/N] and still means no on Enter.
+func (p *terminalPrompter) ConfirmDefaultYes(prompt string) (bool, error) {
+	line, err := p.ask(fmt.Sprintf("%s [Y/n] ", prompt))
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
 		return true, nil
 	default:
 		return false, nil

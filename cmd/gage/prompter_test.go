@@ -233,3 +233,55 @@ func TestReadingPastEndOfInputFails(t *testing.T) {
 		t.Errorf("CodeOf(err) = %v, want LockedOrAuth", exitcode.CodeOf(err))
 	}
 }
+
+// TestConfirmDefaultYesDefaultsToYes is the one Prompter question in
+// gage whose bare Enter means yes — clone's offer to enroll. Both halves
+// are pinned, the answer and the rendering: a ConfirmDefaultYes
+// accidentally wired to Confirm still compiles and still passes a
+// yes-answering test, and would silently make Enter mean no.
+func TestConfirmDefaultYesDefaultsToYes(t *testing.T) {
+	for input, want := range map[string]bool{
+		"y\n":       true,
+		"Y\n":       true,
+		"yes\n":     true,
+		"\n":        true,
+		"n\n":       false,
+		"N\n":       false,
+		"no\n":      false,
+		"garbage\n": false,
+	} {
+		t.Run(strings.TrimSpace(input), func(t *testing.T) {
+			var out bytes.Buffer
+			p := newTerminalPrompter(strings.NewReader(input), &out)
+			got, err := p.ConfirmDefaultYes("do the thing?")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Errorf("ConfirmDefaultYes(%q) = %v, want %v", input, got, want)
+			}
+			if !strings.Contains(out.String(), "[Y/n]") {
+				t.Errorf("prompt rendered as %q, want it to show [Y/n]", out.String())
+			}
+		})
+	}
+}
+
+// TestConfirmStillRendersDefaultNo is the other side of the same pin:
+// the new method must have been *added*, not made by changing the old
+// one. An empty answer to Confirm is still no, and it still renders
+// [y/N].
+func TestConfirmStillRendersDefaultNo(t *testing.T) {
+	var out bytes.Buffer
+	p := newTerminalPrompter(strings.NewReader("\n"), &out)
+	got, err := p.Confirm("do the thing?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("a bare Enter answered Confirm with yes")
+	}
+	if !strings.Contains(out.String(), "[y/N]") {
+		t.Errorf("prompt rendered as %q, want it to show [y/N]", out.String())
+	}
+}

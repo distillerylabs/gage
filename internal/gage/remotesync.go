@@ -460,6 +460,35 @@ func (v *Vault) syncOnUnlock(p Prompter) {
 // commits pending, run `gage sync`" for a divergence — because those need
 // different things from the human, or in the offline case nothing at all.
 func (v *Vault) pushAfterWrite(p Prompter) {
+	v.pushAfterWriteSaying(p, unpushedWriteClause)
+}
+
+// unpushedWriteClause is what an unpublished write says it cost, for
+// every caller that has nothing more specific to say. It is the sentence
+// M9 shipped, and every M9 caller still produces it byte for byte.
+const unpushedWriteClause = "the write is committed locally but not pushed"
+
+// pushAfterWriteSaying is pushAfterWrite with the network-failure clause
+// supplied by the caller — one sentence about what is now local-only,
+// not a second push path.
+//
+// It exists because "the write is committed locally but not pushed" is
+// right for `recipient add` and much too thin for E4's approval, whose
+// local-versus-remote split is the widest in the tool: locally the vault
+// is re-encrypted, the device is a recipient and its request is gone; on
+// the remote none of that happened, the request is still pending, and
+// the joining device is still locked out with `gage sync` reporting
+// nothing wrong. See "Approval's failed push needs the same treatment".
+//
+// The divergence branch deliberately ignores the clause. The clause says
+// what was not published; a divergence is why nothing was published, and
+// it already has its own sentence in report.Summary() — which is the
+// right thing to say for every caller.
+func (v *Vault) pushAfterWriteSaying(p Prompter, clause string) {
+	if clause == "" {
+		clause = unpushedWriteClause
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), RemoteOpTimeout)
 	defer cancel()
 
@@ -471,7 +500,7 @@ func (v *Vault) pushAfterWrite(p Prompter) {
 	case err != nil && errors.Is(err, syncerr.ErrDiverged):
 		warn(p, "gage: %s", report.Summary())
 	case err != nil:
-		warn(p, "gage: the write is committed locally but not pushed: %s", offlineOrError(err))
+		warn(p, "gage: %s: %s", clause, offlineOrError(err))
 	}
 }
 

@@ -25,7 +25,8 @@ type noChoicePrompter struct{ t *testing.T }
 func (p *noChoicePrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, error) {
 	return gage.UnlockResponse{Kind: gage.KindPassphrase, Passphrase: testPassphrase}, nil
 }
-func (p *noChoicePrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (p *noChoicePrompter) Confirm(prompt string) (bool, error)           { return true, nil }
+func (p *noChoicePrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
 func (p *noChoicePrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
 	return true, nil
 }

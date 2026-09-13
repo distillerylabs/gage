@@ -43,6 +43,33 @@ func readGlobalConfigForTest(t *testing.T) config.Global {
 	return g
 }
 
+// vaultIDForTest is the id global config recorded for a registered
+// vault. Every per-vault local path is keyed by it since A20, so tests
+// that want to look at an identity file, a trust cache or a lock file
+// have to ask for it rather than spelling the vault's name.
+func vaultIDForTest(t *testing.T, name string) string {
+	t.Helper()
+	entry, ok := readGlobalConfigForTest(t).Vaults[name]
+	if !ok {
+		t.Fatalf("vault %q is not registered", name)
+	}
+	if entry.ID == "" {
+		t.Fatalf("vault %q is registered with no id", name)
+	}
+	return entry.ID
+}
+
+// identityFileForTest is where a registered vault's wrapped identity for
+// one device lives.
+func identityFileForTest(t *testing.T, name, device string) string {
+	t.Helper()
+	path, err := gage.IdentityFilePath(vaultIDForTest(t, name), device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestInitCreatesFullSkeletonAndRegisters(t *testing.T) {
 	isolateXDG(t)
 
@@ -238,11 +265,21 @@ func TestInitExplicitTypeAndMethodEquivalentToDefault(t *testing.T) {
 	implicit := readVaultConfigForTest(t, "implicit")
 	explicit := readVaultConfigForTest(t, "explicit")
 
-	// Everything but the vault's own name — and this device's own
+	// Everything but the vault's own name and id — and this device's own
 	// generated public key, which is freshly random per init — must
-	// match. The device key is checked for shape rather than value.
-	implicit.Vault.Name = ""
-	explicit.Vault.Name = ""
+	// match. The device key is checked for shape rather than value, and
+	// the ids are checked for being *different*, since a fresh one per
+	// init is the whole of A20.
+	if implicit.Vault.ID == explicit.Vault.ID {
+		t.Errorf("both inits produced the same vault id %q; every vault gets its own", implicit.Vault.ID)
+	}
+	for _, f := range []*vaultconfig.File{&implicit, &explicit} {
+		if !vaultconfig.ValidID(f.Vault.ID) {
+			t.Errorf("init wrote a vault id that isn't a valid id: %q", f.Vault.ID)
+		}
+	}
+	implicit.Vault.Name, explicit.Vault.Name = "", ""
+	implicit.Vault.ID, explicit.Vault.ID = "", ""
 	for _, f := range []*vaultconfig.File{&implicit, &explicit} {
 		if len(f.Recipients) == 0 {
 			t.Fatal("no recipients written")
@@ -341,7 +378,7 @@ func TestInitWithNoRecipientGeneratesThisDevicesIdentity(t *testing.T) {
 }
 
 // TestInitWritesTheWrappedIdentityFile is the storage half: the wrapped
-// private key lands under $GAGE_DATA/identities/<vault>/<device>.age,
+// private key lands under $GAGE_DATA/identities/<vault-id>/<device>.age,
 // outside the vault's own git tree, with tight permissions.
 func TestInitWritesTheWrappedIdentityFile(t *testing.T) {
 	isolateXDG(t)
@@ -351,7 +388,7 @@ func TestInitWritesTheWrappedIdentityFile(t *testing.T) {
 	}
 	entry := readGlobalConfigForTest(t).Vaults["personal"]
 
-	dir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities", "personal")
+	dir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities", vaultIDForTest(t, "personal"))
 	path := filepath.Join(dir, entry.Device+".age")
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -447,7 +484,7 @@ func TestInitDeviceFlagAgreesEverywhere(t *testing.T) {
 	if vf.Recipients[0].Device != "workstation-7" {
 		t.Errorf("[[recipients]] label = %q, want workstation-7", vf.Recipients[0].Device)
 	}
-	path := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities", "personal", "workstation-7.age")
+	path := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities", vaultIDForTest(t, "personal"), "workstation-7.age")
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("expected the identity file at %s: %v", path, err)
 	}
@@ -734,7 +771,7 @@ func TestVaultRemoveDeletesAnOrphanedIdentityFile(t *testing.T) {
 		t.Fatalf("recipient remove: exit %d, stderr=%s", res.Code, res.Stderr)
 	}
 
-	idPath, err := gage.IdentityFilePath("personal", "laptop-1")
+	idPath, err := gage.IdentityFilePath(vaultIDForTest(t, "personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +797,7 @@ func TestVaultRemoveKeepsIdentityFileStillListedAsRecipient(t *testing.T) {
 	isolateXDG(t)
 	initVaultForTest(t, "personal", "--device", "laptop-1", "--recipient", testRecipient1)
 
-	idPath, err := gage.IdentityFilePath("personal", "laptop-1")
+	idPath, err := gage.IdentityFilePath(vaultIDForTest(t, "personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +823,7 @@ func TestVaultRemoveKeepsIdentityFileWhenRecipientsUnreadable(t *testing.T) {
 	isolateXDG(t)
 	path := initVaultForTest(t, "personal", "--device", "laptop-1")
 
-	idPath, err := gage.IdentityFilePath("personal", "laptop-1")
+	idPath, err := gage.IdentityFilePath(vaultIDForTest(t, "personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,19 +844,22 @@ func TestVaultRemoveKeepsIdentityFileWhenRecipientsUnreadable(t *testing.T) {
 	}
 }
 
-// TestReinitAfterVaultRemoveReusesTheKeptIdentity is the exact scenario
-// reported in #39: `vault remove` on a vault whose store is gone leaves
-// the identity file behind (it can't confirm deleting it is safe), and
-// re-running `gage init` under the same name used to dead-end on
-// ErrIdentityExists instead of picking the leftover file back up.
-func TestReinitAfterVaultRemoveReusesTheKeptIdentity(t *testing.T) {
+// TestReinitAfterVaultRemoveIsAnOrdinaryRetry is #39's exact scenario,
+// re-stated for A20. `vault remove` on a vault whose store is gone keeps
+// the identity file (it can't confirm deleting it is safe), and
+// re-running `gage init` under the same name must not dead-end on it.
+//
+// The mechanism changed and the outcome did not. #39 fixed this by
+// having CreateIdentity reuse the leftover file; A20 makes the leftover
+// unreachable instead, since the new init mints a new id and files its
+// key under that. Either way the retry is an ordinary retry — and the
+// id-keyed version is the better one, because the new vault is not the
+// old vault and has no business inheriting its keypair.
+func TestReinitAfterVaultRemoveIsAnOrdinaryRetry(t *testing.T) {
 	isolateXDG(t)
 	path := initVaultForTest(t, "vault-test-newinit", "--device", "laptop-1")
 
-	idPath, err := gage.IdentityFilePath("vault-test-newinit", "laptop-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	idPath := identityFileForTest(t, "vault-test-newinit", "laptop-1")
 	if err := os.RemoveAll(path); err != nil {
 		t.Fatal(err)
 	}
@@ -832,148 +872,27 @@ func TestReinitAfterVaultRemoveReusesTheKeptIdentity(t *testing.T) {
 
 	res := runCLI(t, []string{"init", "vault-test-newinit", "--device", "laptop-1"}, "")
 	if res.Code != 0 {
-		t.Fatalf("re-init should reuse the kept identity file, not fail: exit %d, stderr=%s", res.Code, res.Stderr)
-	}
-	if !strings.Contains(res.Stderr, "reusing the existing local identity file") {
-		t.Errorf("stderr = %q, want it to say the identity file was reused", res.Stderr)
+		t.Fatalf("re-init after a vault remove should be an ordinary retry, not a failure: exit %d, stderr=%s", res.Code, res.Stderr)
 	}
 
 	g := readGlobalConfigForTest(t)
-	if _, ok := g.Vaults["vault-test-newinit"]; !ok {
-		t.Error("vault-test-newinit should be registered again after re-init")
+	entry, ok := g.Vaults["vault-test-newinit"]
+	if !ok {
+		t.Fatal("vault-test-newinit should be registered again after re-init")
 	}
-}
-
-func TestVaultSetDefaultUpdatesCurrent(t *testing.T) {
-	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
-		t.Fatalf("init personal failed: %s", res.Stderr)
-	}
-	if res := runCLI(t, []string{"init", "work", "--recipient", testRecipient1}, ""); res.Code != 0 {
-		t.Fatalf("init work failed: %s", res.Stderr)
-	}
-	// personal became current automatically as the first vault.
-	if g := readGlobalConfigForTest(t); g.Current != "personal" {
-		t.Fatalf("Current = %q, want %q before set-default", g.Current, "personal")
-	}
-
-	res := runCLI(t, []string{"vault", "set-default", "work"}, "")
-	if res.Code != 0 {
-		t.Fatalf("vault set-default failed: %s", res.Stderr)
-	}
-	if g := readGlobalConfigForTest(t); g.Current != "work" {
-		t.Errorf("Current = %q, want %q", g.Current, "work")
-	}
-}
-
-func TestInitWithoutRemoteLeavesVaultRemoteless(t *testing.T) {
-	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
-		t.Fatalf("init failed: %s", res.Stderr)
-	}
-
-	g := readGlobalConfigForTest(t)
-	entry := g.Vaults["personal"]
-	if entry.Git.Origin != "" {
-		t.Errorf("Git.Origin = %q, want empty", entry.Git.Origin)
-	}
-	url, err := gitrepo.RemoteURL(entry.Path)
+	// A new vault, with its own id and its own key. The leftover file is
+	// still on disk under the old vault's id, untouched and unrelated.
+	newPath, err := gage.IdentityFilePath(entry.ID, "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if url != "" {
-		t.Errorf("git remote = %q, want none", url)
+	if newPath == idPath {
+		t.Fatal("the re-init filed its identity under the removed vault's id")
 	}
-
-	path, err := globalConfigPath()
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(newPath); err != nil {
+		t.Errorf("the re-init wrote no identity file at %s: %v", newPath, err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "[vaults.personal.git]") {
-		t.Errorf("global config has a [vaults.personal.git] table with no remote given:\n%s", data)
-	}
-}
-
-func TestGitSetRemoteSetsOriginAndGlobalConfigTogether(t *testing.T) {
-	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
-		t.Fatalf("init failed: %s", res.Stderr)
-	}
-
-	const url = "https://example.invalid/personal-vault.git"
-	res := runCLI(t, []string{"git", "set-remote", "personal", url}, "")
-	if res.Code != 0 {
-		t.Fatalf("git set-remote failed: %s", res.Stderr)
-	}
-
-	g := readGlobalConfigForTest(t)
-	if g.Vaults["personal"].Git.Origin != url {
-		t.Errorf("global config Git.Origin = %q, want %q", g.Vaults["personal"].Git.Origin, url)
-	}
-	got, err := gitrepo.RemoteURL(g.Vaults["personal"].Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != url {
-		t.Errorf("git remote origin = %q, want %q", got, url)
-	}
-}
-
-func TestGitSetRemoteChangesExistingRemoteAndVaultInfoReflectsIt(t *testing.T) {
-	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--remote", "https://example.invalid/old.git"}, ""); res.Code != 0 {
-		t.Fatalf("init failed: %s", res.Stderr)
-	}
-
-	const newURL = "https://example.invalid/new.git"
-	if res := runCLI(t, []string{"git", "set-remote", "personal", newURL}, ""); res.Code != 0 {
-		t.Fatalf("git set-remote failed: %s", res.Stderr)
-	}
-
-	res := runCLI(t, []string{"vault", "info", "personal"}, "")
-	if res.Code != 0 {
-		t.Fatalf("vault info failed: %s", res.Stderr)
-	}
-	if !strings.Contains(res.Stdout, newURL) {
-		t.Errorf("vault info doesn't reflect the new remote: %q", res.Stdout)
-	}
-	if strings.Contains(res.Stdout, "old.git") {
-		t.Errorf("vault info still shows the old remote: %q", res.Stdout)
-	}
-}
-
-func TestGitSetRemoteMissingArgsFailsWithUsageAndNoChanges(t *testing.T) {
-	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
-		t.Fatalf("init failed: %s", res.Stderr)
-	}
-	before := readGlobalConfigForTest(t).Vaults["personal"]
-
-	for _, args := range [][]string{
-		{"git", "set-remote"},
-		{"git", "set-remote", "personal"},
-	} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			res := runCLI(t, args, "")
-			if res.Code != int(exitcode.Usage) {
-				t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
-			}
-		})
-	}
-
-	after := readGlobalConfigForTest(t).Vaults["personal"]
-	if after != before {
-		t.Errorf("global config changed: before=%+v after=%+v", before, after)
-	}
-	url, err := gitrepo.RemoteURL(before.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if url != "" {
-		t.Errorf("git remote = %q, want none (set-remote should not have run)", url)
+	if _, err := os.Stat(idPath); err != nil {
+		t.Errorf("the re-init disturbed the removed vault's leftover identity file: %v", err)
 	}
 }

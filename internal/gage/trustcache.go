@@ -171,18 +171,24 @@ const (
 )
 
 // TrustCacheDir is where a vault's trust cache lives:
-// $GAGE_STATE/<vault>. Under the state root, never inside the vault: it
-// is local, uncommitted, never synced, and explicitly not something to
+// $GAGE_STATE/<vault-id>. Under the state root, never inside the vault:
+// it is local, uncommitted, never synced, and explicitly not something to
 // carry to a new machine.
-func TrustCacheDir(vault string) (string, error) {
-	if err := checkPathComponent("vault name", vault); err != nil {
+//
+// Keyed by the id for the same reason the identities directory is (A20),
+// though the stakes here are lower: an inherited cache produces a
+// spurious recipient-change warning rather than suppressing a real one.
+// There is still no reason to leave one keying scheme correct and its
+// neighbour wrong when the id exists anyway.
+func TrustCacheDir(vaultID string) (string, error) {
+	if err := checkVaultID(vaultID); err != nil {
 		return "", err
 	}
 	stateDir, err := xdgpaths.StateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(stateDir, vault), nil
+	return filepath.Join(stateDir, vaultID), nil
 }
 
 // loadTrustCache reads this device's record for the vault. The bool is
@@ -195,13 +201,13 @@ func TrustCacheDir(vault string) (string, error) {
 // on the next successful use, which is the same weak-but-honest position
 // a genuinely new device is in.
 func (v *Vault) loadTrustCache() (trustCache, bool, error) {
-	dir, err := TrustCacheDir(v.Name)
+	dir, err := TrustCacheDir(v.ID)
 	if err != nil {
 		return trustCache{}, false, err
 	}
 
 	// #nosec G304 -- both paths come from TrustCacheDir, which validates
-	// the vault name against the traversal rule before joining it.
+	// the vault id against the traversal rule before joining it.
 	known, err := os.ReadFile(filepath.Join(dir, knownConfigFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -241,7 +247,7 @@ func (v *Vault) loadTrustCache() (trustCache, bool, error) {
 // and warns, which is the direction a half-finished write should fail
 // in.
 func (v *Vault) storeTrustCache(c trustCache) error {
-	dir, err := TrustCacheDir(v.Name)
+	dir, err := TrustCacheDir(v.ID)
 	if err != nil {
 		return err
 	}
@@ -268,35 +274,36 @@ func (v *Vault) storeTrustCache(c trustCache) error {
 	return nil
 }
 
-// RemoveTrustCache deletes $GAGE_STATE/<vault>/ — what `vault remove`
+// RemoveTrustCache deletes $GAGE_STATE/<vault-id>/ — what `vault remove`
 // does alongside dropping the registration, so that re-adding the vault
 // is a first use rather than an inherited approval for a list nobody
 // looked at in the interval.
-func RemoveTrustCache(vault string) error {
-	dir, err := TrustCacheDir(vault)
+func RemoveTrustCache(vaultID string) error {
+	dir, err := TrustCacheDir(vaultID)
 	if err != nil {
 		return err
 	}
 
 	// The files this cache owns, by name, rather than RemoveAll on the
-	// directory. $GAGE_STATE/<vault> is keyed by a name the user chose,
-	// and one such name — "locks" — resolves to the directory holding
-	// *every* vault's lock file (see LockFilePath). RemoveAll there would
-	// delete other vaults' locks as a side effect of forgetting this one,
-	// which is a way to break mutual exclusion for a process that is
-	// mid-write. Anything added to trustCache's on-disk form belongs in
-	// this list too.
+	// directory. That was originally load-bearing: $GAGE_STATE/<vault>
+	// was keyed by a name the user chose, and one such name — "locks" —
+	// resolves to the directory holding *every* vault's lock file (see
+	// LockFilePath), so RemoveAll there would have broken mutual
+	// exclusion for a process mid-write. A20's id-keying makes that
+	// collision unreachable, since a UUID is never "locks"; removing
+	// what this cache owns and nothing else is kept anyway, because a
+	// narrow delete needs no such argument to be safe. Anything added to
+	// trustCache's on-disk form belongs in this list too.
 	for _, name := range []string{knownConfigFileName, trustFileName} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 			return exitcode.Wrap(exitcode.Internal,
-				fmt.Errorf("gage: removing the trust cache for %q: %w", vault, err))
+				fmt.Errorf("gage: removing the trust cache for %q: %w", vaultID, err))
 		}
 	}
 	// Then the directory itself, which is what "removes
-	// $GAGE_STATE/<vault>/" means for every vault that isn't sharing it
-	// with something else. A non-empty directory fails here and is left
-	// alone on purpose — that is precisely the collision above, and the
-	// cache it held is already gone.
+	// $GAGE_STATE/<vault-id>/" means. A non-empty directory fails here
+	// and is left alone on purpose, and the cache it held is already
+	// gone.
 	_ = os.Remove(dir)
 	return nil
 }

@@ -21,13 +21,25 @@ import (
 // CurrentFormatVersion is the only format_version this build of gage
 // understands. Bumped when .gage/config.toml's shape changes in a way
 // old readers can't safely ignore.
-const CurrentFormatVersion = 1
+//
+// 2 added [vault].id (A20). A v1 vault carries no id at all, so there is
+// nothing for this build to key that vault's identities directory, trust
+// cache, or lock file by — which is why the refusal below is not a
+// formality it could parse past.
+const CurrentFormatVersion = 2
 
 // ErrUnsupportedFormatVersion is returned by Read when a vault's
 // format_version isn't CurrentFormatVersion. gage refuses to
 // best-effort parse a vault format it doesn't recognize — see "On-disk
 // layout"'s "format_version is enforced, not decorative."
 var ErrUnsupportedFormatVersion = errors.New("vaultconfig: unsupported format_version")
+
+// ErrInvalidVaultID is returned by Read when [vault].id is absent or
+// isn't a canonical UUID. Like the device names below it, the id becomes
+// a filesystem path component and arrives from a committed,
+// git-writable file, so it is refused rather than coerced — see A20 and
+// Q-DEVICE-NAME.
+var ErrInvalidVaultID = errors.New("vaultconfig: invalid vault id")
 
 // ErrInvalidDeviceName is returned by Read when a [[recipients]] entry's
 // device name fails the filesystem-safe character allowlist — see
@@ -37,7 +49,14 @@ var ErrInvalidDeviceName = errors.New("vaultconfig: invalid recipient device nam
 
 // VaultMeta is the [vault] table.
 type VaultMeta struct {
-	Name          string `toml:"name"`
+	Name string `toml:"name"`
+	// ID is the vault's own identity: a UUID minted once by `gage init`
+	// and never changed. Because it lives in the committed config it
+	// clones with the vault, so every clone agrees on it however it was
+	// named locally — which is what makes it, rather than the local
+	// registration name, the safe key for this device's identities
+	// directory, trust cache, and lock file. See A20.
+	ID            string `toml:"id"`
 	Type          string `toml:"type"`
 	FormatVersion int    `toml:"format_version"`
 	Created       string `toml:"created"`
@@ -87,8 +106,11 @@ func Read(path string) (File, error) {
 	}
 
 	if f.Vault.FormatVersion != CurrentFormatVersion {
-		return File{}, fmt.Errorf("vaultconfig: %s has format_version %d, this gage understands %d — upgrade gage: %w",
-			path, f.Vault.FormatVersion, CurrentFormatVersion, ErrUnsupportedFormatVersion)
+		return File{}, formatVersionError(path, f.Vault.FormatVersion)
+	}
+
+	if !ValidID(f.Vault.ID) {
+		return File{}, fmt.Errorf("vaultconfig: %s: vault id %q is not a valid id: %w", path, f.Vault.ID, ErrInvalidVaultID)
 	}
 
 	for _, r := range f.Recipients {
@@ -98,6 +120,23 @@ func Read(path string) (File, error) {
 	}
 
 	return f, nil
+}
+
+// formatVersionError says which direction the mismatch runs in, because
+// the two directions need opposite advice. A vault written by a *newer*
+// gage needs a newer binary. A vault written by an older one cannot be
+// upgraded in place — A20's schema change added [vault].id, and there is
+// no id to invent for a vault that never had one — so the migration is
+// to re-create it, which is only an acceptable answer because nothing
+// has shipped (see A20's "this is the cheapest it will ever be").
+func formatVersionError(path string, found int) error {
+	if found > CurrentFormatVersion {
+		return fmt.Errorf("vaultconfig: %s has format_version %d, this gage understands %d — upgrade gage: %w",
+			path, found, CurrentFormatVersion, ErrUnsupportedFormatVersion)
+	}
+	return fmt.Errorf("vaultconfig: %s has format_version %d, this gage understands %d — "+
+		"re-create this vault (`make reset-local-state` clears this machine's vaults and identities first): %w",
+		path, found, CurrentFormatVersion, ErrUnsupportedFormatVersion)
 }
 
 // Write atomically writes f to path through the shared atomic-write

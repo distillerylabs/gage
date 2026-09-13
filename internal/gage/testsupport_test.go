@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/denmark/gage/internal/gage/config"
 	"github.com/denmark/gage/internal/gage/xdgpaths"
 )
@@ -19,20 +21,39 @@ import (
 // that number is what it is).
 const testScryptWorkFactor = 10
 
-// TestMain lowers scryptWorkFactor for this package's entire test binary
-// before any test runs. Every test in this package that unlocks a vault
-// — which is most of them — goes through this without doing anything
-// itself.
+// testEnrollmentWorkFactor is what this package's own tests seal
+// enrollment requests at, for the same reason and with the same
+// consequences as testScryptWorkFactor: a real scrypt pass, run small.
 //
-// Three tests keep the shipped factor honest despite it:
-// TestScryptWorkFactorIsDeliberate checks the constant this variable is
-// a copy of, TestOnlyTheTestHookWritesScryptWorkFactor checks that no
-// non-test code can move the copy, and
-// TestShippedWorkFactorReachesARealAgeFile restores the shipped factor
-// for one encryption and reads it back off the age header.
+// It is a separate knob rather than a reuse of the one above, which is
+// the whole point of enrollment having its own live variable and setter.
+// Sharing one would mean the two factors were one factor, and
+// TestEnrollmentAndIdentityWorkFactorsAreIndependent exists to catch
+// exactly that collapse.
+const testEnrollmentWorkFactor = 10
+
+// TestMain lowers both of gage's scrypt work factors for this package's
+// entire test binary before any test runs. Every test that unlocks a
+// vault — which is most of them — and every test that seals an
+// enrollment request goes through this without doing anything itself.
+//
+// The enrollment half is not a nicety: E2's fixtures alone are 32 seals,
+// and later milestones build pending requests through Enroll across most
+// of their lists, on three platforms.
+//
+// Tests keep both shipped factors honest despite it:
+// TestScryptWorkFactorIsDeliberate and
+// TestEnrollmentScryptWorkFactorIsDeliberate check the constants these
+// variables are copies of, TestOnlyTheTestHooksWriteTheWorkFactors checks
+// that no non-test code can move either copy, and
+// TestShippedWorkFactorReachesARealAgeFile /
+// TestShippedEnrollmentWorkFactorReachesARealAgeFile restore the shipped
+// values for one encryption each and read them back off the age header.
 func TestMain(m *testing.M) {
 	restore := SetScryptWorkFactorForTests(testScryptWorkFactor)
+	restoreEnrollment := SetEnrollmentWorkFactorForTests(testEnrollmentWorkFactor)
 	code := m.Run()
+	restoreEnrollment()
 	restore()
 	os.Exit(code)
 }
@@ -73,6 +94,11 @@ func (f *fakePrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 
 func (f *fakePrompter) Confirm(prompt string) (bool, error) { return true, nil }
 
+// ConfirmDefaultYes answers yes, like Confirm. Nothing in the library
+// asks it — clone's offer is cmd/gage's — so this exists to satisfy the
+// interface rather than to prove anything.
+func (f *fakePrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
+
 // ConfirmRecipientChange answers M10's trust-cache question yes, the
 // same way Confirm answers yes: a fake that blocked every write over a
 // recipient change would fail most of this package's tests for a reason
@@ -93,7 +119,8 @@ type mismatchedPrompter struct{}
 func (mismatchedPrompter) Unlock(req UnlockRequest) (UnlockResponse, error) {
 	return UnlockResponse{Kind: "yubikey"}, nil
 }
-func (mismatchedPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (mismatchedPrompter) Confirm(prompt string) (bool, error)           { return true, nil }
+func (mismatchedPrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
 func (mismatchedPrompter) ConfirmRecipientChange(w RecipientChangeWarning) (bool, error) {
 	return true, nil
 }
@@ -164,20 +191,40 @@ func isolateXDG(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 }
 
+// vaultIDForTest derives a stable vault id from a vault name, so that
+// every device a test sets up for one vault agrees on that vault's id —
+// which is what real devices do, since they all read it out of the same
+// committed .gage/config.toml.
+//
+// Derived rather than minted because these helpers register each device
+// through its own isolated XDG roots and have nowhere to thread a freshly
+// minted id through. It proves nothing about A20 by itself, and is not
+// meant to: the property that matters — two different vaults never
+// sharing an id, and nothing local being keyed by the local name — is
+// asserted directly in paths_test.go and in cmd/gage's keying tests,
+// against ids that really were minted independently.
+func vaultIDForTest(name string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("gage-test-vault:"+name)).String()
+}
+
 // registerVault writes the global-config record Unlock reads this
-// device's name and method out of.
-func registerVault(t *testing.T, name, device, method string) {
+// device's name, id and method out of, and returns that vault's id —
+// which is what every per-vault local path is keyed by (A20), so tests
+// need it as much as the code does.
+func registerVault(t *testing.T, name, device, method string) string {
 	t.Helper()
 	dir := configDirForTest(t)
+	id := vaultIDForTest(name)
 	g := config.Global{
 		Current: name,
 		Vaults: map[string]config.VaultEntry{
-			name: {Path: filepath.Join(t.TempDir(), name), Type: TypeGit, Device: device, Method: method},
+			name: {Path: filepath.Join(t.TempDir(), name), ID: id, Type: TypeGit, Device: device, Method: method},
 		},
 	}
 	if err := config.Write(filepath.Join(dir, "config.toml"), g); err != nil {
 		t.Fatal(err)
 	}
+	return id
 }
 
 // configDirForTest resolves and creates $GAGE_CONFIG under the isolated

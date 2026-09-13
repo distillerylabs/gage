@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"filippo.io/age"
@@ -114,25 +115,38 @@ var ErrUnsupportedMethod = errors.New("gage: unsupported identity method")
 // identity file.
 const identityFileSecretPrefix = "AGE-SECRET-KEY-1"
 
+// identityFileExt is the suffix every wrapped identity file carries, and
+// the thing that distinguishes one from the directory's marker file.
+const identityFileExt = ".age"
+
 // CreateIdentity is a get-or-create for this device's identity in a
 // vault: if a wrapped identity file already sits at
-// $GAGE_DATA/identities/<vault>/<device>.age, it opens that one and
+// $GAGE_DATA/identities/<vault-id>/<device>.age, it opens that one and
 // returns its existing public key; otherwise it generates a fresh
 // X25519 keypair, wraps its private half with a passphrase obtained
 // through p, and writes it to that path (directory 0700, file 0600).
 // Either way it returns the public half, the only part that ever leaves
 // this machine.
 //
+// It takes both halves of a vault's identity because it needs both for
+// different things: vaultID keys the path (see IdentitiesDir), while
+// vaultName is what a human is shown in the passphrase prompt and what
+// the directory's marker file records. vaultID is validated as a UUID
+// before any path is built, so handing these two the wrong way round
+// fails immediately rather than silently.
+//
 // Reuse, not overwrite: the file is the only copy of a private key with
 // no way to get it back, so regenerating over it would silently destroy
-// access nothing else could restore. Reuse is also the behavior that
-// makes re-running `gage init` under a name whose identity file survived
-// a `vault remove` (see cmd/gage's removeOrphanedIdentity) work instead
-// of dead-ending on a conflict, and lets `gage identity add` re-register
-// a device whose local file is already sitting there. It costs nothing a
-// fresh keypair wouldn't also have needed: the file opens with its own
-// passphrase exactly like any other unlock, wrong-passphrase retries
-// included.
+// access nothing else could restore. It lets `gage identity add` and
+// device enrollment re-register a device whose local file is already
+// sitting there, and costs nothing a fresh keypair wouldn't also have
+// needed: the file opens with its own passphrase exactly like any other
+// unlock, wrong-passphrase retries included.
+//
+// Since A20 this path is unreachable from `gage init`, which mints a new
+// id every run and therefore always addresses an empty directory — see
+// runInit, where the rollback that used to have reuse as its backstop
+// became load-bearing as a result.
 //
 // The wrapped file has exactly one recipient by construction — age
 // refuses to combine a scrypt recipient with any other, and Encrypt
@@ -140,8 +154,8 @@ const identityFileSecretPrefix = "AGE-SECRET-KEY-1"
 // "also let my other device open this" variant: the recovery story for a
 // lost identity file is registering a fresh identity and being re-added
 // as a recipient. See "Local identity storage" and A3.
-func CreateIdentity(vault, device string, p Prompter) (string, error) {
-	path, err := IdentityFilePath(vault, device)
+func CreateIdentity(vaultID, vaultName, device string, p Prompter) (string, error) {
+	path, err := IdentityFilePath(vaultID, device)
 	if err != nil {
 		return "", err
 	}
@@ -149,7 +163,7 @@ func CreateIdentity(vault, device string, p Prompter) (string, error) {
 	// both components against the traversal rule (Q-DEVICE-NAME) before
 	// constructing anything.
 	if wrapped, err := os.ReadFile(path); err == nil {
-		return reuseIdentity(vault, device, wrapped, p)
+		return reuseIdentity(vaultName, device, wrapped, p)
 	} else if !os.IsNotExist(err) {
 		return "", exitcode.Wrap(exitcode.Internal, err)
 	}
@@ -157,7 +171,7 @@ func CreateIdentity(vault, device string, p Prompter) (string, error) {
 	passphrase, err := requestPassphrase(p, UnlockRequest{
 		Kind:    KindPassphrase,
 		Purpose: PurposeCreate,
-		Vault:   vault,
+		Vault:   vaultName,
 		Device:  device,
 		Attempt: 1,
 	})
@@ -187,7 +201,41 @@ func CreateIdentity(vault, device string, p Prompter) (string, error) {
 	if err := writeIdentityFile(path, wrapped); err != nil {
 		return "", err
 	}
+	if err := writeIdentitiesMarker(filepath.Dir(path), vaultName); err != nil {
+		return "", err
+	}
 	return ident.Recipient().String(), nil
+}
+
+// identitiesMarkerFileName is the plaintext marker A20 puts in each
+// identities directory, naming the vault the directory belongs to.
+//
+// An identities directory is named by an opaque UUID, and the design doc
+// explicitly permits backing up a device's wrapped identity file by
+// hand. Without the marker, choosing which of several UUID directories
+// to back up would mean cross-referencing global config — so the
+// directory says what it is.
+//
+// It is advisory and nothing reads it to make a decision: it is not a
+// second source of truth about which vault an identity belongs to, and
+// deleting it changes no behavior beyond leaving the directory
+// unlabelled. The one thing that touches it is RemoveIdentity, which
+// removes it alongside the last identity so the directory can still be
+// pruned.
+const identitiesMarkerFileName = "vault-name.txt"
+
+// writeIdentitiesMarker writes (or refreshes) the marker naming the
+// vault an identities directory belongs to.
+//
+// Refreshing rather than writing once is deliberate: a vault renamed
+// locally should not leave the marker claiming the old name, and since
+// nothing reads it, rewriting it is free.
+func writeIdentitiesMarker(dir, vaultName string) error {
+	if err := atomicfile.WriteFile(filepath.Join(dir, identitiesMarkerFileName), []byte(vaultName+"\n"), 0o600); err != nil {
+		return exitcode.Wrap(exitcode.Internal,
+			fmt.Errorf("gage: writing the identities marker for %q: %w", vaultName, err))
+	}
+	return nil
 }
 
 // reuseIdentity opens an identity file CreateIdentity found already on
@@ -218,34 +266,70 @@ func reuseIdentity(vault, device string, wrapped []byte, p Prompter) (string, er
 // It has two callers, both of which are expected to have already
 // established that the device holds no access this would take away:
 // rolling back a `gage init` that generated an identity and then failed
-// before anything referenced its public key (without this, a failed init
-// leaves an orphan that CreateIdentity would then silently reuse on the
-// next attempt — prompting for a passphrase from an attempt that never
-// finished, rather than letting a retry start clean), and `vault remove`
-// pruning an identity file for a device the vault's own recipient list no
-// longer names.
+// before anything referenced its public key, and `vault remove` pruning
+// an identity file for a device the vault's own recipient list no longer
+// names.
+//
+// The rollback caller became load-bearing with A20. `init` now mints a
+// fresh vault id every run, so a retried `init` addresses an empty
+// directory and cannot reach CreateIdentity's reuse path — which means
+// this is the only thing standing between repeated failed `init`s and
+// one orphaned directory per attempt, each holding a private key for a
+// vault that was never created.
 //
 // It is deliberately narrow: deleting an identity file that a vault
 // *does* still list as a recipient loses access to that vault's existing
 // ciphertext, and the answer there is registering a fresh identity, not
 // deleting the old one. Callers must check that first — this function
 // does not.
-func RemoveIdentity(vault, device string) error {
-	path, err := IdentityFilePath(vault, device)
+func RemoveIdentity(vaultID, device string) error {
+	path, err := IdentityFilePath(vaultID, device)
 	if err != nil {
 		return err
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
+
+	dir := filepath.Dir(path)
+	// The marker goes with the last identity. A20 puts a plaintext marker
+	// in this directory, and a marker would otherwise make the directory
+	// never empty — silently turning the prune below into a no-op and
+	// leaving one labelled, keyless directory behind for every vault ever
+	// removed. Nothing would break, which is precisely why it needs
+	// removing here rather than being declared deliberate.
+	if last, err := holdsNoIdentities(dir); err == nil && last {
+		_ = os.Remove(filepath.Join(dir, identitiesMarkerFileName))
+	}
+
 	// Prune the vault's identities directory if it's now empty. os.Remove
 	// on a directory succeeds only when it is, which is exactly the
 	// wanted semantics: a directory still holding another device's
 	// identity is left alone, and the error is dropped because a leftover
 	// empty directory is not a failure worth reporting over whatever
 	// prompted the rollback.
-	_ = os.Remove(filepath.Dir(path))
+	_ = os.Remove(dir)
 	return nil
+}
+
+// holdsNoIdentities reports whether dir holds no wrapped identity files
+// any more — the question "was that the last one".
+//
+// It asks about identity files specifically rather than about the
+// directory being empty, because the marker is exactly the thing that
+// stops it being empty and exactly the thing the answer decides the fate
+// of.
+func holdsNoIdentities(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, de := range entries {
+		if !de.IsDir() && strings.HasSuffix(de.Name(), identityFileExt) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // HasIdentity reports whether this device holds a wrapped identity for a
@@ -258,8 +342,8 @@ func RemoveIdentity(vault, device string) error {
 // report that the unlock was pointless is exactly backwards. A device
 // with no identity file certainly cannot decrypt anything, which is the
 // case worth telling someone about.
-func HasIdentity(vault, device string) (bool, error) {
-	path, err := IdentityFilePath(vault, device)
+func HasIdentity(vaultID, device string) (bool, error) {
+	path, err := IdentityFilePath(vaultID, device)
 	if err != nil {
 		return false, err
 	}

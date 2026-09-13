@@ -231,7 +231,8 @@ today:
 ```
 myvault/                          # git repo root
 ├── .gage/
-│   └── config.toml               # vault-level config: type + method + device metadata (committed, plaintext)
+│   ├── config.toml               # vault-level config: type + method + device metadata (committed, plaintext)
+│   └── pending/                  # sealed device-enrollment requests, one file each (created lazily)
 ├── .age-recipients               # recipients for the whole vault — the only one
 ├── entries/
 │   ├── 4b9d7710-8e2a-4a1f-9c3d-1a2b3c4d5e6f.age
@@ -254,6 +255,26 @@ in normal use. Categorization lives entirely in each entry's metadata (see
 If you want a subset of entries to have a *different* set of people who
 can read them, that's a different vault, not a subtree of this one — see
 "Why no per-directory sharing" below.
+
+**`.gage/pending/` holds device-enrollment requests**, one sealed file
+per request, and the scheme is
+[gage-cli-init-design.md](gage-cli-init-design.md)'s rather than restated
+here. Two of its properties constrain anyone reading this layout, though,
+whether or not they read that document:
+
+- **It is created lazily**, on the first enroll. Git tracks no empty
+  directories, so its absence is the normal state and means "no pending
+  requests" — never an error, and true of every vault that predates the
+  feature.
+- **It is inert.** Nothing in it is read at encryption time: a request is
+  a proposal, and encryption reads `.age-recipients` exactly as it did
+  before the directory existed. That is what keeps the directory from
+  widening the trust boundary, which is why it is stated here rather than
+  only where the feature is designed.
+
+Note that `.gitattributes` below deliberately does *not* cover it: a
+union of two devices' pending requests is the correct merge outcome,
+unlike a union of two recipient lists.
 
 Two things live at the vault root instead of nested, and one thing doesn't
 — worth being explicit about why, since it's not arbitrary:
@@ -1025,6 +1046,14 @@ sequence, and released on every exit path including error paths:
   each other. A write blocks other writes to the same vault, and only
   that vault — a session working in `personal` is unaffected by a write
   to `work`.
+- **"The same vault" means the same `id`, not the same local name.** The
+  lock file is `$GAGE_STATE/locks/<vault-id>.lock`, keyed like every
+  other piece of per-vault local state (see "Local identity storage").
+  One repository registered twice under two local names is one vault, so
+  the two registrations contend for one lock rather than holding one
+  each and both writing the same working tree. That is also why `mv`/`cp`
+  refuse a destination whose id matches the source's, however the two
+  are labelled.
 - **A contended lock waits, with a message**, rather than failing
   immediately. Whoever holds it is nearly always about to finish; a
   one-line "waiting for another gage process" beats a spurious failure.
@@ -1041,7 +1070,8 @@ sequence, and released on every exit path including error paths:
   trade: the operation's all-or-nothing guarantee is worth more than
   letting an unrelated write slip in beside it.
 - **Cross-vault `mv`/`cp` take two locks**, one per vault, acquired in a
-  deterministic order so two simultaneous moves in opposite directions
+  deterministic order — sorted by vault id, the same thing the lock file
+  is named for — so two simultaneous moves in opposite directions
   between the same pair can't deadlock.
 
 This is about correctness between cooperating `gage` processes, not
@@ -1508,7 +1538,12 @@ gage recipient verify [--use NAME]
     cannot decrypt every entry is refused before the vault lock is taken
     and before any confirmation is shown, with an error naming how many
     entries it cannot read — never a bare decryption failure on an
-    opaque entry UUID partway through a write.
+    opaque entry UUID partway through a write. The one exception is a
+    dirty working tree, where the check would be reading ciphertext the
+    reset below is about to discard: there the refusal is deferred until
+    just after that reset, so an interrupted re-encryption cannot be
+    misreported as lost access. It still lands before anything is
+    written and before any confirmation.
 
     Re-encryption is all-or-nothing: every entry is re-encrypted in the
     working tree first, and the recipient-list files

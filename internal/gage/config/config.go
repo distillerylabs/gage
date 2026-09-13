@@ -22,9 +22,27 @@ type GitMeta struct {
 // VaultEntry is one vault's row in the global config: what this device
 // calls it, how this device unlocks it, and (for the git type) its remote.
 type VaultEntry struct {
-	Path   string  `toml:"path"`
-	Type   string  `toml:"type"`
-	Device string  `toml:"device"`
+	Path string `toml:"path"`
+	// ID is a copy of the vault's own committed [vault].id, recorded
+	// here so this machine can find the vault's identities directory,
+	// trust cache and lock file without reading the vault at all — which
+	// is what `vault remove` needs once that vault's files have moved or
+	// gone, the situation A20 exists to make safe.
+	ID     string `toml:"id,omitempty"`
+	Type   string `toml:"type"`
+	Device string `toml:"device"`
+	// Pubkey is this device's own public key for that vault, recorded
+	// when the identity is created (`init`, `identity add`, and
+	// enrollment) — the one moment gage holds the key without needing an
+	// unlock to reach it.
+	//
+	// It exists so that "is the key I hold locally still a recipient
+	// here?" is answered by comparing *keys* rather than device names: a
+	// name is a label, and a label is not proof of which key it refers
+	// to. See Q-ORPHAN-BY-NAME, where that confusion gates an
+	// irreversible deletion. It is public and already committed inside
+	// the vault, so a local plaintext copy discloses nothing new.
+	Pubkey string  `toml:"pubkey,omitempty"`
 	Method string  `toml:"method"`
 	Git    GitMeta `toml:"git,omitempty"`
 }

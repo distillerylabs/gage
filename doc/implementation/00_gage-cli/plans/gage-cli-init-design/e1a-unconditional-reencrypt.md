@@ -61,37 +61,54 @@ hard to review.
 M9's list currently pins the opposite behavior. Its three A19 bullets
 are the starting point; these expand them.
 
-- [ ] `gage recipient add` **accepts no `--reencrypt` flag** — passing
+- [x] `gage recipient add` **accepts no `--reencrypt` flag** — passing
       one is a usage error, not silently ignored.
-- [ ] `recipient add` makes **all pre-existing entries** decryptable by
+- [x] `recipient add` makes **all pre-existing entries** decryptable by
       the new recipient. There is no invocation of `add` that produces a
       recipient who can read only part of the vault.
-- [ ] `recipient add` still commits `.age-recipients` and
+- [x] `recipient add` still commits `.age-recipients` and
       `config.toml` **together**, in one commit, alongside every
       re-encrypted entry.
-- [ ] An injected failure partway through the re-encryption leaves HEAD
+- [x] An injected failure partway through the re-encryption leaves HEAD
       untouched — M9's existing atomicity guarantee, re-asserted because
       the path it runs on is now the only path.
-- [ ] **An actor that cannot decrypt every entry is refused with
+- [x] **An actor that cannot decrypt every entry is refused with
       `ErrCannotGrantFullAccess`**, *before* the vault write lock is
       taken and *before* the trust-cache confirmation is shown. Note the
       unlock has already happened here — `recipient add` is wrapped in
       `withUnlockedVault` — because the check is a decryption pass and
       has no identity-free form. E4 inherits the error but **not** this
       ordering; see its own list.
-- [ ] The error maps to `exitcode.Conflict`.
-- [ ] That error names **how many entries are unreadable**, and never
+- [x] **That refusal is not raised over a working tree the reset is
+      about to discard.** `RequireFullAccess` reads entries off disk,
+      and an interrupted `recipient remove <this device> --reencrypt`
+      leaves `entries/` holding ciphertext written to the reduced list
+      while HEAD still lists this device and is entirely readable by it
+      — the dirty tree the design doc calls the likeliest one there is,
+      and the one `withVaultWrite` resets away. Refusing on it sends the
+      operator to another device to repair a vault that was never
+      damaged. So the pre-lock pass is gated on a clean tree; on a dirty
+      one the refusal moves to just after the reset, inside the lock.
+      Later than the bullet above, and still before the first byte and
+      before any confirmation — which is what that ordering is for.
+- [x] **The deferral is not a way to switch the refusal off.** A
+      genuinely partial actor on a dirty tree is still refused, with the
+      same error, the same count, and the same nothing-changed
+      guarantees. What moves is where the refusal is raised, never
+      whether it is.
+- [x] The error maps to `exitcode.Conflict`.
+- [x] That error names **how many entries are unreadable**, and never
       surfaces a bare decryption failure on an entry UUID.
-- [ ] The refusal leaves nothing changed: no commit, no partial
+- [x] The refusal leaves nothing changed: no commit, no partial
       re-encryption, no cache regeneration.
-- [ ] `recipient remove` is untouched — still requires `--reencrypt`,
+- [x] `recipient remove` is untouched — still requires `--reencrypt`,
       still prints the revokes-future-access-only warning.
-- [ ] `recipient add`'s registry `Short` reads "Authorize a public key
+- [x] `recipient add`'s registry `Short` reads "Authorize a public key
       and re-encrypt the vault to include it", parallel to `remove`'s
       wording. M0's registry test keeps both surfaces honest. (Three
       further `Short`s change in E3/E4 — see the table in D-ENROLL-VERBS.
       This milestone owns only `recipient add`'s.)
-- [ ] **`identity add`'s printed next-command no longer names a flag
+- [x] **`identity add`'s printed next-command no longer names a flag
       that fails.** Assert on the output, not just on the parser: the
       line `identity add` prints is the one a user copies, so a test that
       only proves `--reencrypt` is rejected leaves the tool actively
@@ -104,17 +121,17 @@ the old behavior first.
 
 ## Implementation
 
-- [ ] Drop `reencrypt bool` from `Vault.AddRecipient`; always
+- [x] Drop `reencrypt bool` from `Vault.AddRecipient`; always
       re-encrypt. `RemoveRecipient` keeps its parameter.
-- [ ] Add `ErrCannotGrantFullAccess`, raised from a pre-flight pass that
+- [x] Add `ErrCannotGrantFullAccess`, raised from a pre-flight pass that
       attempts to read every entry with the acting identity, ahead of
       `withVaultWrite`.
-- [ ] Remove `--reencrypt` from `cmd/gage`'s `recipient add`; make it a
+- [x] Remove `--reencrypt` from `cmd/gage`'s `recipient add`; make it a
       usage error rather than a no-op, so scripts fail loudly instead of
       silently changing meaning.
-- [ ] Update `recipientChangeLines` — the with/without distinction it
+- [x] Update `recipientChangeLines` — the with/without distinction it
       renders no longer exists for `add`.
-- [ ] **Grep the whole tree for `--reencrypt` before calling this done.**
+- [x] **Grep the whole tree for `--reencrypt` before calling this done.**
       Removing the flag from the parser is the small half; the flag is
       also *taught* in prose that will otherwise keep telling people to
       pass an argument that now fails. At least three sites outside
@@ -133,7 +150,7 @@ the old behavior first.
         rather than assume, and leave it alone.
       A grep is the check, not reading this list: the point is that the
       flag's removal is a documentation change as much as a parser one.
-- [ ] Update M9's test list in place: replace the bullets pinning the
+- [x] Update M9's test list in place: replace the bullets pinning the
       old behavior rather than deleting them, so the change is legible
       to someone reading M9 later.
 
@@ -161,3 +178,13 @@ longer describes a flag that does not exist.
   the lock and before M10's prompt. Keep the pre-flight a separately
   callable pass rather than burying it inside `AddRecipient`, or E4
   cannot place it where it needs to go.
+
+  **E4 needs the clean-tree gate too.** `RequireFullAccess` is honest
+  only about the tree it can see, so any caller placing it before
+  `withVaultWrite` inherits the interrupted-re-encryption false
+  positive above, and has to make the same split: refuse pre-lock on a
+  clean tree, defer to just after the reset on a dirty one. The gate
+  lives in `AddRecipient` rather than in `RequireFullAccess` itself
+  because the two verbs put it at different points; if E4 ends up
+  writing the same six lines, that is the moment to lift them into one
+  helper — not before.

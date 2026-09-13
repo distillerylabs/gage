@@ -135,9 +135,9 @@ func resolveVaultWithoutUnlocking(app *App, name string) (*gage.Vault, error) {
 	if app.Session != nil {
 		return app.Session.VaultWithoutUnlocking(name)
 	}
-	_, entry, err := resolveVaultEntry(name)
+	name, entry, err := resolveVaultEntry(name)
 	if err != nil {
 		return nil, err
 	}
-	return &gage.Vault{Name: name, Path: entry.Path}, nil
+	return vaultFromEntry(name, entry)
 }

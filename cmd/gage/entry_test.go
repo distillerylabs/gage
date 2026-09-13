@@ -274,7 +274,8 @@ func (p *explodingPrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse,
 	p.t.Fatal("Unlock was called; expected the command to fail before ever unlocking")
 	return gage.UnlockResponse{}, nil
 }
-func (p *explodingPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (p *explodingPrompter) Confirm(prompt string) (bool, error)           { return true, nil }
+func (p *explodingPrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
 func (p *explodingPrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
 	return true, nil
 }

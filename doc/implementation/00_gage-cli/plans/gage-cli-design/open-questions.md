@@ -522,7 +522,7 @@ which is A19's work rather than this decision's.
 
 **Resolved: key the identities directory by a vault id minted at `init`
 and committed to `.gage/config.toml`.** Applied to the design doc as
-[A20](#a20); not yet implemented. The full reasoning is below, after the
+[A20](#a20) and implemented in E0. The full reasoning is below, after the
 problem statement it answers.
 
 **Blocks:** nothing formally, but it should be treated as a live bug
@@ -690,8 +690,9 @@ verify what it is reusing.
 
 ### `[x]` Q-ORPHAN-BY-NAME — `vault remove` deletes a private key based on a name comparison {#q-orphan-by-name}
 
-**Resolved: compare public keys, and never delete without asking.** The
-`pubkey` field this needs is folded into [A20](#a20), which is already
+**Resolved: compare public keys, and never delete without asking.**
+Implemented in [E0](../gage-cli-init-design/e0-vault-id-keying.md); the
+`pubkey` field it needs is folded into [A20](#a20), which was already
 changing the same config table. Full reasoning after the problem
 statement.
 
@@ -815,13 +816,13 @@ record of what changed and why.
 A14 on 2026-08-30; A4 and A6 once Q-DEVICE-NAME and Q-GIT-AUTH were
 answered; A15–A18 alongside the milestones that needed them.
 
-A19 and A20 are applied to the design doc but **not yet implemented** —
-they are the only amendments here that change shipped behavior rather
-than describing it. `[x]` in this section has always meant "the TDD says
-this," never "the code does"; that distinction matters for exactly those
-two entries. The outstanding work is listed under "Accepted, not yet
-implemented" in [index.md](index.md), and sequenced as E0/E1a in
-[plans/gage-cli-init-design/](../gage-cli-init-design/index.md).
+A19 and A20 are the only amendments here that change shipped behavior
+rather than describing it. `[x]` in this section has always meant "the
+TDD says this," never "the code does"; that distinction mattered for
+exactly those two entries, and **both are now implemented** — A20 in E0,
+together with Q-ORPHAN-BY-NAME, which it carried the `pubkey` field for,
+and A19 in E1a. "Accepted, not yet implemented" in
+[index.md](index.md) is now empty.
 
 A21 runs the other way: the code was right and the doc was wrong, so
 applying it changed nothing but prose. A22 is the one entry deliberately
@@ -1028,12 +1029,12 @@ being no per-vault spelling.
 
 ### `[x]` A19 — Make re-encryption unconditional on `recipient add` {#a19}
 
-**Accepted and applied to the design doc.** Per this section's
-convention, `[x]` means the TDD now says this — it does **not** mean the
-code does. This is the one amendment here that changes shipped behavior
-rather than documenting it, so it carries an implementation gap until
-the work below lands; that gap is tracked under "Accepted, not yet
-implemented" in [index.md](index.md).
+**Accepted, applied to the design doc, and implemented in
+[E1a](../gage-cli-init-design/e1a-unconditional-reencrypt.md).** Per this
+section's convention, `[x]` means the TDD now says this — for this entry
+the code now does too, so the implementation gap it used to carry is
+closed and "Accepted, not yet implemented" in [index.md](index.md) is
+empty.
 
 **Applied to the design doc as:** `--reencrypt` removed from
 `gage recipient add` in "Recipient / access management"; a new
@@ -1065,14 +1066,15 @@ that state is a problem in three compounding ways:
    sees every entry, and gets decryption failures on an arbitrary-looking
    subset. The dividing line — written before or after admission — is not
    the title, the age, or anything `ls` shows.
-3. **It's contagious and unrepairable.** `reencryptTo`
-   (`internal/gage/recipient.go:409`) decrypts every entry with the
-   acting identity and hard-fails on the first one it can't read. So a
-   partially-admitted device cannot repair itself *and cannot grant full
-   access to anyone else* — its re-encryption pass dies partway, after
-   the trust-cache prompt and inside the write lock, with an error naming
-   an opaque entry UUID. Each generation is harder to diagnose than the
-   last.
+3. **It's contagious and unrepairable.** `reencryptTo` decrypts every
+   entry with the acting identity and hard-fails on the first one it
+   can't read. So a partially-admitted device cannot repair itself *and
+   cannot grant full access to anyone else* — before E1a its
+   re-encryption pass died partway, after the trust-cache prompt and
+   inside the write lock, with an error naming an opaque entry UUID.
+   Each generation is harder to diagnose than the last. That failure is
+   what `RequireFullAccess` now replaces with a refusal that names a
+   count, before anything happens.
 
 **What it costs.** Every `recipient add` rewrites every entry: a larger
 repo over time, and a no-op-plaintext revision in each entry's history
@@ -1084,12 +1086,9 @@ worked around: an actor who can't read every entry can no longer add a
 recipient at all. That must fail before the lock and before any
 confirmation, naming the count of unreadable entries rather than
 surfacing a decryption error — `ErrCannotGrantFullAccess` in the
-enrollment doc's spelling.
-
-**If this is declined**, the enrollment doc should be revisited too:
-`approve` having no flag while `add` has one is defensible (the new door
-picks the better default) but leaves `add` as the vector that keeps
-creating partial recipients, so most of the benefit is lost.
+enrollment doc's spelling. Shipped in E1a as `Vault.RequireFullAccess`,
+exported and standalone so E4 can place the same pass later in
+`recipient approve`'s sequence.
 
 **Affected:** design doc "Recipient / access management" and the
 `--reencrypt` bullets under "A few decisions worth calling out"; M9's
@@ -1099,7 +1098,8 @@ test list, which currently pins the opposite behavior.
 
 ### `[x]` A20 — Key the identities directory by a vault id {#a20}
 
-**Applied to the design doc; not yet implemented.** Resolves
+**Applied to the design doc; implemented in
+[E0](../gage-cli-init-design/e0-vault-id-keying.md).** Resolves
 [Q-IDENTITY-VAULT-NAME](#q-identity-vault-name), whose second harm is a
 live path that silently deletes the only copy of a private key.
 
@@ -1134,10 +1134,19 @@ identity path. Migration is "re-create the vault", which is only
 acceptable because nothing has shipped — see the resolution for why
 deferring makes this strictly more expensive.
 
-**Does not close the whole bug.** `removeOrphanedIdentity` still decides
-deletions by comparing device names; correct keying removes the
+**Does not close the whole bug on its own.** Correct keying removes the
 cross-vault collision but not the label-versus-identity confusion
-underneath it.
+underneath it, which is [Q-ORPHAN-BY-NAME](#q-orphan-by-name) — filed
+separately and, in the event, fixed in the same milestone, since both
+land in the same config table.
+
+**One thing E0 added that this entry did not name.** `LockFilePath` was
+keyed by the local name too, and E0 makes "one repository registered
+twice under two local names" a supported state — so two registrations
+would have taken two different lock files and both written one working
+tree. The lock protects a repository, so it is keyed by the id like the
+other two. After E0 nothing under `$GAGE_DATA` or `$GAGE_STATE` is
+addressed by a vault's local name.
 
 ---
 

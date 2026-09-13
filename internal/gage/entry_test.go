@@ -23,9 +23,14 @@ import (
 // testing against the same vault) plus the public key CreateIdentity
 // generated for it.
 type testDevice struct {
-	name   string
-	root   string
-	pubkey string
+	name string
+	root string
+	// vaultID is the id of the vault this device holds an identity for
+	// — what its identity file is filed under (A20). Every device a test
+	// creates for one vault carries the same value, the way every real
+	// device does.
+	vaultID string
+	pubkey  string
 }
 
 // newTestDevice generates a fresh identity for device under its own
@@ -34,19 +39,20 @@ type testDevice struct {
 func newTestDevice(t *testing.T, vault, device string) testDevice {
 	t.Helper()
 	root := t.TempDir()
+	var vaultID string
 	withXDGRoot(t, root, func() {
-		registerVault(t, vault, device, MethodPassphrase)
+		vaultID = registerVault(t, vault, device, MethodPassphrase)
 	})
 
 	var pubkey string
 	withXDGRoot(t, root, func() {
 		var err error
-		pubkey, err = CreateIdentity(vault, device, &fakePrompter{passphrases: []string{testPassphrase}})
+		pubkey, err = CreateIdentity(vaultID, vault, device, &fakePrompter{passphrases: []string{testPassphrase}})
 		if err != nil {
 			t.Fatal(err)
 		}
 	})
-	return testDevice{name: device, root: root, pubkey: pubkey}
+	return testDevice{name: device, root: root, vaultID: vaultID, pubkey: pubkey}
 }
 
 // withXDGRoot repoints the process's XDG environment at root and runs
@@ -93,6 +99,7 @@ func newEntryTestVault(t *testing.T, vaultName, device string) (*Vault, Identity
 		var err error
 		v, err = Create(CreateSpec{
 			Name:       vaultName,
+			ID:         d.vaultID,
 			Path:       filepath.Join(t.TempDir(), vaultName),
 			Type:       TypeGit,
 			Method:     MethodPassphrase,
@@ -646,6 +653,7 @@ func TestEntryDecryptableByEveryRecipient(t *testing.T) {
 		var err error
 		v, err = Create(CreateSpec{
 			Name:       vaultName,
+			ID:         d1.vaultID,
 			Path:       filepath.Join(t.TempDir(), vaultName),
 			Type:       TypeGit,
 			Method:     MethodPassphrase,

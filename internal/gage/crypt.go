@@ -91,11 +91,26 @@ func ParseRecipient(s string) (Recipient, error) {
 // shippedScryptWorkFactor, of which scryptWorkFactor is the live copy a
 // test binary is allowed to lower.
 func PassphraseRecipient(passphrase string) (Recipient, error) {
+	return passphraseRecipientAt(passphrase, scryptWorkFactor)
+}
+
+// passphraseRecipientAt is PassphraseRecipient with the work factor
+// spelled out, which is what lets enrollment seal at its own calibrated
+// factor without reading the identity file's.
+//
+// The explicit form exists because the implicit one is a trap:
+// PassphraseRecipient reads scryptWorkFactor — the mutable test hook — so
+// sealing through it would mean a suite that lowers the identity factor
+// silently lowers the seal's too, which is precisely the collapse
+// D-ENROLL-SEAL-COST forbids. Every caller now names the factor it means,
+// and PassphraseRecipient is simply the caller that names
+// scryptWorkFactor.
+func passphraseRecipientAt(passphrase string, workFactor int) (Recipient, error) {
 	r, err := age.NewScryptRecipient(passphrase)
 	if err != nil {
 		return Recipient{}, exitcode.Wrap(exitcode.Usage, fmt.Errorf("gage: %w", err))
 	}
-	r.SetWorkFactor(scryptWorkFactor)
+	r.SetWorkFactor(workFactor)
 	return Recipient{r: r, s: "<passphrase>", passphrase: true}, nil
 }
 
@@ -158,19 +173,49 @@ func Decrypt(ciphertext []byte, id *Identity) ([]byte, error) {
 // gage's two categories and returns nothing at all on failure — a partial
 // read is discarded rather than handed back.
 func decryptBytes(ciphertext []byte, ids ...age.Identity) ([]byte, error) {
+	plaintext, _, err := decryptBytesLimited(ciphertext, -1, ids...)
+	return plaintext, err
+}
+
+// decryptBytesLimited is decryptBytes with a ceiling on how much
+// plaintext it will hold in memory. A limit below zero means no ceiling,
+// which is what every caller reading gage's own files wants: an entry is
+// as large as its author made it.
+//
+// The ceiling exists for enrollment, where it is the one bound the other
+// three in D-ENROLL-SEAL-COST do not provide. age's plaintext length is
+// not bounded by its ciphertext's — a few hundred compressible bytes can
+// expand — and the party who can produce a large one is a code-holder:
+// trusted enough to be granted access, not trusted enough to be handed an
+// unbounded allocation.
+//
+// overLimit is reported separately from err so the caller can tell "this
+// payload is too big" apart from "these bytes are damaged" and pick its
+// own error for each. Nothing partial is returned in either case.
+func decryptBytesLimited(ciphertext []byte, limit int64, ids ...age.Identity) (plaintext []byte, overLimit bool, err error) {
 	r, err := age.Decrypt(bytes.NewReader(ciphertext), ids...)
 	if err != nil {
-		return nil, classifyDecryptError(err)
+		return nil, false, classifyDecryptError(err)
+	}
+	src := r
+	if limit >= 0 {
+		// One byte past the limit, so a payload sitting exactly on it is
+		// accepted and the first byte over is detectable without ever
+		// reading — or allocating — the rest.
+		src = io.LimitReader(r, limit+1)
 	}
 	// The payload is authenticated per chunk, so an error here is a
 	// damaged or truncated file rather than a wrong key: the key already
 	// matched a recipient stanza for Decrypt to have returned a reader.
-	plaintext, err := io.ReadAll(r)
+	out, err := io.ReadAll(src)
 	if err != nil {
-		return nil, exitcode.Wrap(exitcode.Conflict,
+		return nil, false, exitcode.Wrap(exitcode.Conflict,
 			fmt.Errorf("%w: %v", ErrCorruptCiphertext, err))
 	}
-	return plaintext, nil
+	if limit >= 0 && int64(len(out)) > limit {
+		return nil, true, nil
+	}
+	return out, false, nil
 }
 
 // classifyDecryptError splits age's header-stage failures into "you

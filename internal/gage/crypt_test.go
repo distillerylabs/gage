@@ -339,7 +339,7 @@ func TestScryptWorkFactorIsDeliberate(t *testing.T) {
 	}
 }
 
-// TestOnlyTheTestHookWritesScryptWorkFactor closes the one gap a const
+// TestOnlyTheTestHooksWriteTheWorkFactors closes the one gap a const
 // cannot: shippedScryptWorkFactor is unmovable, but scryptWorkFactor —
 // the copy the crypto path actually reads — is a plain package variable,
 // and a single line in a non-test file of this package
@@ -352,20 +352,33 @@ func TestScryptWorkFactorIsDeliberate(t *testing.T) {
 // is untouched). Nothing else in the build would notice.
 //
 // So this walks the package's non-test files and rejects any assignment
-// to scryptWorkFactor outside SetScryptWorkFactorForTests itself. It
-// parses rather than greps because the spellings to catch (`=`, `+=`, an
+// to the live variable outside its own sanctioned setter. It parses
+// rather than greps because the spellings to catch (`=`, `+=`, an
 // assignment nested in any block) are exactly what a text pattern gets
 // wrong.
 //
-// It also pins the variable's own declaration to `= shippedScryptWorkFactor`.
+// It also pins each variable's own declaration to its shipped constant.
 // That is a second, distinct hole: rewriting the declaration to a bare
 // `var scryptWorkFactor = 10` is not an assignment at all, so the walk
 // below would not see it, and the constant it is supposed to track would
 // sit right above it, untouched and still passing
 // TestScryptWorkFactorIsDeliberate.
-func TestOnlyTheTestHookWritesScryptWorkFactor(t *testing.T) {
-	const allowedIn = "SetScryptWorkFactorForTests"
-	declarations := 0
+//
+// It covers *both* of gage's work factors — the identity file's and
+// enrollment's — rather than being duplicated per factor. The enrollment
+// factor is a security parameter of exactly the same kind, arrived at by
+// exactly the same pattern (shipped const, live copy, one setter), so it
+// gets the same guard by being added to this table rather than by a
+// second copy of this walk that could drift from it.
+func TestOnlyTheTestHooksWriteTheWorkFactors(t *testing.T) {
+	factors := []struct {
+		variable  string
+		shipped   string
+		allowedIn string
+	}{
+		{"scryptWorkFactor", "shippedScryptWorkFactor", "SetScryptWorkFactorForTests"},
+		{"enrollmentScryptWorkFactor", "shippedEnrollmentScryptWorkFactor", "SetEnrollmentWorkFactorForTests"},
+	}
 
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -375,84 +388,157 @@ func TestOnlyTheTestHookWritesScryptWorkFactor(t *testing.T) {
 		t.Fatal("globbed no .go files; this test is not looking where it thinks it is")
 	}
 
+	for _, factor := range factors {
+		declarations := 0
+		fset := token.NewFileSet()
+		checked := 0
+		for _, name := range files {
+			if strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			checked++
+			f, err := parser.ParseFile(fset, name, nil, 0)
+			if err != nil {
+				t.Fatalf("parsing %s: %v", name, err)
+			}
+			// The declaration pin, which is position-independent: find
+			// every spec declaring the live variable and require it to
+			// initialize from the shipped constant.
+			ast.Inspect(f, func(n ast.Node) bool {
+				spec, ok := n.(*ast.ValueSpec)
+				if !ok {
+					return true
+				}
+				for i, name := range spec.Names {
+					if name.Name != factor.variable {
+						continue
+					}
+					declarations++
+					var init ast.Expr
+					if i < len(spec.Values) {
+						init = spec.Values[i]
+					}
+					id, ok := init.(*ast.Ident)
+					if !ok || id.Name != factor.shipped {
+						t.Errorf("%s: %s must be declared as `= %s` so it tracks the shipped constant; "+
+							"a literal here is a weakened KDF that the is-deliberate tests cannot see",
+							fset.Position(name.Pos()), factor.variable, factor.shipped)
+					}
+				}
+				return true
+			})
+
+			// The assignment check, walked one top-level declaration at a
+			// time so the sanctioned writer is exempted by *containment*
+			// rather than by a running "last function seen" marker. That
+			// distinction matters: a marker would still be pointing at
+			// the setter when the walk reached a later package-level
+			// `var _ = func() int { scryptWorkFactor = 10; ... }()`, and
+			// would wave it through.
+			for _, decl := range f.Decls {
+				owner := ""
+				if fn, ok := decl.(*ast.FuncDecl); ok {
+					if fn.Name.Name == factor.allowedIn {
+						continue
+					}
+					owner = fn.Name.Name
+				}
+				ast.Inspect(decl, func(n ast.Node) bool {
+					assign, ok := n.(*ast.AssignStmt)
+					if !ok {
+						return true
+					}
+					for _, lhs := range assign.Lhs {
+						id, ok := lhs.(*ast.Ident)
+						if !ok || id.Name != factor.variable {
+							continue
+						}
+						t.Errorf("%s: %s assigns to %s; only %s may write it — "+
+							"a non-test writer here ships a weakened KDF that every other guard misses",
+							fset.Position(id.Pos()), describeFunc(owner), factor.variable, factor.allowedIn)
+					}
+					return true
+				})
+			}
+		}
+		if checked == 0 {
+			t.Fatal("found no non-test .go files to check")
+		}
+		// Exactly one, or the pin above was checked against a declaration
+		// that is no longer the one the crypto path reads.
+		if declarations != 1 {
+			t.Errorf("found %d non-test declarations of %s, want exactly 1", declarations, factor.variable)
+		}
+	}
+}
+
+// TestEveryScryptIdentityCapsItsWorkFactor pins the *first* part of
+// D-ENROLL-SEAL-COST, which is the one that fails as a hang rather than
+// as an error: a decryption path that builds an age scrypt identity and
+// forgets SetMaxWorkFactor will spend hours on a single committed file
+// claiming 2^30, with nothing to show for it.
+//
+// A behavioural test proves the enrollment path is bounded today (see
+// TestHostileWorkFactorCostsABoundedWait), but it cannot prove the call
+// is what bounds it: age's own default ceiling is 22, so removing the
+// call leaves that test green and leaves the next decryption path in this
+// package inheriting a limit nobody chose. Enrollment inherited nothing
+// automatically, and neither will whatever comes after it.
+//
+// So this walks the package's non-test files and requires every function
+// that constructs an age scrypt identity to call SetMaxWorkFactor
+// somewhere in the same function. Scoped to the function rather than the
+// exact next statement, since the construction and the cap are two
+// statements with an error check between them.
+func TestEveryScryptIdentityCapsItsWorkFactor(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	fset := token.NewFileSet()
-	checked := 0
+	found := 0
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		checked++
 		f, err := parser.ParseFile(fset, name, nil, 0)
 		if err != nil {
 			t.Fatalf("parsing %s: %v", name, err)
 		}
-		// The declaration pin, which is position-independent: find every
-		// spec declaring scryptWorkFactor and require it to initialize
-		// from the constant.
-		ast.Inspect(f, func(n ast.Node) bool {
-			spec, ok := n.(*ast.ValueSpec)
-			if !ok {
-				return true
-			}
-			for i, name := range spec.Names {
-				if name.Name != "scryptWorkFactor" {
-					continue
-				}
-				declarations++
-				var init ast.Expr
-				if i < len(spec.Values) {
-					init = spec.Values[i]
-				}
-				id, ok := init.(*ast.Ident)
-				if !ok || id.Name != "shippedScryptWorkFactor" {
-					t.Errorf("%s: scryptWorkFactor must be declared as `= shippedScryptWorkFactor` so it tracks the "+
-						"shipped constant; a literal here is a weakened KDF that TestScryptWorkFactorIsDeliberate cannot see",
-						fset.Position(name.Pos()))
-				}
-			}
-			return true
-		})
-
-		// The assignment check, walked one top-level declaration at a
-		// time so the sanctioned writer is exempted by *containment*
-		// rather than by a running "last function seen" marker. That
-		// distinction matters: a marker would still be pointing at
-		// SetScryptWorkFactorForTests when the walk reached a later
-		// package-level `var _ = func() int { scryptWorkFactor = 10; ... }()`,
-		// and would wave it through.
 		for _, decl := range f.Decls {
-			owner := ""
-			if fn, ok := decl.(*ast.FuncDecl); ok {
-				if fn.Name.Name == allowedIn {
-					continue
-				}
-				owner = fn.Name.Name
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
 			}
-			ast.Inspect(decl, func(n ast.Node) bool {
-				assign, ok := n.(*ast.AssignStmt)
+			constructs, caps := false, false
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
 				if !ok {
 					return true
 				}
-				for _, lhs := range assign.Lhs {
-					id, ok := lhs.(*ast.Ident)
-					if !ok || id.Name != "scryptWorkFactor" {
-						continue
-					}
-					t.Errorf("%s: %s assigns to scryptWorkFactor; only %s may write it — "+
-						"a non-test writer here ships a weakened KDF that every other guard misses",
-						fset.Position(id.Pos()), describeFunc(owner), allowedIn)
+				switch sel.Sel.Name {
+				case "NewScryptIdentity":
+					constructs = true
+				case "SetMaxWorkFactor":
+					caps = true
 				}
 				return true
 			})
+			if !constructs {
+				continue
+			}
+			found++
+			if !caps {
+				t.Errorf("%s: %s builds an age scrypt identity without calling SetMaxWorkFactor; "+
+					"a file claiming 2^30 would cost a hang rather than an error (D-ENROLL-SEAL-COST)",
+					fset.Position(fn.Pos()), fn.Name.Name)
+			}
 		}
 	}
-	if checked == 0 {
-		t.Fatal("found no non-test .go files to check")
-	}
-	// Exactly one, or the pin above was checked against a declaration
-	// that is no longer the one the crypto path reads.
-	if declarations != 1 {
-		t.Errorf("found %d non-test declarations of scryptWorkFactor, want exactly 1", declarations)
+	// Two today: the identity-file unlock path and the enrollment open
+	// path. Zero would mean this walk stopped finding what it checks.
+	if found == 0 {
+		t.Error("found no non-test function constructing an age scrypt identity; this test is no longer looking where it thinks it is")
 	}
 }
 

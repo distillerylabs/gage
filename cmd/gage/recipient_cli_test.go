@@ -16,9 +16,9 @@ import (
 
 // newRecipientKey returns a fresh, real age public key — what someone
 // pastes in from another device's `gage identity add`. Generated rather
-// than hardcoded because --reencrypt has to actually encrypt to it, and
-// the package's existing testRecipient2 is a plugin key this build
-// cannot encrypt to.
+// than hardcoded because an add has to actually encrypt every entry to
+// it, and the package's existing testRecipient2 is a plugin key this
+// build cannot encrypt to.
 func newRecipientKey(t *testing.T) string {
 	t.Helper()
 	ident, err := age.GenerateX25519Identity()
@@ -66,6 +66,11 @@ func (p noInteractionPrompter) Confirm(prompt string) (bool, error) {
 	return false, nil
 }
 
+func (p noInteractionPrompter) ConfirmDefaultYes(prompt string) (bool, error) {
+	p.t.Fatalf("the command asked for a confirmation (%q); verify must never prompt", prompt)
+	return false, nil
+}
+
 func (p noInteractionPrompter) ConfirmRecipientChange(w gage.RecipientChangeWarning) (bool, error) {
 	p.t.Fatalf("the command asked about a recipient change (%+v); verify must never prompt", w)
 	return false, nil
@@ -80,9 +85,9 @@ func (p noInteractionPrompter) Warn(msg string) {
 	p.t.Fatalf("the command warned (%q); verify has nothing to warn about", msg)
 }
 
-// TestRecipientAddCommitsBothFilesInOneCommit is the CLI half of the
-// resolved decision that an add with no --reencrypt still commits, and
-// commits the recipient pair together.
+// TestRecipientAddCommitsBothFilesInOneCommit is the CLI half of M9's
+// resolved decision that an add commits the recipient pair together, in
+// exactly one commit.
 func TestRecipientAddCommitsBothFilesInOneCommit(t *testing.T) {
 	isolateXDG(t)
 	vaultPath := initVaultForTest(t, "personal", "--device", "laptop-1")
@@ -130,11 +135,11 @@ func TestRecipientAddCommitsBothFilesInOneCommit(t *testing.T) {
 	}
 }
 
-// TestRecipientAddReencryptMakesHistoryReadable drives the --reencrypt
-// flag end to end from the CLI, and checks the vault stays coherent
-// afterwards: one commit, clean tree, everything still decryptable by
-// the device that ran it.
-func TestRecipientAddReencryptMakesHistoryReadable(t *testing.T) {
+// TestRecipientAddMakesHistoryReadable drives the re-encryption end to
+// end from the CLI — with no flag to ask for it, since A19 removed the
+// choice — and checks the vault stays coherent afterwards: one commit,
+// clean tree, everything still decryptable by the device that ran it.
+func TestRecipientAddMakesHistoryReadable(t *testing.T) {
 	isolateXDG(t)
 	vaultPath := initVaultForTest(t, "personal", "--device", "laptop-1")
 
@@ -150,9 +155,14 @@ func TestRecipientAddReencryptMakesHistoryReadable(t *testing.T) {
 	}
 
 	key := newRecipientKey(t)
-	res := runCLI(t, []string{"recipient", "add", key, "--device", "phone-1", "--reencrypt"}, "")
+	res := runCLI(t, []string{"recipient", "add", key, "--device", "phone-1"}, "")
 	if res.Code != 0 {
-		t.Fatalf("recipient add --reencrypt exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+		t.Fatalf("recipient add exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	// The count line is unconditional now, so it is also how the CLI
+	// reports that the re-encryption happened at all.
+	if !strings.Contains(res.Stdout, "re-encrypted 2 entries") {
+		t.Errorf("stdout = %q, want it to report re-encrypting both entries", res.Stdout)
 	}
 
 	after, err := gitrepo.CommitCount(vaultPath)
@@ -160,19 +170,131 @@ func TestRecipientAddReencryptMakesHistoryReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after != before+1 {
-		t.Errorf("commit count = %d, want %d — --reencrypt lands in exactly one commit", after, before+1)
+		t.Errorf("commit count = %d, want %d — the re-encryption lands in exactly one commit", after, before+1)
 	}
 	clean, err := gitrepo.IsClean(vaultPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !clean {
-		t.Error("the working tree is dirty after a successful --reencrypt")
+		t.Error("the working tree is dirty after a successful add")
 	}
 
 	// The device that ran it can still read everything.
 	if res := runCLI(t, []string{"show", "ProtonMail"}, ""); res.Code != 0 || !strings.Contains(res.Stdout, "secret-ProtonMail") {
-		t.Errorf("show after --reencrypt: exit %d, stdout=%q, stderr=%s", res.Code, res.Stdout, res.Stderr)
+		t.Errorf("show after the add: exit %d, stdout=%q, stderr=%s", res.Code, res.Stdout, res.Stderr)
+	}
+}
+
+// TestRecipientAddRejectsTheRemovedReencryptFlag is A19's parser half:
+// `--reencrypt` on an add is a usage error, not a silently ignored
+// no-op.
+//
+// Ignoring it would be the worse failure. A script passing the flag was
+// asking for the behavior that used to be optional; accepting the flag
+// while the command's meaning changed underneath it is exactly the
+// silent drift a version bump is supposed to surface.
+func TestRecipientAddRejectsTheRemovedReencryptFlag(t *testing.T) {
+	isolateXDG(t)
+	vaultPath := initVaultForTest(t, "personal", "--device", "laptop-1")
+	key := newRecipientKey(t)
+
+	head, err := gitrepo.HeadHash(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"recipient", "add", key, "--device", "phone-1", "--reencrypt"}, "")
+	if res.Code != int(exitcode.Usage) {
+		t.Fatalf("exit code = %d, want Usage (%d); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "--reencrypt") {
+		t.Errorf("stderr = %q, want it to name the flag it rejected", res.Stderr)
+	}
+
+	got, err := gitrepo.HeadHash(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != head {
+		t.Error("HEAD moved on a rejected add")
+	}
+	if hasKey(ageRecipientsFile(t, vaultPath), key) {
+		t.Error("the recipient was added despite the usage error")
+	}
+}
+
+// TestRecipientAddShortDescribesTheReEncryption pins the one-line
+// description, on the surface a user actually reads it from.
+//
+// A `Short` that still said only "Authorize a public key to read this
+// vault" would be the last place in the tool claiming the add is a
+// list edit. It is a whole-vault rewrite, which is what makes it
+// refusable, so `gage help` has to say so — parallel to `remove`'s
+// wording, which has always named its re-encryption. M0's registry test
+// keeps this string and the Cobra command's `Short` from drifting
+// apart; this one keeps the string itself honest.
+func TestRecipientAddShortDescribesTheReEncryption(t *testing.T) {
+	const want = "Authorize a public key and re-encrypt the vault to include it"
+
+	if got := commandShort("recipient add"); got != want {
+		t.Errorf("registry Short = %q, want %q", got, want)
+	}
+
+	res := runCLI(t, []string{"help"}, "")
+	if res.Code != 0 {
+		t.Fatalf("gage help exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, want) {
+		t.Errorf("gage help does not render the add's description:\n%s", res.Stdout)
+	}
+}
+
+// TestIdentityAddPrintsANextCommandThatWorks is the documentation half
+// of removing the flag, and the one a parser test cannot cover.
+//
+// `identity add` ends by printing the literal command to run next on a
+// device that can already read the vault. That line is copy-pasted, so
+// asserting only that `--reencrypt` is rejected would leave the tool
+// cheerfully instructing people to type something that now fails. The
+// printed line is therefore taken from stdout and run verbatim.
+func TestIdentityAddPrintsANextCommandThatWorks(t *testing.T) {
+	isolateXDG(t)
+	initVaultForTest(t, "personal", "--device", "laptop-1")
+
+	res := runCLI(t, []string{"identity", "add", "--device", "phone-1"}, "")
+	if res.Code != 0 {
+		t.Fatalf("identity add exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+
+	next := ""
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if strings.Contains(line, "gage recipient add ") {
+			next = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "gage:"))
+			break
+		}
+	}
+	if next == "" {
+		t.Fatalf("identity add printed no `gage recipient add` line to follow:\n%s", res.Stdout)
+	}
+	if strings.Contains(next, "--reencrypt") {
+		t.Errorf("identity add still tells people to pass a flag that fails: %q", next)
+	}
+
+	// Run what it printed. Following it verbatim is the assertion — the
+	// old line ended in --reencrypt and would now exit 2 at the end of a
+	// successful onboarding. This runs it on the same machine rather than
+	// on the authorized device the text describes, which is enough to
+	// prove the command line parses and executes; who is allowed to run
+	// it is what TestRecipientAddRefusesAnActorThatCannotReadEveryEntry
+	// covers, in the library.
+	args := strings.Fields(next)
+	if len(args) == 0 || args[0] != "gage" {
+		t.Fatalf("the printed next command is not a gage invocation: %q", next)
+	}
+	if got := runCLI(t, args[1:], ""); got.Code != 0 {
+		t.Fatalf("the command identity add told the operator to run failed: %q\nexit %d, stderr=%s",
+			next, got.Code, got.Stderr)
 	}
 }
 
@@ -336,14 +458,14 @@ func TestRecipientVerifyRunsWithNoIdentityAndNoPrompter(t *testing.T) {
 	initVaultForTest(t, "personal", "--device", "laptop-1")
 
 	// The post-clone state: registered vault, no wrapped identity.
-	dir, err := gage.IdentitiesDir("personal")
+	dir, err := gage.IdentitiesDir(vaultIDForTest(t, "personal"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	has, err := gage.HasIdentity("personal", "laptop-1")
+	has, err := gage.HasIdentity(vaultIDForTest(t, "personal"), "laptop-1")
 	if err != nil {
 		t.Fatal(err)
 	}

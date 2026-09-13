@@ -61,16 +61,18 @@ untouched rather than half-migrated.
   dirty-tree reset this milestone adds. It also keeps `add` and
   `add --reencrypt` structurally identical: same files, same single
   commit, differing only in how many entries ride along in it.
-  - **Superseded in part by [A19](open-questions.md#a19).** The "still
-    commits" half stands and is what makes A19 cheap: `add` was already
-    structurally identical with and without the flag, so removing the
-    flag removes a case rather than adding one. What no longer applies
-    is the premise that a no-reencrypt `add` is a state worth having —
-    A19 makes re-encryption unconditional on `add`, because a recipient
-    who can read only part of a vault is contagious and unrepairable.
+  - **Superseded in part by [A19](open-questions.md#a19), which has now
+    landed as
+    [E1a](../gage-cli-init-design/e1a-unconditional-reencrypt.md).** The
+    "still commits" half stands and is what made A19 cheap: `add` was
+    already structurally identical with and without the flag, so
+    removing the flag removed a case rather than adding one. What no
+    longer applies is the premise that a no-reencrypt `add` is a state
+    worth having — re-encryption is unconditional on `add`, because a
+    recipient who can read only part of a vault is contagious and
+    unrepairable. `add` therefore has one commit message, not two.
   - **Commit messages** (unstated in the design, needed to assert "exactly
-    one commit"): `gage: recipient add <device>`,
-    `gage: recipient add <device> (reencrypt)`, and
+    one commit"): `gage: recipient add <device> (reencrypt)` and
     `gage: recipient remove <device> (reencrypt)`. Unlike an entry
     commit — whose message is the bare UUID because a title would leak
     plaintext (M4) — a recipient commit's own diff is plaintext by
@@ -133,19 +135,29 @@ untouched rather than half-migrated.
 
 **Recipients**
 
-- [ ] **(A19, not yet implemented)** `gage recipient add` accepts no
-      `--reencrypt` flag; passing one is a usage error
-- [ ] **(A19, not yet implemented)** `gage recipient add` makes all
-      pre-existing entries decryptable by the new recipient — there is no
-      invocation of `add` that produces a recipient who can read only
-      part of the vault
-- [ ] **(A19, not yet implemented)** An actor that cannot itself decrypt
-      every entry is refused *before* the vault lock is taken and before
-      any confirmation, with an error naming how many entries it cannot
-      read — never a decryption failure on an entry UUID partway through
-      a write
+- [x] **(A19, [E1a](../gage-cli-init-design/e1a-unconditional-reencrypt.md))**
+      `gage recipient add` accepts no `--reencrypt` flag; passing one is
+      a usage error. The flag is also gone from every place that *taught*
+      it — `identity add`'s printed next command above all
+- [x] **(A19, E1a)** `gage recipient add` makes all pre-existing entries
+      decryptable by the new recipient — there is no invocation of `add`
+      that produces a recipient who can read only part of the vault
+- [x] **(A19, E1a)** An actor that cannot itself decrypt every entry is
+      refused *before* the vault lock is taken and before any
+      confirmation, with an error naming how many entries it cannot read
+      — never a decryption failure on an entry UUID partway through a
+      write. `Vault.RequireFullAccess` is that pass, exported and
+      separately callable because E4 places the same check at a
+      different point in `recipient approve`'s sequence. It reads
+      entries off disk, so the pre-lock refusal is gated on a clean
+      working tree: an interrupted self-removal leaves `entries/`
+      unreadable by this device while HEAD is fine, and refusing on that
+      would report damage the dirty-tree reset below is about to undo.
+      On a dirty tree the check runs just after that reset instead —
+      inside the lock, still before any write and any confirmation
 - [x] `gage recipient add` commits the updated `.age-recipients` and
-      `config.toml` together
+      `config.toml` together — alongside every re-encrypted entry, since
+      A19 there is no add that does not re-encrypt
 - [x] `gage recipient remove` without `--reencrypt` is rejected outright;
       with `--reencrypt` it re-encrypts every entry, excluding the
       removed key
@@ -219,6 +231,7 @@ func (v *Vault) Recipients() ([]VaultRecipient, error)          // no unlock
 func (v *Vault) VerifyRecipients() (RecipientVerification, error) // no unlock, no Prompter
 func (v *Vault) AddRecipient(device, pubkey string, ident *Identity) (RecipientChange, error) // A19: always re-encrypts
 func (v *Vault) RemoveRecipient(query string, reencrypt bool, ident *Identity) (RecipientChange, error)
+func (v *Vault) RequireFullAccess(ident *Identity) error // A19: the pre-flight, callable on its own (E4 places it differently)
 type VaultRecipient struct{ Device, Pubkey string }
 type RecipientVerification struct {
     InSync               bool
@@ -238,13 +251,14 @@ var ErrCannotGrantFullAccess error // A19: actor cannot read every entry, so can
       records `device`/`method` in global config, the same split `init`
       already uses. `--method` defaults to the vault's `[method].default`
       and is validated against `AllowedMethods()`
-- [x] `gage recipient add` / `remove [--reencrypt]`: stage every
+- [x] `gage recipient add` / `remove --reencrypt`: stage every
       re-encrypted entry in the working tree first; commit only after all
       entries succeed, with the recipient-list files and every touched
-      entry in that same single commit. (**A19 changes `add` here**: it
-      no longer takes the flag and always re-encrypts, so the
-      "commits the recipient-list pair without re-encrypting" case
-      applies to nothing once A19 lands.) **Order matters for crash-safety**: entries are
+      entry in that same single commit. (**A19 changed `add` here**: it
+      takes no flag and always re-encrypts, so the "commits the
+      recipient-list pair without re-encrypting" case now applies to
+      nothing, and `commitRecipientList` has no whether-to-re-encrypt
+      parameter left.) **Order matters for crash-safety**: entries are
       written first, against the new recipient list passed explicitly
       (a `writeEntryTo(id, e, []Recipient)` variant of `WriteEntry`, since
       `encryptRecipients()` reads the on-disk file), and

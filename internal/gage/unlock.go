@@ -55,7 +55,7 @@ func (v *Vault) Unlock(p Prompter) (Identity, error) {
 				ErrUnsupportedMethod, v.Name, method))
 	}
 
-	path, err := IdentityFilePath(v.Name, device)
+	path, err := IdentityFilePath(v.ID, device)
 	if err != nil {
 		return Identity{}, err
 	}

@@ -44,7 +44,7 @@ func newMoveTestVaultPair(t *testing.T, srcName, destName string) (src, dest *Va
 	}
 
 	src, err = Create(CreateSpec{
-		Name: srcName, Path: filepath.Join(t.TempDir(), srcName),
+		Name: srcName, ID: vaultIDForTest(srcName), Path: filepath.Join(t.TempDir(), srcName),
 		Type: TypeGit, Method: MethodPassphrase, Device: "laptop-1",
 		Recipients: []string{srcKey.Recipient().String()},
 	})
@@ -53,7 +53,7 @@ func newMoveTestVaultPair(t *testing.T, srcName, destName string) (src, dest *Va
 	}
 
 	dest, err = Create(CreateSpec{
-		Name: destName, Path: filepath.Join(t.TempDir(), destName),
+		Name: destName, ID: vaultIDForTest(destName), Path: filepath.Join(t.TempDir(), destName),
 		Type: TypeGit, Method: MethodPassphrase, Device: "family-member",
 		Recipients: []string{destKey.Recipient().String()},
 	})
@@ -474,14 +474,49 @@ func TestMoveCrashBetweenTheTwoWritesLeavesARecoverableDuplicate(t *testing.T) {
 // place an interruption before that commit occurs (everything before it
 // is pure decryption/comparison, nothing written yet).
 
+// TestMoveRejectsTwoRegistrationsOfOneVaultAsSourceAndDestination is
+// ErrSameVault's other shape, and it exists because A20 created it: one
+// repository can now legitimately be registered twice under two local
+// names, and those two registrations are the same vault however they are
+// labelled. They share a working tree and — since the lock is keyed by
+// the id — a single lock file, so a move between them would block on
+// itself for the lock timeout instead of sharing anything.
+//
+// The refusal is by id rather than by name for exactly that reason.
+func TestMoveRejectsTwoRegistrationsOfOneVaultAsSourceAndDestination(t *testing.T) {
+	src, _, srcKey, _ := newMoveTestVaultPair(t, "personal", "shared-family")
+	alias := &Vault{Name: "personal-alias", ID: src.ID, Path: src.Path}
+	ident := wrapIdentityFor("laptop-1", srcKey, &fakePrompter{})
+
+	e := sampleEntry(time.Now())
+	e.Title = "family-wifi"
+	if _, err := src.Insert(e, false, ident); err != nil {
+		t.Fatalf("seeding source entry: %v", err)
+	}
+
+	start := time.Now()
+	_, err := src.Move("family-wifi", alias, ident)
+	if err == nil {
+		t.Fatal("Move between two registrations of one vault was allowed")
+	}
+	if !errors.Is(err, ErrSameVault) {
+		t.Errorf("error = %v, want it to wrap ErrSameVault", err)
+	}
+	// Refused rather than deadlocked: the guard has to run before the
+	// locks, or this is a lock timeout wearing an error's clothes.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("Move took %s to refuse; it blocked on its own lock instead of checking first", elapsed)
+	}
+}
+
 // ---------------------------------------------------------------------
 // Lock ordering: no deadlock between opposite-direction movers
 // ---------------------------------------------------------------------
 
 func TestTwoVaultLocksAreAcquiredInOneDeterministicOrder(t *testing.T) {
 	isolateXDG(t)
-	a := &Vault{Name: "aaa-vault"}
-	b := &Vault{Name: "zzz-vault"}
+	a := &Vault{Name: "aaa-vault", ID: vaultIDForTest("aaa-vault")}
+	b := &Vault{Name: "zzz-vault", ID: vaultIDForTest("zzz-vault")}
 
 	var (
 		mu    sync.Mutex
@@ -524,8 +559,8 @@ func TestTwoVaultLocksAreAcquiredInOneDeterministicOrder(t *testing.T) {
 // running must find it contended.
 func TestTwoVaultLocksBothHeldForTheWholeOperation(t *testing.T) {
 	isolateXDG(t)
-	a := &Vault{Name: "personal"}
-	b := &Vault{Name: "shared-family"}
+	a := &Vault{Name: "personal", ID: vaultIDForTest("personal")}
+	b := &Vault{Name: "shared-family", ID: vaultIDForTest("shared-family")}
 
 	inside := make(chan struct{})
 	release := make(chan struct{})
@@ -539,10 +574,10 @@ func TestTwoVaultLocksBothHeldForTheWholeOperation(t *testing.T) {
 	}()
 
 	<-inside
-	if _, err := acquireVaultLock(a.Name, 0); err == nil {
+	if _, err := acquireVaultLock(a.ID, 0); err == nil {
 		t.Error("acquired the source lock while withTwoVaultLocks still held it")
 	}
-	if _, err := acquireVaultLock(b.Name, 0); err == nil {
+	if _, err := acquireVaultLock(b.ID, 0); err == nil {
 		t.Error("acquired the destination lock while withTwoVaultLocks still held it")
 	}
 	close(release)

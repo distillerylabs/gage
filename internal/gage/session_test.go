@@ -35,15 +35,17 @@ func newSessionDevice(t *testing.T, device string, names ...string) VaultOpener 
 
 	for _, name := range names {
 		path := filepath.Join(root, name)
-		g.Vaults[name] = config.VaultEntry{Path: path, Type: TypeGit, Device: device, Method: MethodPassphrase}
+		id := vaultIDForTest(name)
+		g.Vaults[name] = config.VaultEntry{Path: path, ID: id, Type: TypeGit, Device: device, Method: MethodPassphrase}
 		writeGlobalConfigForTest(t, g)
 
-		pubkey, err := CreateIdentity(name, device, &fakePrompter{passphrases: []string{testPassphrase}})
+		pubkey, err := CreateIdentity(id, name, device, &fakePrompter{passphrases: []string{testPassphrase}})
 		if err != nil {
 			t.Fatalf("CreateIdentity for %q: %v", name, err)
 		}
 		v, err := Create(CreateSpec{
 			Name:       name,
+			ID:         id,
 			Path:       path,
 			Type:       TypeGit,
 			Method:     MethodPassphrase,
@@ -122,7 +124,8 @@ func (p *scriptedPrompter) Choose(list CandidateList) (string, error) {
 	return list.Candidates[p.chooseIndex].ID, nil
 }
 
-func (p *scriptedPrompter) Confirm(prompt string) (bool, error) { return true, nil }
+func (p *scriptedPrompter) Confirm(prompt string) (bool, error)           { return true, nil }
+func (p *scriptedPrompter) ConfirmDefaultYes(prompt string) (bool, error) { return true, nil }
 
 // ConfirmRecipientChange approves M10's trust-cache question, the same
 // way Confirm answers yes: none of the session tests are about it, and a

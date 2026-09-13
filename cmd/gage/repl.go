@@ -280,11 +280,23 @@ func commandPath(args []string) string {
 
 // sessionUse is the `use <vault>` meta-verb: unlock if needed, and make
 // it the vault every later bare command operates against.
+//
+// A vault this device holds no identity for fails here exactly as it
+// always has — `use` unlocks, and enroll is not a way to unlock, it is
+// what you run instead. What the failure gains is a pointer at that
+// command: the library reports "no local identity" without knowing which
+// verb produces one, and a joining device landing here has no other
+// obvious next step.
 func sessionUse(app *App, args []string) error {
 	if len(args) != 1 {
 		return exitcode.New(exitcode.Usage, "gage: usage: use <vault>")
 	}
-	return app.Session.Use(args[0])
+	err := app.Session.Use(args[0])
+	if errors.Is(err, gage.ErrNoLocalIdentity) {
+		return exitcode.Wrap(exitcode.CodeOf(err),
+			fmt.Errorf("%w; run `gage identity enroll` to publish a request to join %q", err, args[0]))
+	}
+	return err
 }
 
 // sessionLock is `lock [vault]`: one vault, or — per the M6 plan's
@@ -383,7 +395,7 @@ func openSessionVault(name string) (*gage.Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &gage.Vault{Name: name, Path: entry.Path}, nil
+	return vaultFromEntry(name, entry)
 }
 
 // splitLine splits a typed command line into arguments on whitespace,

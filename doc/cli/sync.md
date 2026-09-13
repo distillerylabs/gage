@@ -15,12 +15,35 @@ concern with its own policy.
   there's no network, `gage` doesn't block: it warns once and proceeds with
   your local copy, because refusing to show a password because you're
   offline is worse than showing a possibly-stale one.
-- **After every write** (`insert`, `edit`, `generate`, `rm`, `mv`, `cp`),
-  `gage` pushes immediately following the commit. When nothing has
-  diverged, this is invisible — the write propagates within a second or
-  two. If the push fails because you're offline, nothing is lost: the
-  commit already exists locally, same as any ordinary git repo with
-  unpushed commits, and the next successful `use`/push retries it.
+- **After every write** (`insert`, `edit`, `generate`, `rm`, `mv`, `cp`,
+  `recipient add`/`remove`/`approve`/`deny`), `gage` pushes immediately
+  following the commit. When nothing has diverged, this is invisible — the
+  write propagates within a second or two. If the push fails because you're
+  offline, nothing is lost: the commit already exists locally, same as any
+  ordinary git repo with unpushed commits, and the next successful
+  `use`/push retries it. The warning says what specifically went
+  unpublished; for `recipient approve` that matters a lot, since locally
+  the vault is re-encrypted and the device is a recipient while on the
+  remote the request is still pending and the joining device is still
+  locked out.
+
+### The two exceptions
+
+Two operations depend on the network rather than treating it as best-effort:
+
+- **`gage identity enroll` fails if it can't reach the remote**, or if the
+  histories have diverged — before generating a key, prompting, or writing
+  anything. An unpublished enrollment request accomplishes nothing.
+- **`gage recipient approve` fetches and fast-forwards under its own write
+  lock** before it re-verifies and writes, because an approval rewrites
+  every entry and one made onto a stale tip conflicts on every one of them.
+  A divergence refuses before anything is written (with the ordinary
+  `gage sync` advice); an unreachable remote warns and proceeds, since an
+  approval that lands locally is real work.
+
+Note that `gage recipient pending` does **not** fetch — it reads your local
+copy, so a request published a minute ago shows up only after `gage pull`
+or `gage sync`. See [Adding a device](enrollment.md).
 
 ## What never auto-resolves
 
@@ -67,6 +90,7 @@ actually reaches a conflict it needs to show you plaintext to resolve.
 | One side **deleted** an entry the other **edited** | Decrypts the surviving version, asks you |
 | Both sides changed the **recipient files** | Forced conflict, resolved through the [recipient-change confirmation](identities-and-recipients.md#the-recipient-change-confirmation) |
 | Both sides **inserted** entries with the same title | Not a conflict — two real entries with different IDs; resolve the ambiguity later via [query resolution](addressing-entries.md) |
+| Both sides added **enrollment requests** | Not a conflict — `.gage/pending/` is deliberately left mergeable, the filenames are unique, and the files are inert until someone approves one |
 
 ### Resolving an entry conflict
 

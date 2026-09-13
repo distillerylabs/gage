@@ -38,7 +38,7 @@ func (v *Vault) withWriteLock(fn func() error) error {
 // distinguish "someone else holds it" from a real failure with
 // errors.As against *vaultlock.ContendedError.
 func (v *Vault) withWriteLockTimeout(timeout time.Duration, fn func() error) error {
-	lock, err := acquireVaultLock(v.Name, timeout)
+	lock, err := acquireVaultLock(v.ID, timeout)
 	if err != nil {
 		return err
 	}
@@ -47,15 +47,19 @@ func (v *Vault) withWriteLockTimeout(timeout time.Duration, fn func() error) err
 	return fn()
 }
 
-// acquireVaultLock opens (creating if needed) and locks the named vault's
+// acquireVaultLock opens (creating if needed) and locks a vault's
 // advisory write-lock file, wrapping every failure with the exit code a
 // caller expects: exitcode.Conflict for a contended lock, exitcode.Internal
 // for anything else. It is the one place that translates a bare
 // vaultlock.Acquire into gage's own error shape, shared by
 // withWriteLockTimeout (one vault) and withTwoVaultLocks (M11's mv/cp,
 // two).
-func acquireVaultLock(vault string, timeout time.Duration) (*vaultlock.Lock, error) {
-	path, err := LockFilePath(vault)
+//
+// It takes the vault's id rather than its name, so two registrations of
+// one repository contend for a single lock instead of holding one each
+// — see LockFilePath.
+func acquireVaultLock(vaultID string, timeout time.Duration) (*vaultlock.Lock, error) {
+	path, err := LockFilePath(vaultID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +87,19 @@ type Vault struct {
 	// already-registered vault.
 	Name string
 	Path string
+
+	// ID is the vault's own id — its committed [vault].id, copied into
+	// global config at registration so this machine can reach the vault's
+	// local state without reading the vault itself.
+	//
+	// Every piece of per-vault local state is keyed by it: the identities
+	// directory, the trust cache, and the advisory write lock. Name is
+	// deliberately none of those things any more; after A20 it is a label
+	// for humans. Every construction site must set this — a Vault built
+	// without it yields the empty string, which every path builder
+	// refuses (see checkVaultID), so the failure is loud rather than a
+	// directory named "".
+	ID string
 
 	// locker is the page-locking seam Unlock and Identity.Close go
 	// through. nil means the real memlock-backed implementation, so
@@ -127,6 +144,34 @@ type Vault struct {
 	// would turn the simulated crash into ordinary cleanup, and the
 	// crash test would silently start proving something else.
 	onReencryptEntry func(done int)
+
+	// onEnrollmentDecrypt, if set, is called once per attempted scrypt
+	// run on the enrollment open path — one call per (code, request)
+	// pair actually tried. Test-only; nil everywhere else.
+	//
+	// It exists because several of enrollment's claims are about work
+	// *not* done: a code failing length or alphabet validation costs no
+	// decryption, an oversized file is never opened, the 32-request bound
+	// refuses before any KDF run, and an ID-scoped run costs one attempt
+	// per code however full the directory is. None of those is observable
+	// from a return value — a correct answer arrived at expensively looks
+	// exactly like a correct answer — so the count is the only honest
+	// assertion available. It is the same technique M7's index tests use
+	// against onDecrypt.
+	onEnrollmentDecrypt func()
+
+	// onEnrollPulled, if set, is called from inside Enroll's own write
+	// lock, immediately after the catch-up pull and before anything is
+	// generated. Test-only; nil everywhere else.
+	//
+	// It exists because D-ENROLL-REMOTE's "the lock wraps the pull, not
+	// just the commit" is a claim about a window that has no observable
+	// return value: an implementation that pulled outside the lock and
+	// took it afterwards produces the same request. A test re-acquires
+	// the vault lock from this hook and asserts contention, which is the
+	// same technique the --reencrypt tests use against
+	// onReencryptEntry.
+	onEnrollPulled func()
 
 	// onMoveDestCommitted, if set on the *source* vault Move/Copy was
 	// called on, is called once the destination's write-and-commit

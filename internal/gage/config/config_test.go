@@ -39,13 +39,16 @@ func TestRoundTrip(t *testing.T) {
 		Vaults: map[string]VaultEntry{
 			"personal": {
 				Path:   "/data/vaults/personal",
+				ID:     "9f3a1c2e-7b41-4d58-a0c6-2e5f81b3d497",
 				Type:   "git",
 				Device: "laptop-1",
+				Pubkey: "age1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0savhh7m",
 				Method: "passphrase",
 				Git:    GitMeta{Origin: "https://github.com/you/personal-vault.git"},
 			},
 			"work": {
 				Path:   "/data/vaults/work",
+				ID:     "c41d8e07-52b9-4a36-9f18-7d0ae6c25b83",
 				Type:   "git",
 				Device: "laptop-1",
 				Method: "passphrase",

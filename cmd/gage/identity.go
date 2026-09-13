@@ -24,6 +24,7 @@ func newIdentityCommand(app *App) *cobra.Command {
 		Short: "Manage this device's identities for a vault",
 	}
 	parent.AddCommand(newIdentityAddCommand(app))
+	parent.AddCommand(newIdentityEnrollCommand(app))
 	parent.AddCommand(newIdentityListCommand(app))
 	return parent
 }
@@ -51,7 +52,7 @@ func newIdentityAddCommand(app *App) *cobra.Command {
 			"Generates a fresh keypair for this device, wraps its private half with a\n" +
 			"passphrase you choose, and prints the public half. The vault does not yet\n" +
 			"trust that key: hand it to a device that can already read the vault and run\n" +
-			"`gage recipient add <pubkey> --device NAME --reencrypt` there.\n\n" +
+			"`gage recipient add <pubkey> --device NAME` there.\n\n" +
 			"This is also the recovery path for a lost identity file — register a fresh\n" +
 			"identity under a new name rather than restoring the old key from a backup.",
 		Args: cobra.NoArgs,
@@ -104,7 +105,7 @@ func runIdentityAdd(app *App, use, deviceFlag, methodFlag string) error {
 		return err
 	}
 
-	if err := recordLocalIdentity(v.Name, device, method); err != nil {
+	if err := recordLocalIdentity(v.Name, device, method, pubkey); err != nil {
 		return err
 	}
 
@@ -112,7 +113,7 @@ func runIdentityAdd(app *App, use, deviceFlag, methodFlag string) error {
 		fmt.Sprintf("gage: registered %q as this device's identity for vault %q", device, v.Name),
 		fmt.Sprintf("gage: public key %s", pubkey),
 		fmt.Sprintf("gage: from a device that can already read %q, run:", v.Name),
-		fmt.Sprintf("gage:   gage recipient add %s --device %s --reencrypt", pubkey, device),
+		fmt.Sprintf("gage:   gage recipient add %s --device %s", pubkey, device),
 	})
 	return nil
 }
@@ -152,7 +153,14 @@ func resolveIdentityMethod(v *gage.Vault, methodFlag string) (string, error) {
 // `identity add` the next unlock must use the new key without anyone
 // hand-editing config, which is the step the lost-identity recovery
 // story would otherwise be missing.
-func recordLocalIdentity(vault, device, method string) error {
+//
+// The public key is recorded alongside them for Q-ORPHAN-BY-NAME: it is
+// what lets `vault remove` decide whether the local key is still a
+// recipient by comparing keys instead of device names, and this is one
+// of the two moments gage holds the key without needing an unlock to
+// reach it. Re-pointing must move it too — a stale pubkey beside a new
+// device would answer that question about the wrong key.
+func recordLocalIdentity(vault, device, method, pubkey string) error {
 	g, err := readGlobalConfig()
 	if err != nil {
 		return exitcode.Wrap(exitcode.Internal, err)
@@ -163,6 +171,7 @@ func recordLocalIdentity(vault, device, method string) error {
 	}
 	entry.Device = device
 	entry.Method = method
+	entry.Pubkey = pubkey
 	g.Vaults[vault] = entry
 	if err := writeGlobalConfig(g); err != nil {
 		return exitcode.Wrap(exitcode.Internal, err)
@@ -189,7 +198,7 @@ func newIdentityListCommand(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			identities, err := gage.ListIdentities(v.Name)
+			identities, err := v.ListIdentities()
 			if err != nil {
 				return err
 			}

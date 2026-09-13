@@ -70,11 +70,24 @@ Every other command — entry commands (`show`, `cat`, `ls`, `insert`,
 `edit`, `rename`, `generate`, `search`/`grep`, `rm`, `mv`, `cp`,
 `reindex`), the sync family (`sync`, `pull`, `push`, `log`, `history`), and
 management commands (`vault list/info/remove/set-default`,
-`identity add/list`, `recipient add/remove/list/verify`) — works inside a
-session, operating against the session's current vault without needing
-`--use` each time. `--use NAME` still works ad hoc against any other vault
-already `use`d this session (it prompts to unlock if you haven't touched it
-yet).
+`identity add/enroll/list`,
+`recipient add/remove/list/verify/pending/approve/deny`, `git set-remote`,
+`auth login/status/logout`) — works inside a session, operating against the
+session's current vault without needing `--use` each time. `--use NAME`
+still works ad hoc against any other vault already `use`d this session (it
+prompts to unlock if you haven't touched it yet).
+
+The few commands that don't need an unlocked vault — `identity enroll`,
+`recipient pending`, `recipient approve`, `recipient deny`,
+`recipient verify` — work with `--use NAME` against a vault this session
+could never have `use`d, which is the point: a device enrolling in a vault
+can't unlock it yet. `use` on such a vault fails as it always has, now
+pointing at the command that fixes it:
+
+```
+gage> use personal
+gage: no local identity is registered for this device: "personal" is not registered on this machine; run `gage identity enroll` to publish a request to join "personal"
+```
 
 **`init` and `clone` are one-shot only.** Both create a vault rather than
 operate on one, which leaves "should the new vault become this session's
@@ -129,8 +142,38 @@ In this fixed order:
    `LockedOrAuth`) — never a read that can't be answered, and never an
    empty passphrase reported as a wrong one.
 
+This applies to `--script`/`--stdin` runs and only to them. An ordinary
+one-shot `gage show ...` ignores `GAGE_PASSPHRASE` and prompts.
+
 `GAGE_PASSPHRASE` only opens an *existing* identity — it's never used for
 `init` or `identity add`, where a typo would silently create an unrecoverable
 key with nothing to check it against. It's also single-use per process: a
 script driving two vaults with different passphrases reassigns the variable
 between them.
+
+### What enrollment does non-interactively
+
+`gage identity enroll` has two paths and they behave differently here, both
+correctly:
+
+- **Creating a key refuses.** A new identity's passphrase can't come from
+  `GAGE_PASSPHRASE` for the reason above. Under `--script FILE` at a
+  terminal the prompt passes through to the human and enroll proceeds
+  normally; under `--stdin`, or with no terminal, it fails with
+  `locked-or-auth` (`5`) before any key is generated.
+- **Reusing an existing key succeeds.** That's an ordinary unlock, so
+  `GAGE_PASSPHRASE` answers it and a fully scripted enroll works end to
+  end. This is the path a re-run after a failed push takes, and it's the
+  reason enroll is scriptable at all.
+
+A refusal costs nothing that matters: no identity is written, and nothing
+is sealed, committed, or pushed. The fast-forward enroll performs first
+survives, which just means the vault is more up to date than it was.
+
+`gage recipient approve` is **not** scriptable, by design. Its confirmation
+is a decision about letting a device into a vault, and a run nobody watched
+must not make it by omission — so with nobody to ask it fails
+`locked-or-auth` (`5`) and leaves the request pending. `--yes` does not
+answer it; that flag answers the recipient-change confirmation and nothing
+else. `recipient pending` and `recipient deny` need no unlock and no
+confirmation, so both script fine.

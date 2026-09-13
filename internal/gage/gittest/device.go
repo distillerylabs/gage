@@ -109,6 +109,30 @@ func (d *Device) Commit(t testing.TB, message string) {
 	}
 }
 
+// CommitAt is Commit with the signature's timestamp supplied, for the
+// one thing a test cannot otherwise produce: a commit whose committer
+// time is not this machine's idea of now.
+//
+// It exists for E3's clock-skew warning, which reads HEAD's committer
+// timestamp and warns when local time is meaningfully behind it. go-git
+// copies Author into Committer when no Committer is given, so setting
+// one signature sets both.
+func (d *Device) CommitAt(t testing.TB, message string, when time.Time) {
+	t.Helper()
+
+	wt, err := d.repo.Worktree()
+	if err != nil {
+		t.Fatalf("gittest: opening worktree: %v", err)
+	}
+	if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+		t.Fatalf("gittest: staging: %v", err)
+	}
+	sig := &object.Signature{Name: "gittest", Email: "gittest@localhost", When: when}
+	if _, err := wt.Commit(message, &git.CommitOptions{Author: sig, Committer: sig}); err != nil {
+		t.Fatalf("gittest: committing: %v", err)
+	}
+}
+
 // Push publishes the clone's commits back to the bare remote.
 func (d *Device) Push(t testing.TB) {
 	t.Helper()

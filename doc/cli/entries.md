@@ -28,7 +28,7 @@ fields:
 - **`created`** — set once, at `insert` time.
 - **`updated`** / **`updated_by`** — rewritten on every edit. `updated_by` is
   the identity name of whichever device made the change (the same name
-  registered via `gage identity add`).
+  registered via `gage identity add`/`identity enroll`).
 - **`value`** — the entry's primary payload: a password, or the body of an
   unstructured note.
 - **`fields`** — structured key/value metadata (e.g. `username`,
@@ -38,7 +38,7 @@ fields:
 
 ```
 gage insert <title> [--use NAME] [--description TEXT]
-             [-m|--multiline | --value-stdin | -e|--edit] [-f|--force] [--yes]
+             [-m|--multiline | --value-stdin | -e|--edit] [-f|--force]
 ```
 
 Exactly one of `-m`, `--value-stdin`, `-e` may be given. With none of them,
@@ -64,13 +64,16 @@ Enter value: ****************
 - **`-f`/`--force`** allows creating an entry whose title duplicates an
   existing one (by default, `gage` warns instead — two entries can share a
   title, but it's usually a mistake).
-- **`--yes`** skips the recipient-change confirmation prompt, for scripts.
+
+`--yes` is a global flag rather than one of `insert`'s own, but it's worth
+knowing here: it skips the recipient-change confirmation any write can
+trigger, for scripts. See [Command reference](command-reference.md#global-flags).
 
 ## Generating a random value
 
 ```
-gage generate <title> [--use NAME] [-l LENGTH] [--no-symbols]
-                       [-f|--force] [-c|--clip] [-q|--qr] [--yes]
+gage generate <title> [--use NAME] [--description TEXT] [-l LENGTH]
+                       [--no-symbols] [-f|--force] [-c|--clip] [-q|--qr]
 ```
 
 Creates a new entry with a randomly generated value instead of one you
@@ -113,10 +116,12 @@ commits on save, and re-stamps `updated`/`updated_by`. The template lets you
 edit `title` itself, not just `description`/`value`/`fields`.
 
 ```
-gage rename <query> <new-title> [--use NAME]
+gage rename <query> <new-title> [--use NAME] [-f|--force]
 ```
 
-A quicker, `$EDITOR`-free way to change just the title.
+A quicker, `$EDITOR`-free way to change just the title. `-f`/`--force`
+allows renaming to a title another entry already uses, the same way it does
+on `insert`.
 
 ## Listing and searching
 

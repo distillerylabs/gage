@@ -48,14 +48,16 @@ Run `gage help` for the full command reference, or see
 | Group | Commands |
 |---|---|
 | Vault lifecycle | `init`, `clone`, `vault list`/`info`/`remove`/`set-default` |
-| Identity | `identity add`, `identity list` |
-| Recipients | `recipient add`/`remove`/`list`/`verify` |
+| Identity | `identity add`, `identity enroll`, `identity list` |
+| Recipients | `recipient add`/`remove`/`list`/`verify`, `recipient pending`/`approve`/`deny` |
 | Entry CRUD | `insert`, `show`, `cat`, `edit`, `rename`, `generate`, `rm`, `mv`, `cp`, `ls`, `search`, `reindex` |
 | Sync | `sync`, `pull`, `push`, `log`, `history` |
 | Git-specific | `git set-remote`, `auth login`/`status`/`logout` |
 | Session (REPL only) | `use`, `lock`, `status`, `exit`, `help` |
 
 `mv`/`cp` move or copy an entry between vaults with different recipient lists — that's `gage`'s mechanism for sharing a secret with a subset of people rather than a whole vault.
+
+`identity enroll` and `recipient pending`/`approve`/`deny` are how a second device joins a vault without hand-carrying a public key: the joining device publishes a sealed request and prints a short code, and an existing recipient approves it with `gage recipient approve --code ...`. See [doc/cli/enrollment.md](doc/cli/enrollment.md).
 
 ## Building and testing
 

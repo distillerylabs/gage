@@ -27,7 +27,8 @@ and the awkward one is in the middle:
    hand. A 62-character `age1...` string, moved between two machines
    over whatever channel the user improvises — a chat message, an email
    to themselves, a photo of a terminal, retyping it.
-4. `gage recipient add <pubkey> --reencrypt` on the authorized device.
+4. `gage recipient add <pubkey> --device NAME` on the authorized
+   device, which re-encrypts the whole vault to include it.
 5. `gage sync` on the new device, which can now decrypt.
 
 Steps 1 and 2 are two commands where the user has one intention ("put
@@ -1755,6 +1756,14 @@ So the order is:
    is what that guarantee was always actually about: the refusal never
    arrives mid-write, on an opaque entry UUID, after a human has answered
    the question about trusting the list.
+
+   **Gated on a clean working tree, as in `recipient add`** (E1a). The
+   pre-flight reads entries off disk, so on a tree left dirty by an
+   interrupted re-encryption it would be judging ciphertext the write
+   lock's reset is about to discard, and would report a device that can
+   read all of HEAD as one that cannot. On a dirty tree the check moves
+   into step 7, immediately after the reset and the fast-forward and
+   still before M10's prompt and the first byte written.
 7. Take the lock, **fetch and fast-forward**, re-verify each seal under
    it, then write. See "Approval fetches before it commits" below.
 
@@ -1788,8 +1797,8 @@ disproportionate outcome for a command whose whole job is to let one more
 device in, and it is entirely avoidable: catching up first costs one
 fetch.
 
-`recipient add --reencrypt` has the same shape and does not do this. The
-difference is frequency, not mechanism. `--reencrypt` is a rare
+`recipient add` has the same shape and does not do this. The difference
+is frequency, not mechanism. Adding a recipient by hand is a rare
 deliberate act; approval is the ordinary way a device joins a vault, so
 its stale-tip case stops being a corner and starts being a Tuesday.
 
@@ -1987,15 +1996,27 @@ because it was pruned.
 is always in the future, which is the whole problem. Two cheap measures
 make it legible rather than baffling:
 
-- **At approve time, diagnose it.** Both `created` and `expires` are in
-  the seal. A request whose `expires` is in the past *and* whose
-  `created` is also in the past by less than its own TTL was expired
-  before it was written. That is not an expiry, it is a wrong clock, so
-  it gets its own error — `ErrEnrollmentClockSkew`, declared under
-  "Library surface" — rather than being reported as a stale request. The
-  two are separated because their fixes share nothing: one says fix that
-  machine's clock and enroll again, the other says ask for a fresh
-  request.
+- **At approve time, diagnose what can be diagnosed.** Both `created` and
+  `expires` are in the seal, so a request whose `expires` precedes its own
+  `created` was expired before it was written. That is not an expiry, it
+  is a wrong clock, so it gets its own error — `ErrEnrollmentClockSkew`,
+  declared under "Library surface" — rather than being reported as a stale
+  request. The two are separated because their fixes share nothing: one
+  says fix that machine's clock and enroll again, the other says ask for a
+  fresh request.
+
+  **The ordinary slow clock is not detectable, and an earlier draft of
+  this bullet claimed otherwise.** It asked for "`expires` in the past
+  *and* `created` in the past by less than its own TTL", which is a
+  condition no payload can satisfy: `expires` is `created + ttl`, so
+  `now - created < ttl` implies `now < expires` and the first half fails.
+  Worse, the case it was aiming at genuinely cannot be told apart — a
+  device two days slow with a 24h TTL seals a payload that is internally
+  consistent and byte-for-byte indistinguishable from one that sat two
+  days on a correct clock. What survives is the check above, which needs
+  no reference clock at all and is exactly the phrase this section already
+  used: expired before it was written. Found while implementing E2, whose
+  own test list already said this and is unchanged.
 - **At enroll time, warn on the available signal.** A freshly cloned or
   fetched vault carries commit timestamps written by other devices. If
   local time is meaningfully behind HEAD's committer timestamp, this
@@ -2351,9 +2372,39 @@ func (v *Vault) ResolveEnrollment(id string) (PendingRequest, error)
 // what makes the late unlock possible, so it is fixed here rather than
 // arrived at in E4.
 func (v *Vault) OpenEnrollment(requests []PendingRequest, codes []string) ([]OpenedRequest, error)
-func (v *Vault) ApproveEnrollments(approvals []Approval, ident *Identity) (ApprovalResult, error)
+
+// CheckEnrollmentLabels is the device-name collision pre-check, run
+// after the open and before the render, holding no Identity: it reads
+// the recipient list, which is plaintext. It lives here rather than in
+// cmd/gage so a second frontend inherits the check instead of
+// reimplementing it; "cmd/gage's pre-check" below describes where in the
+// sequence it runs, not which package holds it. The authoritative check
+// stays under the write lock and still returns ErrRecipientExists.
+func (v *Vault) CheckEnrollmentLabels(approvals []Approval) error
+
+// ApproveEnrollments takes a context because it fetches before it
+// writes, and that fetch is a hard precondition whose failure changes
+// the outcome — the same test that puts Enroll, Pull, Push and Sync on
+// this list. It takes the codes because it re-opens each sealed request
+// under the write lock and writes what *that* open says, not what was
+// displayed a moment earlier; nothing else in reach carries a code, and
+// OpenEnrollment does not report which code opened which request. See
+// "Approval fetches before it commits" and E4's "Settled at the start of
+// implementation".
+func (v *Vault) ApproveEnrollments(ctx context.Context, approvals []Approval, codes []string, ident *Identity) (ApprovalResult, error)
+
+// DenyEnrollment deliberately takes no context: it performs no fetch,
+// and its push rides pushAfterWriteSaying, which mints its own like
+// every other write.
 func (v *Vault) DenyEnrollment(id string, p Prompter) error
 ```
+
+**The three signatures above supersede an earlier draft of this block**,
+which predated "Approval fetches before it commits" and "The batch path
+is not `AddRecipient`". As drafted, `ApproveEnrollments` had no context
+to fetch with and no code to re-verify with, so two things this document
+requires of it were unimplementable. Corrected here rather than left for
+E4 to discover.
 
 `ApproveEnrollments` returns `ApprovalResult` rather than the existing
 `RecipientChange`. An earlier draft reused `RecipientChange` on the
@@ -2630,7 +2681,7 @@ which is what the message is for.
 
 **`identity enroll` takes the per-vault write lock** for its commit, like every
 other write. **`approve` holds it across the whole re-encryption
-sequence**, exactly as `recipient add --reencrypt` does today — and
+sequence**, exactly as `recipient add` does today — and
 re-reads each sealed request under that lock before trusting what it
 showed the human a moment earlier.
 

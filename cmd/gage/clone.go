@@ -132,7 +132,19 @@ func runClone(app *App, opt cloneOptions) error {
 		g.Vaults = map[string]config.VaultEntry{}
 	}
 	g.Vaults[name] = config.VaultEntry{
-		Path:   path,
+		Path: path,
+		// Copied from the config this clone just fetched — no ordering
+		// problem here, unlike `init`: the vault already exists and
+		// already carries its id, and this file has just been read to
+		// register the vault at all.
+		//
+		// Pubkey is deliberately *not* set. A clone holds no identity, and
+		// it refuses to unlock in order to derive one (see accessLines) —
+		// so there is no public key to record. A freshly cloned vault
+		// legitimately lands in removeOrphanedIdentity's "pubkey missing,
+		// so keep the file and say why" branch until `identity add` or
+		// enrollment puts a key here.
+		ID:     vc.Vault.ID,
 		Type:   vc.Vault.Type,
 		Device: device,
 		// The cloned vault's default method is a suggestion for devices
@@ -148,10 +160,68 @@ func runClone(app *App, opt cloneOptions) error {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
 
-	lines := []string{fmt.Sprintf("gage: cloned %q to %s", name, path)}
-	lines = append(lines, accessLines(name, device)...)
-	writeOut(app.Out, lines)
-	return nil
+	writeOut(app.Out, []string{fmt.Sprintf("gage: cloned %q to %s", name, path)})
+	return offerEnrollment(app, &gage.Vault{Name: name, ID: vc.Vault.ID, Path: path}, device)
+}
+
+// offerEnrollment is what happens after a successful clone when this
+// device can't read the vault: interactively, an offer to enroll;
+// otherwise the message saying so.
+//
+// There is deliberately no --enroll flag. clone has always detected this
+// exact condition and already reports it, so a flag opting into acting
+// on a fact the tool just printed would carry no information — the only
+// people who would pass it are the ones who least need it. It is a
+// prompt rather than an automatic action because enrollment commits and
+// pushes: silently turning "fetch a copy" into "fetch a copy and publish
+// a request naming this machine" would widen what clone does in a way
+// its name doesn't suggest. See "Why there is no `--enroll` flag".
+func offerEnrollment(app *App, v *gage.Vault, device string) error {
+	lines := accessLines(v.ID, v.Name, device)
+	if lines == nil {
+		// This device already holds an identity for the vault. It was set
+		// up deliberately and gage can't cheaply tell whether it is
+		// already a recipient, so it is left alone — no message, and
+		// certainly no prompt. See "What 'not a recipient yet' actually
+		// means".
+		return nil
+	}
+	if !canAnswerNewPassphrase(app) {
+		writeOut(app.Out, lines)
+		return nil
+	}
+
+	yes, err := app.Prompter.ConfirmDefaultYes(
+		fmt.Sprintf("This device holds no identity for %q, so it can't read anything here yet.\n"+
+			"Set up an enrollment request now?", v.Name))
+	if err != nil {
+		return err
+	}
+	if !yes {
+		writeOut(app.Out, lines)
+		return nil
+	}
+	// Under the device name clone already resolved, not one derived a
+	// second time: `clone --device X` followed by a `y` must publish a
+	// request naming X.
+	return enrollDevice(app, v, device, gage.DefaultEnrollmentTTL)
+}
+
+// canAnswerNewPassphrase reports whether a brand-new identity's
+// passphrase can be answered in this run, which is the condition clone's
+// offer is gated on — one rule rather than a TTY test of its own.
+//
+// Enrolling on a device with no identity requires a PurposeCreate
+// exchange, and scriptPrompter already decides where those can be
+// answered: a human when --script FILE runs at a terminal, and nowhere
+// at all under --stdin or with no terminal, where noCreatePrompter
+// refuses. Offering to enroll in a context that must then refuse the
+// passphrase would be asking a question whose only outcome is a failure.
+//
+// It is the same expression scriptPrompter computes as canPrompt, named
+// here for what it means to a caller that is not a session.
+func canAnswerNewPassphrase(app *App) bool {
+	return !app.ScriptStdin && app.IsTerminal()
 }
 
 // accessLines says whether this device can actually read what it just
@@ -163,15 +233,17 @@ func runClone(app *App, opt cloneOptions) error {
 // was pointless, would be exactly backwards. A device with no identity
 // certainly isn't a recipient; one that has an identity was set up
 // deliberately and is left alone.
-func accessLines(name, device string) []string {
-	hasIdentity, err := gage.HasIdentity(name, device)
+func accessLines(vaultID, name, device string) []string {
+	hasIdentity, err := gage.HasIdentity(vaultID, device)
 	if err != nil || hasIdentity {
 		return nil
 	}
 	return []string{
 		fmt.Sprintf("gage: this device (%q) has no identity for %q, so it cannot decrypt anything in it yet.", device, name),
-		"gage: run `gage identity add` here to generate a key, then have someone who already",
-		"gage: has access add it with `gage recipient add`.",
+		"gage: run `gage identity enroll` here to generate a key and publish a request to join,",
+		"gage: then give the code it prints to someone who can already read the vault.",
+		"gage: or, if this device cannot write to the remote: run `gage identity add` here and",
+		"gage: have someone with access add the printed key with `gage recipient add`.",
 	}
 }
 

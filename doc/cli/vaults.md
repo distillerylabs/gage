@@ -19,13 +19,16 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
 - Without `--dir`, the vault is created at `$GAGE_DATA/vaults/<name>`.
 - `--remote` is optional — a vault can start local-only and gain a remote
   later with `gage git set-remote` (see [Git remotes and authentication](git-and-auth.md)).
-- `--method` chooses how *this device* will prove it can decrypt the vault.
-  `passphrase` is the default and, today, the only option.
+- `--method` sets the vault's **default** identity method, recorded in its
+  committed `.gage/config.toml` as a suggestion for devices joining later —
+  and is also what this device uses. It's a suggestion, not a constraint:
+  each device's actual method is local config and can differ. `passphrase`
+  is the default and, today, the only option.
 - `--device` names this device as a recipient label; if omitted, it defaults
   to your normalized hostname. See [Identities and recipients](identities-and-recipients.md).
 - `--recipient` can be repeated to add extra public keys (e.g. a recovery
   key) at creation time, so the vault isn't single-point-of-failure from the
-  start.
+  start. This device's own key is always included; these are in addition.
 
 `init` and `clone` are the only vault commands that don't work inside a
 session — they *create* a vault rather than operate on an existing one.
@@ -33,14 +36,35 @@ session — they *create* a vault rather than operate on an existing one.
 ## Cloning an existing vault
 
 ```
-gage clone <remote-url> [--name NAME] [--dir PATH]
+gage clone <remote-url> [--name NAME] [--dir PATH] [--device NAME]
 ```
 
 Clones the git repository and reads its `.gage/config.toml` to learn the
-vault's default decryption method. Cloning does **not** grant you access —
-if your device isn't already a recipient, `gage` tells you to run
-`gage identity add` to generate a public key, then have an existing
-recipient run `gage recipient add` with it.
+vault's default decryption method. Cloning does **not** grant you access.
+
+If this machine holds no identity for the vault, `clone` says so and — on a
+terminal — offers to set up an enrollment request right there:
+
+```
+gage: cloned "personal" to ~/.local/share/gage/vaults/personal
+This device holds no identity for "personal", so it can't read anything here yet.
+Set up an enrollment request now? [Y/n]
+```
+
+Saying yes runs exactly what `gage identity enroll` does, under the device
+name `clone` already resolved — so `clone --device X` followed by `y`
+publishes a request naming `X`. Saying no, or cloning without a terminal,
+prints the manual path instead and exits `0`. Either way you can run
+`gage identity enroll` later. See [Adding a device](enrollment.md).
+
+The condition `clone` tests is "does this machine hold a wrapped identity
+file for this vault at all" — not "is this device's key in the recipient
+list", which can't be answered without unlocking, and prompting for a
+passphrase to tell someone their unlock was pointless is exactly backwards.
+So a machine that *does* hold an identity for the vault is left alone with
+no message and no prompt, even if that key was never added as a recipient.
+Run `gage identity enroll` explicitly in that case; it reuses the existing
+key rather than generating a second one.
 
 ## Listing and inspecting vaults
 
@@ -49,8 +73,25 @@ gage vault list
 gage vault info [<name>]
 ```
 
-`vault info` shows a vault's type, decryption method, recipient count, and
-(for the `git` type) its remote and clean/dirty status.
+`vault info` shows a vault's name, id, type, decryption method, recipient
+count, and (for the `git` type) its remote and clean/dirty status:
+
+```
+$ gage vault info
+name: demo
+id: 208a0837-10f0-4024-b564-ffadc204c69f
+type: git
+method: passphrase
+recipients: 1
+remote: https://github.com/you/personal-vault.git
+status: clean
+```
+
+The **id** is a UUID minted at `init` and committed in the vault's own
+`.gage/config.toml`, so every clone of a vault shares it. It's what `gage`
+keys this device's local state by — identity files, the trust cache — which
+is why two unrelated vaults that happen to be called `personal` on one
+machine never collide. See [Configuration](configuration.md).
 
 ## Selecting which vault a command targets
 
@@ -89,3 +130,27 @@ gage vault remove <name>
 This forgets the vault in your local config — it does **not** delete the
 underlying git repository or its remote. If you want the data gone, delete
 the directory (and remote) yourself.
+
+Local memory of the vault goes with the registration: the
+[trust cache](identities-and-recipients.md#the-recipient-change-confirmation)
+is dropped, so a later re-add is treated as a first use rather than
+silently inheriting an approval for a recipient list nobody looked at in
+the interval.
+
+The local **identity file** is the one thing `gage` asks about. If the
+vault's recipient list no longer contains this device's public key, the
+file has nothing left to be needed for, and `gage` offers to delete it:
+
+```
+laptop's key is no longer a recipient of "personal". Delete this device's identity file for it?
+  ~/.local/share/gage/identities/208a0837-.../laptop.age
+This is the only copy of that private key, and deleting it cannot be undone. [y/N]
+```
+
+It compares **public keys**, never device names — a name is a label the
+vault happens to store, not proof of which key it refers to, and
+`recipient approve --device` deliberately produces mismatches. It defaults
+to no, so a scripted `vault remove` keeps the file by construction. Every
+other outcome keeps the file and says why: the key is still listed as a
+recipient, the recipient list can't be read, or your config records no
+public key for this device.

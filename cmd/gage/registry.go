@@ -201,20 +201,35 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		// The wording is deliberately identical to `identity enroll`'s up
+		// to its second clause: enroll *is* this command plus publishing,
+		// and the listing is where that relationship shows without prose.
+		// See D-ENROLL-VERBS.
 		Name:         "identity add",
-		Short:        "Register a new identity for this device and print its public key",
+		Short:        "Register this device's identity and print its public key",
 		Group:        GroupIdentity,
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "identity enroll",
+		Short:        "Register this device's identity and publish a request to join",
+		Group:        GroupIdentity,
+		Availability: AvailBoth,
+	},
+	{
+		// "the keys this machine holds" against `recipient list`'s "the
+		// keys this vault is encrypted to": the two answer different
+		// questions and diverge constantly, so the contrast belongs in
+		// the grammatical subject rather than in "identities" versus
+		// "devices", which reads as a synonym.
 		Name:         "identity list",
-		Short:        "List the identities this device holds for a vault",
+		Short:        "List the keys this machine holds for a vault",
 		Group:        GroupIdentity,
 		Availability: AvailBoth,
 	},
 	{
 		Name:         "recipient add",
-		Short:        "Authorize a public key to read this vault",
+		Short:        "Authorize a public key and re-encrypt the vault to include it",
 		Group:        GroupRecipient,
 		Availability: AvailBoth,
 	},
@@ -225,14 +240,36 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		// "the keys this vault is encrypted to", against `identity
+		// list`'s "the keys this machine holds for a vault". The two
+		// answer different questions and diverge constantly; the
+		// previous wording read as a synonym of it.
 		Name:         "recipient list",
-		Short:        "List every device this vault is encrypted to",
+		Short:        "List the keys this vault is encrypted to",
 		Group:        GroupRecipient,
 		Availability: AvailBoth,
 	},
 	{
 		Name:         "recipient verify",
 		Short:        "Check .age-recipients and config.toml still agree",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient pending",
+		Short:        "List enrollment requests waiting to be approved",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient approve",
+		Short:        "Admit an enrolling device and re-encrypt the vault to include it",
+		Group:        GroupRecipient,
+		Availability: AvailBoth,
+	},
+	{
+		Name:         "recipient deny",
+		Short:        "Remove an enrollment request without granting anything",
 		Group:        GroupRecipient,
 		Availability: AvailBoth,
 	},

@@ -97,6 +97,22 @@ type Prompter interface {
 	// it was about to do.
 	Confirm(prompt string) (bool, error)
 
+	// ConfirmDefaultYes asks a yes/no question whose default is yes —
+	// clone's offer to set up an enrollment request, and nothing else.
+	// Every other yes/no in gage stays on Confirm.
+	//
+	// It is a separate method rather than a flag on Confirm because the
+	// default is part of how the question is *rendered*: a CLI shows
+	// [Y/n] instead of [y/N], a GUI focuses the affirmative button. The
+	// library still decides nothing about presentation; it only says
+	// which of the two shapes this question has.
+	//
+	// The default belongs to the rendering, never to the absence of
+	// someone to answer. A frontend with nobody to ask must not return
+	// true here — see "Why there is no `--enroll` flag": a script that
+	// is never asked must never become a script that always agrees.
+	ConfirmDefaultYes(prompt string) (bool, error)
+
 	// ConfirmRecipientChange asks whether to encrypt to a recipient list
 	// that has changed since this device last confirmed one — the
 	// blocking half of "Local trust cache".

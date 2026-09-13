@@ -25,9 +25,9 @@ session, `use <vault>` sets the session's current vault instead, and
 | Command | Description |
 |---|---|
 | `init <name> [--dir PATH] [--remote URL] [--type git] [--method passphrase] [--device NAME] [--recipient PUBKEY ...]` | Create a new vault. **One-shot only.** |
-| `clone <remote-url> [--name NAME] [--dir PATH]` | Clone an existing vault from a remote. **One-shot only.** |
+| `clone <remote-url> [--name NAME] [--dir PATH] [--device NAME]` | Clone an existing vault from a remote; offers to enroll this device. **One-shot only.** |
 | `vault list` | List registered vaults. |
-| `vault info [<name>]` | Show a vault's type, method, recipient count, and (for git) remote/status. |
+| `vault info [<name>]` | Show a vault's name, id, type, method, recipient count, and (for git) remote/status. |
 | `vault remove <name>` | Forget a vault locally, leaving its files untouched. |
 | `vault set-default <name>` | Change which vault is used when none is given. |
 
@@ -37,35 +37,39 @@ Details: [Vaults](vaults.md).
 
 | Command | Description |
 |---|---|
-| `identity add --use NAME [--method passphrase] [--device NAME] [--key-path PATH]` | Register a new identity for this device and print its public key. |
-| `identity list [--use NAME]` | List the identities this device holds for a vault. |
+| `identity add [--use NAME] [--method passphrase] [--device NAME]` | Register this device's identity and print its public key. |
+| `identity enroll [--use NAME] [--device NAME] [--ttl DURATION]` | Register this device's identity *and* publish a sealed request to join, printing an enrollment code. |
+| `identity list [--use NAME]` | List the keys this machine holds for a vault. |
 
-Details: [Identities and recipients](identities-and-recipients.md).
+Details: [Identities and recipients](identities-and-recipients.md), [Adding a device](enrollment.md).
 
 ## Recipients
 
 | Command | Description |
 |---|---|
-| `recipient add <pubkey-or-name> [--use NAME] [--reencrypt]` | Authorize a public key to read this vault. |
-| `recipient remove <pubkey-or-name> [--use NAME] --reencrypt` | Revoke a recipient and re-encrypt the vault without its key. |
+| `recipient add <pubkey> --device NAME [--use NAME]` | Authorize a public key and re-encrypt the vault to include it. `--device` is required. |
+| `recipient remove <pubkey-or-name> --reencrypt [--use NAME]` | Revoke a recipient and re-encrypt the vault without its key. |
 | `recipient list [--use NAME]` | List every device this vault is encrypted to. |
-| `recipient verify [--use NAME]` | Check `.age-recipients` and `config.toml` still agree. |
+| `recipient verify [--use NAME] [--repair]` | Check `.age-recipients` and `config.toml` still agree; `--repair` rewrites the former from the latter and commits it. |
+| `recipient pending [--use NAME]` | List enrollment requests waiting to be approved. |
+| `recipient approve [ID...] [--code CODE ...] [--use NAME] [--device NAME]` | Admit an enrolling device and re-encrypt the vault to include it. |
+| `recipient deny <ID> [--use NAME]` | Remove an enrollment request without granting anything. |
 
-Details: [Identities and recipients](identities-and-recipients.md).
+Details: [Identities and recipients](identities-and-recipients.md), [Adding a device](enrollment.md).
 
 ## Entry CRUD
 
 | Command | Description |
 |---|---|
-| `insert <title> [--use NAME] [--description TEXT] [-m|--multiline \| --value-stdin \| -e|--edit] [-f|--force] [--yes]` | Create a new entry. |
+| `insert <title> [--use NAME] [--description TEXT] [-m|--multiline \| --value-stdin \| -e|--edit] [-f|--force]` | Create a new entry. |
 | `show <query> [--use NAME] [-c|--clip] [-q|--qr] [--field NAME]` | Print an entry's value (or one field). |
 | `cat <query> [--use NAME]` | Print an entry's full decrypted contents. |
 | `edit <query> [--use NAME]` | Edit an entry's full YAML in `$EDITOR`. |
-| `rename <query> <new-title> [--use NAME]` | Change an entry's title. |
-| `generate <title> [--use NAME] [-l LENGTH] [--no-symbols] [-f|--force] [-c|--clip] [-q|--qr] [--yes]` | Create a new entry with a randomly generated value. |
+| `rename <query> <new-title> [--use NAME] [-f|--force]` | Change an entry's title. |
+| `generate <title> [--use NAME] [--description TEXT] [-l LENGTH] [--no-symbols] [-f|--force] [-c|--clip] [-q|--qr]` | Create a new entry with a randomly generated value. |
 | `rm <query> [--use NAME]` | Delete an entry. |
-| `mv <query> --to-vault <name> [--use NAME] [--yes]` | Move an entry to another vault. |
-| `cp <query> --to-vault <name> [--use NAME] [--yes]` | Copy an entry into another vault, keeping the original. |
+| `mv <query> --to-vault <name> [--use NAME]` | Move an entry to another vault. |
+| `cp <query> --to-vault <name> [--use NAME]` | Copy an entry into another vault, keeping the original. |
 | `ls [--use NAME]` | List entries with their ids, dates, and last writer. |
 | `search <pattern> [--use NAME]` (alias `grep`) | Find entries by title, description, or body text. |
 | `reindex [--use NAME]` | Force a session's cached metadata index to rebuild. |
@@ -100,17 +104,22 @@ Details: [Git remotes and authentication](git-and-auth.md).
 | Flag | Meaning |
 |---|---|
 | `-u`, `--use NAME` | Select which vault this command targets (one-shot mode). |
-| `--yes` | Skip the recipient-change confirmation prompt — for scripting/CI. |
-| `-f`, `--force` | Allow an action `gage` would otherwise warn about (e.g. a duplicate title on `insert`/`generate`). |
+| `-f`, `--force` | Allow an action `gage` would otherwise warn about (e.g. a duplicate title on `insert`/`generate`/`rename`). |
 | `-c`, `--clip` | Copy a value to the clipboard instead of printing it (auto-clears). |
 | `-q`, `--qr` | Render a value as a terminal QR code instead of printing it. |
 | `--field NAME` | Operate on one entry from `fields` instead of `value`. |
+| `--device NAME` | Name this device (`init`, `clone`, `identity add`, `identity enroll`), label a key being authorized (`recipient add`, required), or relabel a request being approved (`recipient approve`). |
 
-## Non-interactive session mode
+## Global flags
 
-```
-gage --script FILE       # read session commands from a file
-gage --stdin             # read session commands from stdin
-```
+These are persistent flags on `gage` itself, accepted alongside any
+one-shot command rather than belonging to one:
 
-See [Session mode and scripting](session-mode.md).
+| Flag | Meaning |
+|---|---|
+| `--yes` | Answer the recipient-change confirmation with yes, without showing it — for scripting/CI. It answers *only* that question: it never approves an enrollment (`recipient approve`) or confirms removing this device's own key. Accepted on a one-shot command or alongside `--script`/`--stdin`; refused in an interactive session. |
+| `--script FILE` | Run session commands from a file instead of a prompt. Bare `gage` only. |
+| `--stdin` | Run session commands read from stdin instead of a prompt. Bare `gage` only. |
+| `--version` | Print the version and exit. |
+
+See [Session mode and scripting](session-mode.md) for `--script`/`--stdin`.

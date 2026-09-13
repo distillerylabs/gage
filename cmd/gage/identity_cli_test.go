@@ -62,7 +62,7 @@ func TestIdentityAddRegistersADeviceAndPrintsItsPublicKey(t *testing.T) {
 		t.Errorf("stdout = %q, want it to name the device it registered", res.Stdout)
 	}
 
-	path, err := gage.IdentityFilePath("personal", "laptop-2")
+	path, err := gage.IdentityFilePath(vaultIDForTest(t, "personal"), "laptop-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestIdentityListReportsThisDevicesIdentities(t *testing.T) {
 // the currently isolated XDG roots.
 func identityPathForTest(t *testing.T, vault, device string) string {
 	t.Helper()
-	path, err := gage.IdentityFilePath(vault, device)
+	path, err := gage.IdentityFilePath(vaultIDForTest(t, vault), device)
 	if err != nil {
 		t.Fatal(err)
 	}

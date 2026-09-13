@@ -143,9 +143,10 @@ the first would miss someone who edits only the second.
     perfectly consistent — both files edited, `verify` passing, so
     `requireRecipientsInSync` has nothing to object to — and the
     regeneration above would then bless that key alongside the
-    operator's own, silently and for good. With `--reencrypt` it is
-    worse: every existing entry is rewritten to a list nobody here
-    approved *before* the blessing lands, which is precisely the
+    operator's own, silently and for good. Since A19 it is worse
+    still: every existing entry is rewritten to a list nobody here
+    approved *before* the blessing lands — on every add, not on an
+    opt-in one — which is precisely the
     "encrypted to a recipient list this device never reviewed" that the
     milestone exists to prevent, reached through a command the operator
     thought was about something else. So `confirmRecipientTrust` runs in
@@ -203,10 +204,13 @@ the first would miss someone who edits only the second.
 - [x] A refused recipient change commits nothing, pushes nothing, and
       leaves the trust cache at its old value, so a mismatch cannot be
       laundered into an approved state by retrying the add
-- [x] The refusal is asserted with `--reencrypt` as well as without it:
-      the rebuild that erases the evidence is in the shared tail both
-      paths commit through, so covering only the plain add would leave
-      the more destructive verb unguarded
+- [x] The refusal is asserted for `remove --reencrypt` as well as for
+      `add`: the rebuild that erases the evidence is in the shared tail
+      both paths commit through, so covering only `add` would leave the
+      more destructive verb unguarded. (Originally worded as "with
+      `--reencrypt` as well as without it", when `add` had both forms;
+      [A19](open-questions.md#a19) left it with one, so the two cases
+      that remain are the two verbs.)
 - [x] `recipient verify --repair` rewrites `.age-recipients` from
       `config.toml`, commits it, and makes `verify` pass — and a
       `Prompter` that declines writes and commits nothing

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +136,7 @@ func TestCloneRefusesAnUnrecognizedFormatVersion(t *testing.T) {
 	other := gittest.NewDevice(t, remote)
 	raw := other.Read(t, ".gage/config.toml")
 	bumped := strings.Replace(raw,
-		"format_version = 1",
+		fmt.Sprintf("format_version = %d", vaultconfig.CurrentFormatVersion),
 		"format_version = 99", 1)
 	if bumped == raw {
 		t.Fatalf("could not bump format_version in:\n%s", raw)

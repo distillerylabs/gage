@@ -1,6 +1,7 @@
 package gage
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,11 +13,13 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/google/uuid"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
 	"github.com/denmark/gage/internal/gage/gitrepo"
 	"github.com/denmark/gage/internal/gage/recipients"
 	"github.com/denmark/gage/internal/gage/vaultconfig"
+	"github.com/denmark/gage/internal/gage/vaultlock"
 )
 
 // ---------------------------------------------------------------------
@@ -80,6 +83,7 @@ func newRecipientTestVault(t *testing.T, vaultName, device string) (*Vault, test
 		var err error
 		v, err = Create(CreateSpec{
 			Name:       vaultName,
+			ID:         d.vaultID,
 			Path:       filepath.Join(t.TempDir(), vaultName),
 			Type:       TypeGit,
 			Method:     MethodPassphrase,
@@ -207,16 +211,17 @@ func headHash(t *testing.T, v *Vault) string {
 // Recipients
 // ---------------------------------------------------------------------
 
-// TestRecipientAddWithoutReencryptAffectsOnlyFutureWrites is the plan's
-// "`gage recipient add` (no --reencrypt) affects only future writes —
-// entries that existed before the add remain undecryptable by the new
-// recipient's key."
+// TestRecipientAddHasNoPartialForm replaces M9's
+// "TestRecipientAddWithoutReencryptAffectsOnlyFutureWrites", which
+// pinned the behavior A19 removes. There is now no invocation of
+// AddRecipient that produces a recipient who can read only part of the
+// vault, so the assertion runs the other way: entries written before the
+// add and entries written after it are equally readable by the new key.
 //
-// This is the property that makes --reencrypt worth having at all, so it
-// is asserted from the new recipient's side (a real second identity
-// failing a real decrypt) rather than by inspecting the ciphertext's
-// header.
-func TestRecipientAddWithoutReencryptAffectsOnlyFutureWrites(t *testing.T) {
+// Asserted from the new recipient's side — a real second identity
+// performing a real decrypt — rather than by inspecting the ciphertext's
+// header, for the same reason the test it replaces was written that way.
+func TestRecipientAddHasNoPartialForm(t *testing.T) {
 	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
 
 	id1 := unlockAs(t, v, laptop)
@@ -229,7 +234,7 @@ func TestRecipientAddWithoutReencryptAffectsOnlyFutureWrites(t *testing.T) {
 	phone := newTestDevice(t, "personal", "phone-1")
 
 	id1 = unlockAs(t, v, laptop)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id1); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id1); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 	after, err := v.Insert(sampleEntry(time.Now().Add(time.Minute)), true, &id1)
@@ -244,27 +249,31 @@ func TestRecipientAddWithoutReencryptAffectsOnlyFutureWrites(t *testing.T) {
 	if _, err := v.ReadEntry(after, &id2); err != nil {
 		t.Fatalf("the new recipient cannot read an entry written after the add: %v", err)
 	}
-	_, err = v.ReadEntry(before, &id2)
-	if !errors.Is(err, ErrNotARecipient) {
-		t.Fatalf("reading a pre-existing entry as the new recipient = %v, want ErrNotARecipient — "+
-			"an add without --reencrypt must not retroactively grant access", err)
+	if _, err := v.ReadEntry(before, &id2); err != nil {
+		t.Fatalf("the new recipient cannot read an entry written before the add: %v — "+
+			"A19: no invocation of add may leave a recipient reading only part of the vault", err)
 	}
 }
 
-// TestRecipientAddWithoutReencryptCommitsBothFilesTogether is the
-// decision resolved in the plan: an add with no --reencrypt still
-// commits, and commits .age-recipients and .gage/config.toml in the same
-// single commit — never one without the other. M10's trust cache diffs
-// exactly this pair.
-func TestRecipientAddWithoutReencryptCommitsBothFilesTogether(t *testing.T) {
+// TestRecipientAddCommitsBothFilesTogether is M9's resolved decision
+// that an add commits .age-recipients and .gage/config.toml in the same
+// single commit — never one without the other, since M10's trust cache
+// diffs exactly that pair.
+//
+// A19 widens rather than narrows it: the re-encrypted entries ride in
+// that same commit, so the vault is never split across two recipient
+// lists at any commit boundary. The vault is seeded first so
+// "alongside every re-encrypted entry" has something to be true of.
+func TestRecipientAddCommitsBothFilesTogether(t *testing.T) {
 	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
 	phone := newTestDevice(t, "personal", "phone-1")
 
 	id := unlockAs(t, v, laptop)
 	defer func() { _ = id.Close() }()
+	ids := seedEntries(t, v, &id, 3)
 
 	before := commitCount(t, v)
-	change, err := v.AddRecipient("phone-1", phone.pubkey, false, &id)
+	change, err := v.AddRecipient("phone-1", phone.pubkey, &id)
 	if err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
@@ -272,13 +281,19 @@ func TestRecipientAddWithoutReencryptCommitsBothFilesTogether(t *testing.T) {
 	if got := commitCount(t, v); got != before+1 {
 		t.Errorf("commit count = %d, want %d (exactly one commit)", got, before+1)
 	}
-	if change.Reencrypted != 0 {
-		t.Errorf("Reencrypted = %d, want 0 without --reencrypt", change.Reencrypted)
+	if change.Reencrypted != len(ids) {
+		t.Errorf("Reencrypted = %d, want %d — an add always rewrites the whole vault", change.Reencrypted, len(ids))
 	}
 
 	paths := commitPaths(t, v, headHash(t, v))
 	if !listHas(paths, ".age-recipients") || !listHas(paths, ".gage/config.toml") {
 		t.Errorf("the add's commit touched %v, want both .age-recipients and .gage/config.toml", paths)
+	}
+	for _, entryID := range ids {
+		if want := "entries/" + entryID.String() + ".age"; !listHas(paths, want) {
+			t.Errorf("the add's commit does not contain %s (it contains %v); "+
+				"the recipient pair and every re-encrypted entry land together", want, paths)
+		}
 	}
 
 	clean, err := gitrepo.IsClean(v.Path)
@@ -297,10 +312,11 @@ func TestRecipientAddWithoutReencryptCommitsBothFilesTogether(t *testing.T) {
 	}
 }
 
-// TestRecipientAddWithReencryptMakesHistoryReadable is the plan's
-// "`gage recipient add --reencrypt` makes all pre-existing entries
-// decryptable by the new recipient."
-func TestRecipientAddWithReencryptMakesHistoryReadable(t *testing.T) {
+// TestRecipientAddMakesHistoryReadable is M9's "makes all pre-existing
+// entries decryptable by the new recipient", now unconditional: A19
+// removed the flag that used to gate it, so this is what a plain
+// `recipient add` does.
+func TestRecipientAddMakesHistoryReadable(t *testing.T) {
 	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
 
 	id1 := unlockAs(t, v, laptop)
@@ -325,9 +341,9 @@ func TestRecipientAddWithReencryptMakesHistoryReadable(t *testing.T) {
 	phone := newTestDevice(t, "personal", "phone-1")
 
 	id1 = unlockAs(t, v, laptop)
-	change, err := v.AddRecipient("phone-1", phone.pubkey, true, &id1)
+	change, err := v.AddRecipient("phone-1", phone.pubkey, &id1)
 	if err != nil {
-		t.Fatalf("AddRecipient --reencrypt: %v", err)
+		t.Fatalf("AddRecipient: %v", err)
 	}
 	_ = id1.Close()
 
@@ -348,11 +364,369 @@ func TestRecipientAddWithReencryptMakesHistoryReadable(t *testing.T) {
 	for _, entryID := range ids {
 		got, err := v.ReadEntry(entryID, &id2)
 		if err != nil {
-			t.Fatalf("the new recipient cannot read pre-existing entry %s after --reencrypt: %v", entryID, err)
+			t.Fatalf("the new recipient cannot read pre-existing entry %s after the add: %v", entryID, err)
 		}
 		if got.Title == "" {
 			t.Errorf("entry %s decrypted to an empty title; re-encryption lost its contents", entryID)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------
+// A19's refusal: an actor that cannot read the whole vault
+// ---------------------------------------------------------------------
+
+// commitRecipientFiles rewrites both recipient-defining files from list
+// and commits them, the way a hand edit followed by a `git commit`
+// would. It goes through writeRecipientFiles rather than touching the
+// two files separately so the pair can never be left disagreeing, which
+// is a different failure (ErrRecipientsOutOfSync) than the one these
+// tests are about.
+func commitRecipientFiles(t *testing.T, v *Vault, list []VaultRecipient) {
+	t.Helper()
+	if err := v.writeRecipientFiles(list); err != nil {
+		t.Fatalf("writing the hand-edited recipient list: %v", err)
+	}
+	if _, err := gitrepo.CommitAll(v.Path, "test: hand-edited recipient list"); err != nil {
+		t.Fatalf("committing the hand-edited recipient list: %v", err)
+	}
+}
+
+// hideOneEntryFrom leaves the vault holding one entry that d cannot
+// read, while .age-recipients and .gage/config.toml still agree with
+// each other and still list d.
+//
+// This is the state a recipient admitted before A19 lives in, built by
+// the only other route into it: a hand-edited recipient list. The list
+// is pointed at a single foreign key, one entry is written through the
+// ordinary path so it is encrypted to that key alone, and the list is
+// then put back. Constructing it this way is deterministic and does not
+// depend on shipping the behavior A19 removed.
+//
+// It deliberately does not restore the trust cache afterwards. The
+// round trip through a foreign list leaves M10's cache stale, so a
+// vault built here is one where AddRecipient *would* ask for a
+// recipient-change confirmation — which is what makes "the refusal
+// arrives before that confirmation" an assertion about ordering rather
+// than about a prompt that was never going to appear.
+func hideOneEntryFrom(t *testing.T, v *Vault, d testDevice) uuid.UUID {
+	t.Helper()
+
+	original, err := v.Recipients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitRecipientFiles(t, v, []VaultRecipient{{Device: "foreign", Pubkey: newTrustKey(t)}})
+
+	id := unlockAsWith(t, v, d, newTrustPrompter(true))
+	// force, so Insert's duplicate-title check doesn't try to decrypt the
+	// entries this vault is in the middle of being made unable to read.
+	hidden, err := v.Insert(sampleEntry(time.Now()), true, &id)
+	if err != nil {
+		t.Fatalf("writing the entry only the foreign key can read: %v", err)
+	}
+	_ = id.Close()
+
+	commitRecipientFiles(t, v, original)
+	return hidden
+}
+
+// TestRecipientAddRefusesAnActorThatCannotReadEveryEntry is A19's new
+// refusal, and most of what E1a adds rather than removes.
+//
+// Partial access is contagious: reencryptTo fails on the first entry the
+// acting identity cannot read, so without this check a partially
+// admitted device's `recipient add` would die mid-write, inside the
+// lock, naming an opaque entry UUID. The refusal exists to make that
+// legible — and to make it arrive before anything has happened.
+func TestRecipientAddRefusesAnActorThatCannotReadEveryEntry(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAs(t, v, laptop)
+	seedEntries(t, v, &id, 2)
+	_ = id.Close()
+
+	hidden := hideOneEntryFrom(t, v, laptop)
+
+	beforeHash := headHash(t, v)
+	beforeCount := commitCount(t, v)
+	cacheBefore, hadCache := trustCacheOf(t, v, laptop)
+
+	reencrypted := 0
+	v.onReencryptEntry = func(done int) { reencrypted = done }
+	defer func() { v.onReencryptEntry = nil }()
+
+	p := newTrustPrompter(true)
+	id = unlockAsWith(t, v, laptop, p)
+	defer func() { _ = id.Close() }()
+
+	_, err := v.AddRecipient("phone-1", phone.pubkey, &id)
+	if !errors.Is(err, ErrCannotGrantFullAccess) {
+		t.Fatalf("AddRecipient from a partially admitted device = %v, want ErrCannotGrantFullAccess", err)
+	}
+	if got := exitcode.CodeOf(err); got != exitcode.Conflict {
+		t.Errorf("exit code = %d, want Conflict (%d) — this is pre-existing vault damage surfacing, "+
+			"not a bad command line", got, exitcode.Conflict)
+	}
+
+	// The count is the diagnosis. The UUID is not: naming it is exactly
+	// the unhelpful mid-write failure this check exists to replace.
+	if !strings.Contains(err.Error(), "1 of 3") {
+		t.Errorf("error = %q, want it to say how many of the vault's entries are unreadable", err)
+	}
+	if strings.Contains(err.Error(), hidden.String()) {
+		t.Errorf("error = %q, want it not to name an entry UUID", err)
+	}
+
+	// Before the confirmation: the cache is stale here (see
+	// hideOneEntryFrom), so an add that got as far as confirmRecipientTrust
+	// would have asked.
+	if len(p.changes) != 0 {
+		t.Errorf("the operator was asked to review a recipient change before being refused: %+v", p.changes)
+	}
+
+	// And nothing changed.
+	if got := headHash(t, v); got != beforeHash {
+		t.Errorf("HEAD = %s after the refusal, want %s (untouched)", got, beforeHash)
+	}
+	if got := commitCount(t, v); got != beforeCount {
+		t.Errorf("commit count = %d after the refusal, want %d (nothing committed)", got, beforeCount)
+	}
+	if reencrypted != 0 {
+		t.Errorf("%d entries were re-encrypted before the refusal; the pre-flight must precede the rewrite pass", reencrypted)
+	}
+	if listHas(readRecipientsFile(t, v), phone.pubkey) {
+		t.Error(".age-recipients gained the new key despite the refusal")
+	}
+	if listHas(configPubkeys(t, v), phone.pubkey) {
+		t.Error(".gage/config.toml gained the new key despite the refusal")
+	}
+	cacheAfter, stillHasCache := trustCacheOf(t, v, laptop)
+	if hadCache != stillHasCache || cacheAfter.RecipientsHash != cacheBefore.RecipientsHash ||
+		!bytes.Equal(cacheAfter.KnownConfig, cacheBefore.KnownConfig) {
+		t.Error("the trust cache was regenerated by a refused add")
+	}
+}
+
+// TestFullAccessPreflightRunsBeforeTheVaultLock pins the half of the
+// ordering the assertions above cannot see: "before the write lock" is
+// not the same claim as "before the confirmation", and only one of them
+// is provable from what the Prompter was asked.
+//
+// The lock is held by something else for the whole call, so an
+// AddRecipient that reached withVaultWrite at all would fail as
+// contention. Getting ErrCannotGrantFullAccess instead is what proves
+// the pre-flight ran outside the lock — which is what E4 depends on,
+// since approval places the same pass at a different point.
+func TestFullAccessPreflightRunsBeforeTheVaultLock(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAs(t, v, laptop)
+	seedEntries(t, v, &id, 1)
+	_ = id.Close()
+
+	hideOneEntryFrom(t, v, laptop)
+
+	id = unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	defer func() { _ = id.Close() }()
+
+	lockPath, err := LockFilePath(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := vaultlock.Acquire(lockPath, 0)
+	if err != nil {
+		t.Fatalf("taking the vault lock the add must never reach: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	_, err = v.AddRecipient("phone-1", phone.pubkey, &id)
+	if !errors.Is(err, ErrCannotGrantFullAccess) {
+		var contended *vaultlock.ContendedError
+		if errors.As(err, &contended) {
+			t.Fatalf("AddRecipient took the write lock before the full-access pre-flight ran: %v", err)
+		}
+		t.Fatalf("AddRecipient = %v, want ErrCannotGrantFullAccess", err)
+	}
+}
+
+// TestRequireFullAccessIsCallableOnItsOwn is the shape E4 depends on:
+// the pre-flight is a pass a caller can run at a point of its own
+// choosing, not something buried inside AddRecipient. `recipient
+// approve` shows its confirmation before it unlocks, so it has to place
+// the same check later in its sequence than `recipient add` does.
+func TestRequireFullAccessIsCallableOnItsOwn(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+
+	id := unlockAs(t, v, laptop)
+	seedEntries(t, v, &id, 2)
+	_ = id.Close()
+
+	id = unlockAs(t, v, laptop)
+	if err := v.RequireFullAccess(&id); err != nil {
+		t.Fatalf("RequireFullAccess on a vault this device can read entirely = %v, want nil", err)
+	}
+	_ = id.Close()
+
+	hideOneEntryFrom(t, v, laptop)
+
+	id = unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	defer func() { _ = id.Close() }()
+	if err := v.RequireFullAccess(&id); !errors.Is(err, ErrCannotGrantFullAccess) {
+		t.Fatalf("RequireFullAccess with one unreadable entry = %v, want ErrCannotGrantFullAccess", err)
+	}
+}
+
+// interruptSelfRemoval leaves the vault in the one state where entries/
+// and HEAD disagree about who can read the vault: laptop's own
+// `recipient remove --reencrypt`, killed partway through the pass.
+//
+// HEAD is untouched, so it still lists d and is still entirely readable
+// by it. The working tree is not: it holds however many entries the pass
+// got through, encrypted to the reduced list that excludes d. This is
+// the dirty tree the design doc calls the likeliest one there is, and
+// the one withVaultWrite's reset exists to discard.
+func interruptSelfRemoval(t *testing.T, v *Vault, d testDevice) {
+	t.Helper()
+
+	id := unlockAsWith(t, v, d, newTrustPrompter(true))
+	v.onReencryptEntry = crashAfter(1)
+	crashed := runAndRecoverCrash(t, func() {
+		_, _ = v.RemoveRecipient(d.name, true, &id)
+	})
+	v.onReencryptEntry = nil
+	_ = id.Close()
+
+	if !crashed {
+		t.Fatal("the crash seam never fired; the self-removal ran to completion")
+	}
+	clean, err := gitrepo.IsClean(v.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean {
+		t.Fatal("the interrupted self-removal left a clean working tree; " +
+			"there is nothing here for the reset to discard")
+	}
+}
+
+// TestAddIsNotRefusedOverATreeTheResetDiscards is the pre-flight's
+// interaction with withVaultWrite's dirty-tree reset.
+//
+// RequireFullAccess reads entries off disk, and an interrupted
+// self-removal is exactly the state where disk and HEAD disagree about
+// who can read them: entries/ holds ciphertext written to the reduced
+// list, while HEAD still lists this device and is entirely readable by
+// it. The reset discards precisely that, so a refusal raised on it would
+// send the operator to another device to repair a vault that was never
+// damaged — and the identical command succeeds the moment any other
+// write happens to reset the tree first, which is the tell that the
+// refusal was about the tree rather than about access.
+func TestAddIsNotRefusedOverATreeTheResetDiscards(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	seedEntries(t, v, &id, 3)
+	// A second recipient, so removing laptop-1's own key is not the
+	// last-recipient refusal instead.
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
+		t.Fatalf("AddRecipient phone-1: %v", err)
+	}
+	_ = id.Close()
+
+	interruptSelfRemoval(t, v, laptop)
+
+	third := newTestDevice(t, "personal", "phone-2")
+	id = unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	defer func() { _ = id.Close() }()
+
+	change, err := v.AddRecipient("phone-2", third.pubkey, &id)
+	if errors.Is(err, ErrCannotGrantFullAccess) {
+		t.Fatalf("the add was refused over a working tree the reset discards: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("AddRecipient after an interrupted self-removal: %v", err)
+	}
+	if change.Reencrypted != 3 {
+		t.Errorf("Reencrypted = %d, want 3 — the add re-encrypts the entries at HEAD, "+
+			"not the ones the reset threw away", change.Reencrypted)
+	}
+	if !listHas(configPubkeys(t, v), third.pubkey) || !listHas(readRecipientsFile(t, v), third.pubkey) {
+		t.Error("the new recipient is missing from one of the two recipient files")
+	}
+}
+
+// TestAddIsStillRefusedOnADirtyTreeWhenAccessIsGenuinelyPartial is the
+// other half, and the one that keeps the fix above from being a way to
+// switch the refusal off.
+//
+// The unreadable entry here is committed, so the reset cannot make it go
+// away. Deferring the check past the reset must therefore still reach
+// it: what moves is where the refusal is raised, never whether it is.
+func TestAddIsStillRefusedOnADirtyTreeWhenAccessIsGenuinelyPartial(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	phone := newTestDevice(t, "personal", "phone-1")
+
+	id := unlockAs(t, v, laptop)
+	seedEntries(t, v, &id, 2)
+	_ = id.Close()
+
+	hidden := hideOneEntryFrom(t, v, laptop)
+
+	// Dirty the tree with something the reset will discard, so the
+	// pre-lock pass is the one that has to stand down — while the
+	// committed entry it would have found is still there afterwards.
+	stray := filepath.Join(v.Path, "left-behind.txt")
+	if err := os.WriteFile(stray, []byte("uncommitted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if clean, err := gitrepo.IsClean(v.Path); err != nil {
+		t.Fatal(err)
+	} else if clean {
+		t.Fatal("the working tree is clean; this test needs a dirty one")
+	}
+
+	beforeHash := headHash(t, v)
+	beforeCount := commitCount(t, v)
+
+	p := newTrustPrompter(true)
+	id = unlockAsWith(t, v, laptop, p)
+	defer func() { _ = id.Close() }()
+
+	_, err := v.AddRecipient("phone-1", phone.pubkey, &id)
+	if !errors.Is(err, ErrCannotGrantFullAccess) {
+		t.Fatalf("AddRecipient on a dirty tree from a partially admitted device = %v, "+
+			"want ErrCannotGrantFullAccess — the reset must not swallow a real refusal", err)
+	}
+	if got := exitcode.CodeOf(err); got != exitcode.Conflict {
+		t.Errorf("exit code = %d, want Conflict (%d)", got, exitcode.Conflict)
+	}
+	if !strings.Contains(err.Error(), "1 of 3") {
+		t.Errorf("error = %q, want it to say how many entries are unreadable", err)
+	}
+	if strings.Contains(err.Error(), hidden.String()) {
+		t.Errorf("error = %q, want it not to name an entry UUID", err)
+	}
+
+	// Still before the confirmation, and still with nothing written: the
+	// refusal moved past the reset, not past the guarantees.
+	if len(p.changes) != 0 {
+		t.Errorf("the operator was asked to review a recipient change before being refused: %+v", p.changes)
+	}
+	if got := headHash(t, v); got != beforeHash {
+		t.Errorf("HEAD = %s after the refusal, want %s (untouched)", got, beforeHash)
+	}
+	if got := commitCount(t, v); got != beforeCount {
+		t.Errorf("commit count = %d after the refusal, want %d (nothing committed)", got, beforeCount)
+	}
+	if listHas(configPubkeys(t, v), phone.pubkey) {
+		t.Error(".gage/config.toml gained the new key despite the refusal")
 	}
 }
 
@@ -365,7 +739,7 @@ func TestRecipientRemoveWithoutReencryptIsRejected(t *testing.T) {
 	phone := newTestDevice(t, "personal", "phone-1")
 
 	id := unlockAs(t, v, laptop)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 
@@ -396,7 +770,7 @@ func TestRecipientRemoveWithReencryptExcludesTheRemovedKey(t *testing.T) {
 	phone := newTestDevice(t, "personal", "phone-1")
 
 	id1 := unlockAs(t, v, laptop)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id1); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id1); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 	entryID, err := v.Insert(sampleEntry(time.Now()), true, &id1)
@@ -450,7 +824,7 @@ func TestRecipientRemoveWarnsThatRevocationIsFutureOnly(t *testing.T) {
 
 	p := &confirmingPrompter{fakePrompter: fakePrompter{passphrases: []string{testPassphrase}}, confirm: true}
 	id := unlockAsWith(t, v, laptop, p)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 	if _, err := v.RemoveRecipient("phone-1", true, &id); err != nil {
@@ -506,7 +880,7 @@ func TestRecipientRemoveOfThisDeviceNeedsConfirmation(t *testing.T) {
 
 	declining := &confirmingPrompter{fakePrompter: fakePrompter{passphrases: []string{testPassphrase}}, confirm: false}
 	id := unlockAsWith(t, v, laptop, declining)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 
@@ -572,7 +946,7 @@ func TestRecipientListMatchesConfigExactly(t *testing.T) {
 	assertMatchesConfig("at creation")
 
 	id := unlockAs(t, v, laptop)
-	if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+	if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 		t.Fatalf("AddRecipient: %v", err)
 	}
 	assertMatchesConfig("after add")
@@ -614,7 +988,7 @@ func TestRecipientAddRejectsADuplicateKey(t *testing.T) {
 	defer func() { _ = id.Close() }()
 
 	before := headHash(t, v)
-	_, err := v.AddRecipient("laptop-again", laptop.pubkey, false, &id)
+	_, err := v.AddRecipient("laptop-again", laptop.pubkey, &id)
 	if !errors.Is(err, ErrRecipientExists) {
 		t.Fatalf("adding an already-listed key = %v, want ErrRecipientExists", err)
 	}
@@ -657,7 +1031,7 @@ func TestRecipientRemoveAcceptsEitherADeviceNameOrAPublicKey(t *testing.T) {
 			phone := newTestDevice(t, "personal", "phone-1")
 
 			id := unlockAs(t, v, laptop)
-			if _, err := v.AddRecipient("phone-1", phone.pubkey, false, &id); err != nil {
+			if _, err := v.AddRecipient("phone-1", phone.pubkey, &id); err != nil {
 				t.Fatalf("AddRecipient: %v", err)
 			}
 			change, err := v.RemoveRecipient(tc.query(phone), true, &id)
@@ -756,7 +1130,7 @@ func TestVerifyNeedsNoIdentityFileOrPrompter(t *testing.T) {
 	// this device knows nothing but where the vault directory is.
 	stranger := t.TempDir()
 	withXDGRoot(t, stranger, func() {
-		hasIdentity, err := HasIdentity(v.Name, laptop.name)
+		hasIdentity, err := HasIdentity(v.ID, laptop.name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -784,7 +1158,7 @@ func TestVerifyReadsNeitherIdentityNorPrompter(t *testing.T) {
 
 	// Remove every identity file for this vault, so any Unlock attempt
 	// inside VerifyRecipients would fail rather than silently succeed.
-	dir, err := IdentitiesDir(v.Name)
+	dir, err := IdentitiesDir(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

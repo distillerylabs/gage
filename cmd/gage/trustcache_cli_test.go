@@ -109,7 +109,10 @@ func trustCacheDirForTest(t *testing.T, vault string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(state, vault)
+	// Keyed by the vault's id since A20, not its local name — spelled
+	// out here rather than asking TrustCacheDir, so this stays a claim
+	// about a path rather than a restatement of the implementation.
+	return filepath.Join(state, vaultIDForTest(t, vault))
 }
 
 // TestTerminalPrompterRendersTheRecipientChangeAsTheDesignDocPrompt is

@@ -47,6 +47,17 @@ type CreateSpec struct {
 	// Name is the vault's name, recorded in .gage/config.toml. It does
 	// not have to match Path's base name.
 	Name string
+	// ID is the vault's own id, recorded in .gage/config.toml as
+	// [vault].id and never changed afterwards. Validated against
+	// vaultconfig.ValidID.
+	//
+	// It is handed in rather than minted here on purpose. `gage init`
+	// has to know the id *before* this call, because it creates this
+	// device's identity first and files it under that id — see A20 and
+	// runInit. A Create that minted its own would leave the vault
+	// carrying one id and the identity filed under another, with nothing
+	// visibly wrong and the key unreachable.
+	ID string
 	// Path is the vault's target directory. It must not exist, or must
 	// exist and be empty — Create never writes into a non-empty
 	// directory.
@@ -89,6 +100,9 @@ func Create(spec CreateSpec) (*Vault, error) {
 	if spec.Name == "" {
 		return nil, exitcode.New(exitcode.Usage, "gage: vault name is required")
 	}
+	if !vaultconfig.ValidID(spec.ID) {
+		return nil, exitcode.Newf(exitcode.Usage, "gage: vault id %q is invalid; it must be a UUID", spec.ID)
+	}
 	if !contains(AllowedTypes(), spec.Type) {
 		return nil, exitcode.Newf(exitcode.Usage, "gage: unknown vault type %q; accepted: %v", spec.Type, AllowedTypes())
 	}
@@ -128,7 +142,7 @@ func Create(spec CreateSpec) (*Vault, error) {
 		}
 	}
 
-	return &Vault{Name: spec.Name, Path: spec.Path}, nil
+	return &Vault{Name: spec.Name, ID: spec.ID, Path: spec.Path}, nil
 }
 
 // requireEmptyOrAbsent fails if path exists and is non-empty, or exists
@@ -175,6 +189,7 @@ func writeSkeleton(spec CreateSpec) error {
 	vf := vaultconfig.File{
 		Vault: vaultconfig.VaultMeta{
 			Name:          spec.Name,
+			ID:            spec.ID,
 			Type:          spec.Type,
 			FormatVersion: vaultconfig.CurrentFormatVersion,
 			Created:       time.Now().UTC().Format("2006-01-02"),

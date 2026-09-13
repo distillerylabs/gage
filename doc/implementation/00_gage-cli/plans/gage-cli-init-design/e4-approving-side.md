@@ -103,6 +103,100 @@ like they do:
   this device in" and M10's "do you trust the list you're about to
   encrypt to" are different questions.
 
+### Settled at the start of implementation
+
+Five questions the sections above leave open, resolved here before any
+code was written. Four of them exist because the TDD's "Library surface"
+block predates the two sections that follow it — the fetch and the batch
+path — so its recorded signatures describe an earlier shape of this
+milestone. Where they disagree with what follows, what follows wins, and
+the TDD's block has been corrected to match rather than left to be
+rediscovered.
+
+- **`ApproveEnrollments` takes the codes, and re-opens each seal under
+  the lock.** The recorded signature carries no code, and neither
+  `Approval` nor `OpenedRequest` carries one or a path — so as written
+  there is nothing to re-verify *with*. `OpenEnrollment` also never
+  reports which code opened which request, so a `Code` field on
+  `Approval` could not be populated by its caller without widening what
+  that function returns. The codes therefore travel as their own
+  parameter, and the re-verification is a genuine second open through
+  `openSealedRequest`: expiry, vault id and the id/filename match are all
+  re-checked, and **what gets written to the recipient list comes from
+  that second open**, never from the struct the human was shown. A file
+  that is gone by then is `ErrEnrollmentNoSuchRequest`. The cost is one
+  extra scrypt run per approved request, at the factor D-ENROLL-SEAL-COST
+  chose to make exactly this affordable.
+
+  The alternative considered and rejected was a digest of the sealed
+  bytes captured at open time and compared under the lock. It detects the
+  swap just as well, and costs no KDF run — but it leaves the *first*
+  open's values being written, which is a weaker reading of "what gets
+  written is what was verified under the lock" than this milestone's test
+  list asks for.
+
+- **`ApproveEnrollments` takes a `context.Context`, first.** Its fetch is
+  a hard precondition whose failure changes the outcome, which is the
+  TDD's own test for which methods take one (`Enroll`, `Pull`, `Push`,
+  `Sync`, `SyncResolving` all do). Minting one internally would make
+  approval the single blocking network call in `gage` a caller cannot
+  cancel. `DenyEnrollment` is deliberately *not* changed: it performs no
+  fetch, and its push rides `pushAfterWriteSaying`, which mints its own
+  context like every other write.
+
+- **The already-a-recipient no-op is filtered before the shared body, and
+  an all-duplicate batch takes a clear-only commit.**
+  `addRecipientsLocked`'s duplicate check returns `ErrRecipientExists`,
+  and handing it an empty slice would still re-encrypt every entry — so
+  neither a pass-through nor an empty call can produce the outcome this
+  milestone's test list requires ("request cleared, zero entries
+  re-encrypted, no new recipient, `Added: false`"). Approval therefore
+  drops requests whose pubkey is already listed, and:
+
+  - a batch with something left to add calls the shared body, with the
+    dropped requests' files riding in `deletePaths` — so a mixed batch is
+    still one lock, one trust question, one pass, one commit;
+  - a batch with nothing left takes a clear-only write under the same
+    lock: delete the request files, prune, commit, push. It rewrites no
+    entry, asks M10's trust question **not at all** — nothing is being
+    encrypted to anything — and does not regenerate the trust cache,
+    since no recipient list changed for it to bless.
+
+  The authoritative duplicate check stays where "The batch path is not
+  `AddRecipient`" puts it: inside the shared body, under the lock,
+  returning `ErrRecipientExists`. What is filtered here is the case that
+  is *not* an error.
+
+- **The collision pre-check is a library pass that `cmd/gage` calls**,
+  rather than a comparison written in `cmd/gage` itself. The TDD's
+  wording ("`cmd/gage`'s pre-check returns `ErrEnrollmentNameTaken`") is
+  about *where in the sequence* it runs, not about which package holds
+  it: after the open, before the render, before the confirmation, holding
+  no identity. Putting the comparison itself in the frontend would leave
+  a future GUI to reimplement an access-control check, which the
+  library/CLI split treats as a correctness property. Nothing else moves:
+  the ordering is unchanged, the error is still
+  `ErrEnrollmentNameTaken` at `Conflict`, and the authoritative check
+  under the lock still returns `ErrRecipientExists`.
+
+- **The prompted-code retry loop ends on empty input**, with a runaway
+  guard rather than a policy. `--code` never retries — a flag that opens
+  nothing fails the whole run, which this milestone's test list already
+  fixes. The prompted path loops while the answer is non-empty and the
+  refusal is `ErrEnrollmentCodeWrong`; a bare Enter aborts with nothing
+  done, and the guard mirrors `maxUnlockAttempts`, which `unlock.go`
+  describes as "a runaway guard, not a retry policy" for the same reason.
+  Every other refusal from the open path — wrong vault, malformed,
+  expired, clock skew — exits with its own advice rather than
+  re-prompting for a code that is already correct.
+
+Two smaller ones, settled by existing precedent rather than by argument:
+pruning hooks into `commitRecipientList`, which is the one site `recipient
+add`, `recipient remove` and approval all pass through under the lock,
+with `deny` calling it directly since it has its own write; and declining
+the approve `[y/N]` follows `confirmSelfRemoval` — `exitcode.Conflict`
+with a message saying nothing was written, not a silent exit 0.
+
 ### Approval fetches before it commits
 
 Settled after this doc was first written, and it is the one place
@@ -113,7 +207,7 @@ Approval rewrites **every entry**. A commit that touches every entry made
 onto a stale tip does not diverge in one place, it diverges in all of
 them — every entry another device touched meanwhile becomes an entry
 conflict the approver answers `[l/r/b]` to, one at a time, through `gage
-sync`. `recipient add --reencrypt` has the same shape and gets away with
+sync`. `recipient add` has the same shape and gets away with
 it because it is rare; approval is the ordinary way a device joins a
 vault, so its stale-tip case is a Tuesday rather than a corner.
 
@@ -192,44 +286,44 @@ still returns `ErrRecipientExists`.
 
 **Approval**
 
-- [ ] Approving adds exactly one recipient to both `.age-recipients` and
+- [x] Approving adds exactly one recipient to both `.age-recipients` and
       `config.toml`, and `verify` still passes afterward.
-- [ ] **Approval makes every pre-existing entry readable by the new
+- [x] **Approval makes every pre-existing entry readable by the new
       key** — the device can read entries written long before it
       existed. No flag and no code path produces a partially-readable
       recipient.
-- [ ] Approval, the re-encryption, and removal of the request's file
+- [x] Approval, the re-encryption, and removal of the request's file
       land in **one** commit.
-- [ ] Batch approval of N requests performs **one** re-encryption pass
+- [x] Batch approval of N requests performs **one** re-encryption pass
       and produces **one** commit.
-- [ ] An injected failure partway through the re-encryption leaves HEAD
+- [x] An injected failure partway through the re-encryption leaves HEAD
       untouched and every request still pending.
-- [ ] **An approver who cannot read every entry is refused with
+- [x] **An approver who cannot read every entry is refused with
       `ErrCannotGrantFullAccess` before the write lock and before M10's
       recipient-change prompt** — the error names the count of unreadable
       entries, never a bare decryption failure on a UUID. Assert the
       position precisely: nothing committed, no entry rewritten, and
       M10's prompt never shown.
-- [ ] That refusal comes **after** the approve confirmation and the
+- [x] That refusal comes **after** the approve confirmation and the
       unlock, which is the documented cost of the late unlock: assert the
       passphrase prompt count is one, not zero. A test asserting zero
       here is asserting the impossible — see this milestone's Decisions.
-- [ ] `deny` removes the file, grants nothing, and needs no code.
-- [ ] **Approve and deny each prune expired requests they encounter**,
+- [x] `deny` removes the file, grants nothing, and needs no code.
+- [x] **Approve and deny each prune expired requests they encounter**,
       since both are already writing and holding the lock. A request
       expired by its filename epoch, and one whose epoch is beyond the
       ceiling, are both gone from `pending/` after either command — in
       the same commit, not a second one.
-- [ ] **`recipient add` and `recipient remove` prune too.** The TDD says
+- [x] **`recipient add` and `recipient remove` prune too.** The TDD says
       pruning rides "the next recipient change"; E1a is the milestone that
       touches `AddRecipient`, but pruning does not exist until E2, so the
       wiring lands here. Assert an expired request is cleared by an
       ordinary `recipient add` with no enrollment involved.
-- [ ] **`deny` warns when its push fails** rather than reporting plain
+- [x] **`deny` warns when its push fails** rather than reporting plain
       success — injected fake `RemoteSyncer`, and assert the warning
       reached the `Prompter`. A silent failed deny leaves the request
       live for every other device.
-- [ ] **`approve` warns when its push fails**, and the local commit
+- [x] **`approve` warns when its push fails**, and the local commit
       stands. Injected fake `RemoteSyncer`. Assert all of it, because
       approval's local/remote split is the widest in the tool: locally
       the recipient is listed, every entry is re-encrypted, and the
@@ -241,38 +335,38 @@ still returns `ErrRecipientExists`.
       carry; a run producing the generic "the write is committed locally
       but not pushed" is the signal that the clause never got threaded
       through, not that the wording needs adjusting here.
-- [ ] **A re-approval after a failed push, once the push lands, is the
+- [x] **A re-approval after a failed push, once the push lands, is the
       already-a-recipient no-op** — not a second grant and not an error.
       This is what makes the failed-push state self-healing, so it is
       worth pinning rather than reasoning about.
 
 **Approval fetches before it commits**
 
-- [ ] **Approval fast-forwards before it writes.** Against a bare remote
+- [x] **Approval fast-forwards before it writes.** Against a bare remote
       that moved ahead, assert the approval commit lands on top of the
       remote's tip and the push is a fast-forward — not a divergence that
       leaves the approver resolving one conflict per entry.
-- [ ] **A diverged remote refuses before anything is written**: no
+- [x] **A diverged remote refuses before anything is written**: no
       recipient added, no entry rewritten, nothing committed, request
       still pending. The message says `gage sync`, which is **correct
       here** and is the one place this milestone's advice deliberately
       differs from E3's — assert the text, since the whole point of
       `ErrEnrollmentDiverged` existing separately is that it is *not*
       used on this side.
-- [ ] **The nil-error trap is pinned on this side too.** `v.pull` reports
+- [x] **The nil-error trap is pinned on this side too.** `v.pull` reports
       divergence with a nil error and `SyncReport.Diverged` set, so
       assert the refusal rather than an error propagating — the same test
       shape E3 uses, for the same reason, against a second call site.
-- [ ] **An unreachable remote warns and the approval proceeds** — the
+- [x] **An unreachable remote warns and the approval proceeds** — the
       asymmetry with enroll, which refuses. Injected fake `RemoteSyncer`.
       Assert the local work actually happened: recipient listed, entries
       re-encrypted, request cleared, and the failed-push warning shown.
-- [ ] **An uncontended approval never reports contention**, the same
+- [x] **An uncontended approval never reports contention**, the same
       plain-success assertion E3 makes: a `Pull` called from inside
       approval's own lock fails as `*vaultlock.ContendedError` after the
       full timeout, so assert the success path completes well inside
       `vaultLockTimeout`.
-- [ ] **A request resolved by another device between the open and the
+- [x] **A request resolved by another device between the open and the
       lock is reported, not crashed into.** Construct it: open the
       request, then move the bare remote ahead with a commit that deletes
       that pending file, then let the run reach its fetch.
@@ -282,50 +376,50 @@ still returns `ErrRecipientExists`.
 
 **The approver's unlock**
 
-- [ ] Approval prompts for the approver's passphrase — a git-writer
+- [x] Approval prompts for the approver's passphrase — a git-writer
       holding no key of this vault cannot approve an enrollment.
-- [ ] **A wrong code costs no unlock**: passphrase prompt count zero
+- [x] **A wrong code costs no unlock**: passphrase prompt count zero
       when `--code` opens nothing. Same for an expired request.
-- [ ] **Declining the `[y/N]` costs no unlock**, and leaves the request
+- [x] **Declining the `[y/N]` costs no unlock**, and leaves the request
       pending with nothing committed.
-- [ ] In a session with the vault already unlocked, approval prompts for
+- [x] In a session with the vault already unlocked, approval prompts for
       no passphrase and reuses the cached `Identity`.
-- [ ] When another device changed the recipient list first, the approver
+- [x] When another device changed the recipient list first, the approver
       answers **two** distinct prompts, and declining the second aborts
       with nothing committed and the request still pending.
-- [ ] A sealed request swapped between the open and the commit is
+- [x] A sealed request swapped between the open and the commit is
       caught: what gets written is what was verified **under the lock**,
       not what was displayed.
 
 **Codes and IDs**
 
-- [ ] `--code A --code B` where B opens nothing fails the whole run with
+- [x] `--code A --code B` where B opens nothing fails the whole run with
       `ErrEnrollmentCodeWrong` at `exitcode.LockedOrAuth` — nothing
       confirmed, nothing approved, A's request still pending.
-- [ ] With no `--code`, the code is read through `Prompter.Value`, and
+- [x] With no `--code`, the code is read through `Prompter.Value`, and
       `cmd/gage` — not the library — owns the retry loop around a wrong
       one.
-- [ ] A positional ID narrows an `approve` run to that request even when
+- [x] A positional ID narrows an `approve` run to that request even when
       the code would have opened several.
-- [ ] `deny <ambiguous-substring>` returns the matches as
+- [x] `deny <ambiguous-substring>` returns the matches as
       `*AmbiguousRequestError`, deletes nothing, and exits `Ambiguous`;
       `cmd/gage` renders the list. `approve` resolves through the same
       function, so the behavior is identical there.
-- [ ] `deny <unmatched>` is `ErrEnrollmentNoSuchRequest` at
+- [x] `deny <unmatched>` is `ErrEnrollmentNoSuchRequest` at
       `exitcode.NotFound`, and deletes nothing.
-- [ ] `deny <8-char-prefix>` works — the form the TDD's own transcript
+- [x] `deny <8-char-prefix>` works — the form the TDD's own transcript
       uses.
-- [ ] **`approve` with no ID against a stuffed `pending/` refuses**
+- [x] **`approve` with no ID against a stuffed `pending/` refuses**
       with `ErrEnrollmentTooManyPending` at `exitcode.Conflict`, prompts
       for nothing, commits nothing, and the message names
       `approve <ID>`. E2 proves the bound; this proves the command
       surfaces it as advice rather than as a bare error.
-- [ ] **`approve <ID>` against that same directory works**, and `deny`
+- [x] **`approve <ID>` against that same directory works**, and `deny`
       and `recipient pending` are unaffected by it — neither opens
       anything, so a stuffed directory stays inspectable and cleanable.
       This is the pair that makes the refusal a detour rather than a
       dead end.
-- [ ] **The two runs differ only in the scope they pass.** Assert at the
+- [x] **The two runs differ only in the scope they pass.** Assert at the
       command level what E2 asserts at the library level: a broad run
       hands `OpenEnrollment` the `PendingEnrollments` result, an
       ID-scoped run hands it the single `ResolveEnrollment` match, and
@@ -333,27 +427,27 @@ still returns `ErrRecipientExists`.
       that reached for a "skip the bound" parameter instead would pass
       the two bullets above and lose the property that makes the bound
       safe to have in the first place.
-- [ ] A request expired by its **sealed** copy is refused with
+- [x] A request expired by its **sealed** copy is refused with
       `ErrEnrollmentExpired`; one that was expired before it was created
       is refused with `ErrEnrollmentClockSkew`, and the message names the
       requesting device's clock rather than a stale request.
 
 **Non-interactive**
 
-- [ ] `recipient approve` under `--script` fails cleanly rather than
+- [x] `recipient approve` under `--script` fails cleanly rather than
       approving: `--yes` answers only `ConfirmRecipientChange`, so
       approve's own `[y/N]` stays a real question and defaults to no.
       Assert nothing is committed and the message says why.
-- [ ] `recipient pending` and `recipient deny` work unchanged under
+- [x] `recipient pending` and `recipient deny` work unchanged under
       `--script` — neither asks anything a script cannot answer.
 
 **Collisions and duplicates**
 
-- [ ] A request whose device name became taken between enroll and
+- [x] A request whose device name became taken between enroll and
       approve is refused with `ErrEnrollmentNameTaken` **before the
       confirmation and before any unlock** — this one genuinely can come
       first, since it reads only the plaintext recipient list.
-- [ ] The authoritative check **in the shared recipient-write body**,
+- [x] The authoritative check **in the shared recipient-write body**,
       under the lock, still fires when another writer takes the name in
       the window — and returns the pre-existing `ErrRecipientExists`, not
       `ErrEnrollmentNameTaken`. Two errors for one condition is
@@ -361,60 +455,60 @@ still returns `ErrRecipientExists`.
       shared body rather than `AddRecipient` because approval does not
       call `AddRecipient` — see "The batch path is not `AddRecipient`".
       The check is the same code; the entry point is not.)
-- [ ] `approve --device <other-name>` applies that same request,
+- [x] `approve --device <other-name>` applies that same request,
       recording the approver's label. The recipient's pubkey is the
       sealed one, unchanged — relabeling changes the name and nothing
       else.
-- [ ] `--device` with a run resolving to more than one request is a
+- [x] `--device` with a run resolving to more than one request is a
       usage error naming the ID form; with exactly one request it
       applies.
-- [ ] **`--device` with an invalid name is rejected at the command line**,
+- [x] **`--device` with an invalid name is rejected at the command line**,
       at `exitcode.Usage`, before the code is tried and before any
       confirmation. Today that validation lives inside the recipient
       write, which would surface it after the approver has already
       answered `[y/N]` and typed their passphrase — a rejection of the
       command line should cost neither.
-- [ ] **A request sealed for a different vault is refused with
+- [x] **A request sealed for a different vault is refused with
       `ErrEnrollmentWrongVault`**, before the confirmation and before any
       unlock, and the message names the vault the request is actually
       for. E2 proves the comparison; this proves the command surfaces it
       as an actionable sentence rather than a bare mismatch, and that it
       does not enter the wrong-code retry loop — assert the prompt count,
       since a retry here re-prompts for a code that is already correct.
-- [ ] **A request whose sealed payload is malformed is refused with
+- [x] **A request whose sealed payload is malformed is refused with
       `ErrEnrollmentMalformedRequest`, and its contents are never
       rendered.** E2 proves the validation; this proves the command never
       prints an unvalidated device name. Use a payload carrying ANSI
       escapes: the approve confirmation is the one screen in `gage` whose
       correctness depends on a human reading it, and it sits directly
       below that field.
-- [ ] Approving a request whose **pubkey is already a recipient**
+- [x] Approving a request whose **pubkey is already a recipient**
       succeeds with no work — request cleared, zero entries
       re-encrypted, no new recipient, outcome reports `Added: false`.
-- [ ] Approving one of two duplicate requests for the same device, then
+- [x] Approving one of two duplicate requests for the same device, then
       the other, leaves exactly one recipient — the second approval is
       the no-op above, not an error.
 
 **Listing**
 
-- [ ] `recipient pending` needs no unlock and no code, and shows id and
+- [x] `recipient pending` needs no unlock and no code, and shows id and
       expiry only — never device names, which are sealed.
-- [ ] Expiry renders in the local timezone; the same request renders
+- [x] Expiry renders in the local timezone; the same request renders
       differently under two `TZ` values while naming the same instant.
-- [ ] `recipient pending` exits 0 with a "no pending requests" message
+- [x] `recipient pending` exits 0 with a "no pending requests" message
       when there are none.
 
 **Trust cache**
 
-- [ ] A second already-authorized device gets the ordinary
+- [x] A second already-authorized device gets the ordinary
       recipient-change warning after someone else approves an
       enrollment.
-- [ ] The approving device does not warn itself about its own approval.
-- [ ] A pending request alone triggers no warning on any device.
+- [x] The approving device does not warn itself about its own approval.
+- [x] A pending request alone triggers no warning on any device.
 
 ## Implementation
 
-- [ ] Wire **E2's** `PendingEnrollments()` and
+- [x] Wire **E2's** `PendingEnrollments()` and
       `OpenEnrollment(requests, codes)` into `recipient pending` and
       `approve`. Both are built and proven in E2; nothing here
       reimplements them. What E4 depends on is their signature — neither
@@ -429,7 +523,7 @@ still returns `ErrRecipientExists`.
       path, and nothing that switches the bound off. The escape hatch
       named in `ErrEnrollmentTooManyPending`'s message works because the
       human narrowed the question, not because the tool relaxed a rule.
-- [ ] `ApproveEnrollments(approvals []Approval, ident *Identity)
+- [x] `ApproveEnrollments(approvals []Approval, ident *Identity)
       (ApprovalResult, error)` with `Approval{Request, Label}` and
       per-request `ApprovalOutcome`. `RecipientChange` is deliberately
       *not* reused — it names one device, and a batch resolves N.
@@ -450,24 +544,24 @@ still returns `ErrRecipientExists`.
       reports contention against its own lock. Check
       `SyncReport.Diverged` explicitly; `v.pull` returns nil in that
       case. See "Approval fetches before it commits".
-- [ ] `DenyEnrollment(id string, p Prompter) error` — takes a
+- [x] `DenyEnrollment(id string, p Prompter) error` — takes a
       `Prompter` despite holding no `Identity`; the TDD records why that
       is a deliberate exception rather than an erosion of the
       interaction-rides-the-Identity rule.
-- [ ] `cmd/gage` orders it: open → collision check → render → confirm →
+- [x] `cmd/gage` orders it: open → collision check → render → confirm →
       **unlock** → full-access pre-flight → lock → re-verify → add +
       re-encrypt + clear → commit → push. The pre-flight sits between the
       unlock and the lock, which is why E1a must expose it as its own pass
       rather than burying it inside `AddRecipient`.
-- [ ] Three commands registered in the `Recipients` group, both-mode
+- [x] Three commands registered in the `Recipients` group, both-mode
       availability. `recipient list`'s `Short` reworded to "List the
       keys this vault is encrypted to", against `identity list`'s "List
       the keys this machine holds for a vault" (reworded in E3) — they
       answer different questions and previously scanned as synonyms.
-- [ ] Pruning wired into `AddRecipient`/`RemoveRecipient` as well as
+- [x] Pruning wired into `AddRecipient`/`RemoveRecipient` as well as
       approve and deny — the "next recipient change" half of the TDD's
       pruning rule, which has no other home.
-- [ ] Every error mapped to the exit code the TDD's "Library surface"
+- [x] Every error mapped to the exit code the TDD's "Library surface"
       table assigns it, **`ErrEnrollmentWrongVault` at `Conflict`
       included** — and kept out of the wrong-code retry loop, alongside
       `ErrEnrollmentMalformedRequest`. The loop keys on
@@ -476,7 +570,7 @@ still returns `ErrRecipientExists`.
       vault the request belongs to, which `cmd/gage` can look up from
       global config's registrations and the user recognises, unlike the
       id itself.
-- [ ] Codes gathered from `--code` or, when absent, `Prompter.Value`,
+- [x] Codes gathered from `--code` or, when absent, `Prompter.Value`,
       with the retry loop around `ErrEnrollmentCodeWrong` owned by
       `cmd/gage`. **No `Prompter` change**, and no new `UnlockKind`.
 

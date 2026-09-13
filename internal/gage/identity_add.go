@@ -41,7 +41,7 @@ type LocalIdentity struct {
 
 // AddIdentity registers an additional device for this vault: a fresh
 // keypair whose private half is wrapped with a passphrase obtained
-// through p and written to $GAGE_DATA/identities/<vault>/<device>.age.
+// through p and written to $GAGE_DATA/identities/<vault-id>/<device>.age.
 // It returns the public half — the only part that ever leaves this
 // machine, and the string someone pastes into `gage recipient add` from
 // a device that can already read the vault.
@@ -77,19 +77,24 @@ func (v *Vault) AddIdentity(device string, p Prompter) (string, error) {
 	// check above catches a name the vault knows, and that refusal
 	// catches a name only this machine knows. Either way an existing
 	// private key is never replaced — it is the only copy there is.
-	return CreateIdentity(v.Name, device, p)
+	return CreateIdentity(v.ID, v.Name, device, p)
 }
 
-// ListIdentities reports the wrapped identities this machine holds for a
-// vault, sorted by device name.
+// ListIdentities reports the wrapped identities this machine holds for
+// this vault, sorted by device name.
 //
 // It reads the local identities directory rather than the vault's
 // recipient list, so it answers "what can this machine open" rather than
 // "who does this vault trust". A device holding nothing for the vault
 // reports nothing rather than failing — that is the normal state right
 // after a clone, before `gage identity add`.
-func ListIdentities(vault string) ([]LocalIdentity, error) {
-	dir, err := IdentitiesDir(vault)
+//
+// It became a method with A20: the directory is keyed by the vault's id
+// while the "current" marker still comes from global config, which is
+// keyed by its local name, so the answer needs both halves — and a
+// *Vault is what carries them together.
+func (v *Vault) ListIdentities() ([]LocalIdentity, error) {
+	dir, err := IdentitiesDir(v.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -101,15 +106,18 @@ func ListIdentities(vault string) ([]LocalIdentity, error) {
 		return nil, exitcode.Wrap(exitcode.Internal, err)
 	}
 
-	registered := registeredDevice(vault)
+	registered := registeredDevice(v.Name)
 
 	out := make([]LocalIdentity, 0, len(dirEntries))
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
 		}
-		device, ok := strings.CutSuffix(de.Name(), ".age")
+		device, ok := strings.CutSuffix(de.Name(), identityFileExt)
 		if !ok {
+			// The directory's plaintext marker (see
+			// identitiesMarkerFileName) lands here, along with anything
+			// else that isn't a wrapped identity.
 			continue
 		}
 		// A name that isn't a valid device name can't have been written

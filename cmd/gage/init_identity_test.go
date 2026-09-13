@@ -42,7 +42,7 @@ func TestInitThenUnlockDecryptsSomethingEncryptedToTheVault(t *testing.T) {
 	// Unlock resolves the identity file from the device name init
 	// recorded in global config, and dispatches on the method it recorded
 	// there too.
-	v := &gage.Vault{Name: "personal", Path: entry.Path}
+	v := &gage.Vault{Name: "personal", ID: entry.ID, Path: entry.Path}
 	id, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatalf("Unlock after init: %v", err)
@@ -136,52 +136,103 @@ func wrappedIdentityFiles(t *testing.T, root string) []string {
 	return found
 }
 
-// TestInitTwiceOnOneDeviceReusesRatherThanDestroysTheFirstIdentity:
-// `init` is already refused for an already-registered name, but the
-// identity file is keyed on vault+device and lives outside global
-// config, so the stronger guarantee is that the wrapped key is never
-// overwritten. Losing it is a recovery problem by design; silently
-// causing that is not — but the file's mere existence, with the correct
-// passphrase behind it, is not a reason to fail either (see #39):
-// CreateIdentity reuses it instead.
-func TestInitTwiceOnOneDeviceReusesRatherThanDestroysTheFirstIdentity(t *testing.T) {
+// TestInitAfterVaultRemoveGeneratesAFreshKeyRatherThanReusingTheOldOne
+// is a deliberate behaviour change from #39, and A20 is what changed it.
+//
+// `init` now mints a new vault id every run, so the identities directory
+// it addresses is always a fresh one and CreateIdentity's reuse path
+// cannot be reached from here at all. The property #39 actually cared
+// about is untouched and asserted below: the first vault's wrapped key
+// is never overwritten or destroyed. What changed is that the second
+// vault gets a keypair of its own instead of silently inheriting the
+// first's — which is the whole point of keying by an id, since the two
+// vaults are unrelated and only happen to share a local name.
+func TestInitAfterVaultRemoveGeneratesAFreshKeyRatherThanReusingTheOldOne(t *testing.T) {
 	isolateXDG(t)
 
 	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
-	path := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities", "personal", "laptop-1.age")
-	before, err := os.ReadFile(path) // #nosec G304 -- test fixture path
+	firstID := vaultIDForTest(t, "personal")
+	firstPath := identityFileForTest(t, "personal", "laptop-1")
+	firstFile, err := os.ReadFile(firstPath) // #nosec G304 -- test fixture path
 	if err != nil {
 		t.Fatal(err)
 	}
-	pubkey := readVaultConfigForTest(t, "personal").Recipients[0].Pubkey
+	firstPubkey := readVaultConfigForTest(t, "personal").Recipients[0].Pubkey
 
-	// A different vault name, so the already-registered check doesn't
-	// short-circuit — but the same vault directory name for identities
-	// would only collide if the vault name matched, so force the
-	// collision directly by re-running init for the same vault after
-	// dropping only its registration.
+	// Drop the registration but leave the vault's files where they are,
+	// so `vault remove` keeps the identity file (laptop-1 is still a
+	// recipient there) — the state #39 was reported against.
 	if res := runCLI(t, []string{"vault", "remove", "personal"}, ""); res.Code != 0 {
 		t.Fatalf("vault remove failed: %s", res.Stderr)
 	}
-	res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--dir", filepath.Join(t.TempDir(), "again")}, "")
-	if res.Code != 0 {
-		t.Fatalf("expected init to reuse the existing identity file, got exit %d: %s", res.Code, res.Stderr)
-	}
-	if !strings.Contains(res.Stderr, "reusing the existing local identity file") {
-		t.Errorf("stderr = %q, want it to say the identity file was reused", res.Stderr)
+	if _, err := os.Stat(firstPath); err != nil {
+		t.Fatalf("the first vault's identity file should have survived vault remove: %v", err)
 	}
 
-	after, err := os.ReadFile(path) // #nosec G304 -- test fixture path
+	// A second, unrelated vault under the same local name.
+	res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--dir", filepath.Join(t.TempDir(), "again")}, "")
+	if res.Code != 0 {
+		t.Fatalf("second init failed: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+	if strings.Contains(res.Stderr, "reusing the existing local identity file") {
+		t.Errorf("the second vault reused the first's keypair; ids exist so that it cannot: %s", res.Stderr)
+	}
+
+	secondID := vaultIDForTest(t, "personal")
+	if secondID == firstID {
+		t.Fatalf("both vaults got the id %q; a new vault gets a new id", secondID)
+	}
+	if got := readVaultConfigForTest(t, "personal").Recipients[0].Pubkey; got == firstPubkey {
+		t.Error("the second vault is encrypted to the first vault's key; each vault gets its own keypair")
+	}
+
+	// And the first vault's key is exactly where it was, byte for byte.
+	after, err := os.ReadFile(firstPath) // #nosec G304 -- test fixture path
 	if err != nil {
+		t.Fatalf("the first vault's identity file is gone: %v", err)
+	}
+	if !bytes.Equal(firstFile, after) {
+		t.Error("the first vault's identity file was overwritten")
+	}
+}
+
+// TestTwoFailedInitsLeaveNoOrphanedIdentities is the knock-on A20
+// creates, and it is why init's rollback stopped being a tidiness
+// measure. Under name-keying a leftover identity was picked back up by
+// the next attempt; under id-keying every attempt addresses a brand-new
+// directory, so a rollback that did nothing would leave one directory
+// per failed attempt, each holding a private key for a vault that was
+// never created.
+func TestTwoFailedInitsLeaveNoOrphanedIdentities(t *testing.T) {
+	isolateXDG(t)
+
+	// A non-empty target directory: knowable, but only checked after the
+	// identity has been generated.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("mine"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(before, after) {
-		t.Error("the existing identity file was overwritten")
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if res := runCLI(t, []string{"init", "personal", "--dir", dir}, ""); res.Code == 0 {
+			t.Fatalf("attempt %d: expected init into a non-empty directory to fail", attempt)
+		}
 	}
-	if got := readVaultConfigForTest(t, "personal").Recipients[0].Pubkey; got != pubkey {
-		t.Errorf("public key = %q, want the original %q", got, pubkey)
+
+	identities := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities")
+	if got := wrappedIdentityFiles(t, identities); len(got) != 0 {
+		t.Errorf("two failed inits left orphaned identity files: %v", got)
+	}
+	// The directories go too, not just the keys inside them: a tree of
+	// empty UUID directories is the visible half of the same leak.
+	entries, err := os.ReadDir(identities)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("two failed inits left %d directories under identities/: %v", len(entries), entries)
 	}
 }
 
@@ -251,7 +302,7 @@ func TestInitWithARejectedDeviceNameWritesNoIdentityFile(t *testing.T) {
 func TestUnlockTypedErrorsCarryTheRightExitCode(t *testing.T) {
 	isolateXDG(t)
 
-	v := &gage.Vault{Name: "never-registered"}
+	v := &gage.Vault{Name: "never-registered", ID: "9f3a1c2e-7b41-4d58-a0c6-2e5f81b3d497"}
 	_, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 	if err == nil {
 		t.Fatal("expected unlocking an unregistered vault to fail")

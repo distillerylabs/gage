@@ -202,7 +202,7 @@ func conflictingVault(t *testing.T) (vaultPath string, conflicted string) {
 	// Unlock *before* the other device pushes, so this device's own edit
 	// below isn't preceded by an automatic fast-forward that would erase
 	// the divergence before it exists.
-	v := &gage.Vault{Name: "personal", Path: vaultPath}
+	v := &gage.Vault{Name: "personal", ID: vaultIDForTest(t, "personal"), Path: vaultPath}
 	ident, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
 	if err != nil {
 		t.Fatalf("unlocking: %v", err)

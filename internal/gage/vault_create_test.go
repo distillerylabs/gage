@@ -26,6 +26,7 @@ func validSpec(t *testing.T, name string) CreateSpec {
 	t.Helper()
 	return CreateSpec{
 		Name:       name,
+		ID:         vaultconfig.NewID(),
 		Path:       filepath.Join(t.TempDir(), name),
 		Type:       TypeGit,
 		Method:     MethodPassphrase,
@@ -387,12 +388,59 @@ func TestCreateDeviceNameLandsInRecipientAndIdentityPath(t *testing.T) {
 		t.Errorf("Recipients[0].Device = %q, want %q", f.Recipients[0].Device, "custom-device")
 	}
 
-	idPath, err := IdentityFilePath(spec.Name, spec.Device)
+	idPath, err := IdentityFilePath(spec.ID, spec.Device)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(idPath, filepath.Join(spec.Name, "custom-device.age")) {
-		t.Errorf("IdentityFilePath = %q, want it to end with %s", idPath, filepath.Join(spec.Name, "custom-device.age"))
+	if !strings.HasSuffix(idPath, filepath.Join(spec.ID, "custom-device.age")) {
+		t.Errorf("IdentityFilePath = %q, want it to end with %s", idPath, filepath.Join(spec.ID, "custom-device.age"))
+	}
+}
+
+// TestCreateRecordsTheIDItWasHandedRatherThanMintingOne is the half of
+// A20's ordering that is invisible from the config schema. `init` mints
+// the id *before* it creates the identity, so that the identity is filed
+// under the id the vault will carry. If Create minted a second id here
+// the vault would still look perfectly fine — and this device's key
+// would sit in a directory nothing ever looks up again.
+func TestCreateRecordsTheIDItWasHandedRatherThanMintingOne(t *testing.T) {
+	spec := validSpec(t, "myvault")
+	v, err := Create(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := vaultconfig.Read(filepath.Join(spec.Path, ".gage", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Vault.ID != spec.ID {
+		t.Errorf("committed [vault].id = %q, want the id Create was handed (%q)", f.Vault.ID, spec.ID)
+	}
+	if v.ID != spec.ID {
+		t.Errorf("Create returned a Vault with ID %q, want %q", v.ID, spec.ID)
+	}
+	if f.Vault.FormatVersion != 2 {
+		t.Errorf("committed format_version = %d, want 2", f.Vault.FormatVersion)
+	}
+}
+
+// TestCreateRefusesAnIDThatIsNotAUUID keeps Create honest as a library
+// entry point a GUI could call directly: it validates every field itself
+// rather than trusting cmd/gage to have done so, and the id is the field
+// that becomes a path component under $GAGE_DATA.
+func TestCreateRefusesAnIDThatIsNotAUUID(t *testing.T) {
+	for _, bad := range []string{"", "personal", "../../etc/x", "not-a-uuid"} {
+		t.Run(bad, func(t *testing.T) {
+			spec := validSpec(t, "myvault")
+			spec.ID = bad
+			if _, err := Create(spec); err == nil {
+				t.Fatalf("Create accepted id %q", bad)
+			}
+			if _, err := os.Stat(spec.Path); err == nil {
+				t.Errorf("Create wrote %s despite refusing the id", spec.Path)
+			}
+		})
 	}
 }
 

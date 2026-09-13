@@ -77,7 +77,10 @@ func withUnlockedVault(app *App, use string, fn func(v *gage.Vault, ident *gage.
 	if err != nil {
 		return err
 	}
-	v := &gage.Vault{Name: name, Path: entry.Path}
+	v, err := vaultFromEntry(name, entry)
+	if err != nil {
+		return err
+	}
 	ident, err := v.Unlock(app.Prompter)
 	if err != nil {
 		return err

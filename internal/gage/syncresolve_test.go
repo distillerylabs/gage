@@ -1420,7 +1420,7 @@ func TestResolutionHoldsTheWriteLockThroughout(t *testing.T) {
 	f := newConflictFixture(t)
 	defer f.close()
 
-	lockPath, err := LockFilePath(f.vault.Name)
+	lockPath, err := LockFilePath(f.vault.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,13 +27,36 @@ build:
 # TestShippedWorkFactorReachesARealAgeFile pays one real 2^19 scrypt to
 # prove that number reaches a real age header.
 #
-# -timeout is kept explicit but is now a deadlock ceiling rather than a
-# scrypt budget: the vaultlock and pty tests block on subprocesses, and
-# five minutes fails a hung one well inside CI's own job timeout while
-# leaving room for the slowest runner in the matrix.
+# -timeout is kept explicit but is a deadlock ceiling rather than a
+# scrypt budget: the vaultlock and pty tests block on subprocesses, so a
+# hung one has to fail the run instead of hanging until CI's own job
+# timeout.
+#
+# It is 20m because "leaving room for the slowest runner in the matrix"
+# has to mean a *cold* windows-latest runner, and the 5m this used to be
+# did not. Per-package wall clock, warm setup-go cache vs cold, for the
+# two big packages:
+#
+#              cmd/gage        internal/gage
+#   ubuntu     27s  / 27s      19s  / 19s
+#   macOS      27s  / 44s      25s  / 44s
+#   windows    131s / >300s    154s / >300s
+#
+# Cache warmth is free on Linux, ~1.7x on macOS, and decisive on Windows,
+# where go-git's local transport spawns a git-receive-pack per push and
+# the suite pushes ~80 times. Warm Windows already sat at half the 5m
+# ceiling; the first cold Windows run blew through it in both packages —
+# including cmd/gage, which that commit had not touched at all. Cutting
+# the ceiling to 5m (1494a3a) was calibrated on the warm Linux/macOS
+# numbers, where it looked like 10x headroom.
+#
+# So: raise the ceiling rather than trim tests, since nothing here is
+# slow by accident. If Windows ever approaches 20m, the fix is the push
+# count or the transport, not this number. The true cold-Windows figure
+# is still unknown — both packages were killed at 300s, not measured.
 .PHONY: test
 test:
-	GOPROXY=off GOFLAGS=-mod=readonly go test -timeout 5m ./...
+	GOPROXY=off GOFLAGS=-mod=readonly go test -timeout 20m ./...
 
 # Pinned rather than tracking latest: golangci-lint's config schema
 # changed between v1 and v2, and a linter that silently gains new checks
