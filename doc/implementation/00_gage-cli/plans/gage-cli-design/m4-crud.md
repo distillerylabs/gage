@@ -116,6 +116,33 @@ round trip exists for it to share.
       another read-only command
 - [x] The one-shot handler calls `Identity.Close()` on every exit path,
       including when the CRUD method returns an error
+- [x] `gage insert title --field user=bob` round-trips: `gage show title
+      --field user` → `bob` (#58)
+- [x] Multiple `--field` flags each independently readable via `show
+      --field` (#58)
+- [x] A `--field` value containing `=` is preserved verbatim, since only
+      the *first* `=` splits `NAME` from `VALUE` (#58)
+- [x] A `--field` arg missing `=` is a usage error, before any unlock
+      (#58)
+- [x] `--field =value` (empty `NAME`) is a usage error, before any unlock
+      (#58)
+- [x] The same `NAME` given across two `--field` flags is a usage error,
+      before any unlock (#58)
+- [x] `--field` combined with `-e/--edit` is rejected as mutually
+      exclusive (#58)
+- [x] `--field` combined with `-m`/`--value-stdin` sets both `value` and
+      `fields` correctly (#58)
+- [x] `--field` with none of `-m`/`--value-stdin`/`-e` still prompts once
+      for `value` via the `Prompter`, and stores the given fields
+      alongside it (#58)
+- [x] `--field NAME=` (empty `VALUE`) is stored as a field with an empty
+      value, not rejected (#58)
+- [x] All whitespace in a `--field` `NAME` is stripped — `" bob"`,
+      `"b ob"`, and `"bob "` all store `bob` — while `VALUE` whitespace is
+      preserved verbatim (#58)
+- [x] A whitespace-only `NAME` is a usage error (empty once stripped),
+      and two `NAME`s equal after stripping are a duplicate usage error,
+      both before any unlock (#58)
 
 ## Implementation
 
@@ -123,6 +150,11 @@ round trip exists for it to share.
       (read + trim), or `-m|--multiline` (terminal capture until EOF) for
       the value; mutually exclusive, validated before any I/O happens.
       `--description TEXT`, `-f|--force`
+- [x] `gage insert --field NAME=VALUE` (repeatable, `StringArrayVar`, not
+      `StringToStringVar` — the latter comma-splits and would break
+      `=`/`,`-containing values), parsed into a `map[string]string`
+      before the value-mode exclusivity check, itself mutually exclusive
+      with `-e/--edit` (#58)
 - [x] One-shot `-u|--use NAME` flag, resolved on every entry command
       against global config's registered vaults; omitted, it falls back to
       `current` — same resolution `vault set-default` (M1) writes into

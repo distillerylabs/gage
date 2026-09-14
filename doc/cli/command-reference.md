@@ -61,7 +61,7 @@ Details: [Identities and recipients](identities-and-recipients.md), [Adding a de
 
 | Command | Description |
 |---|---|
-| `insert <title> [--use NAME] [--description TEXT] [-m|--multiline \| --value-stdin \| -e|--edit] [-f|--force]` | Create a new entry. |
+| `insert <title> [--use NAME] [--description TEXT] [-m|--multiline \| --value-stdin \| -e|--edit] [--field NAME=VALUE]... [-f|--force]` | Create a new entry. |
 | `show <query> [--use NAME] [-c|--clip] [-q|--qr] [--field NAME]` | Print an entry's value (or one field). |
 | `cat <query> [--use NAME]` | Print an entry's full decrypted contents. |
 | `edit <query> [--use NAME]` | Edit an entry's full YAML in `$EDITOR`. |

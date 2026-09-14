@@ -100,6 +100,7 @@ func newInsertCommand(app *App) *cobra.Command {
 		valueStdinFlag  bool
 		editFlag        bool
 		forceFlag       bool
+		fieldFlags      []string
 	)
 
 	cmd := &cobra.Command{
@@ -108,6 +109,13 @@ func newInsertCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			title := args[0]
+
+			// Validated before any I/O — prompt, read, or unlock, same as
+			// the mode-exclusivity check below.
+			fields, err := parseFieldFlags(fieldFlags)
+			if err != nil {
+				return err
+			}
 
 			// Validated before any I/O — prompt, read, or unlock. Extends
 			// M4's two-flag check to three modes: at most one of
@@ -121,6 +129,15 @@ func newInsertCommand(app *App) *cobra.Command {
 			if modes > 1 {
 				return exitcode.New(exitcode.Usage,
 					"gage: -m/--multiline, --value-stdin, and -e/--edit are mutually exclusive")
+			}
+
+			// --field is the non-interactive way to set fields; -e/--edit
+			// is the interactive one. Combining them is ambiguous about
+			// which wins, so they're mutually exclusive rather than
+			// merged.
+			if editFlag && len(fields) > 0 {
+				return exitcode.New(exitcode.Usage,
+					"gage: --field and -e/--edit are mutually exclusive")
 			}
 
 			// Both stdin-reading modes read to EOF, and inside a session
@@ -158,6 +175,7 @@ func newInsertCommand(app *App) *cobra.Command {
 					Updated:     now,
 					UpdatedBy:   ident.Device(),
 					Value:       value,
+					Fields:      fields,
 				}
 				id, err := v.Insert(e, forceFlag, ident)
 				if err != nil {
@@ -180,7 +198,45 @@ func newInsertCommand(app *App) *cobra.Command {
 	cmd.Flags().BoolVarP(&editFlag, "edit", "e", false,
 		"open a template in $EDITOR to fill in value/fields (and optionally title/description)")
 	cmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "allow inserting a duplicate title")
+	cmd.Flags().StringArrayVar(&fieldFlags, "field", nil,
+		"set a structured field as NAME=VALUE (repeatable; mutually exclusive with -e/--edit)")
 	return cmd
+}
+
+// parseFieldFlags turns repeated --field NAME=VALUE arguments into a
+// fields map, splitting each on the *first* `=` only so a value may
+// itself contain `=`. Every whitespace character in NAME — leading,
+// trailing, or interior — is stripped, so a stray space can't create a
+// key `show --field` can't visibly be asked for; VALUE is kept verbatim.
+// Returns a usage error — before any I/O, unlock, or prompt — for a
+// missing `=`, a NAME that is empty once stripped, or a stripped NAME
+// repeated across two flags: no silent last-wins. (Insert's
+// duplicate-title guard is the precedent for erroring rather than
+// overwriting, though unlike a title, a duplicate NAME has no -f
+// override — there's no way to store both.)
+func parseFieldFlags(raw []string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	fields := make(map[string]string, len(raw))
+	for _, kv := range raw {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			return nil, exitcode.Newf(exitcode.Usage,
+				"gage: --field %q is missing '=' (want NAME=VALUE)", kv)
+		}
+		name = strings.Join(strings.Fields(name), "")
+		if name == "" {
+			return nil, exitcode.Newf(exitcode.Usage,
+				"gage: --field %q has an empty NAME", kv)
+		}
+		if _, dup := fields[name]; dup { // compared after stripping
+			return nil, exitcode.Newf(exitcode.Usage,
+				"gage: --field %q given more than once", name)
+		}
+		fields[name] = value
+	}
+	return fields, nil
 }
 
 // runInsertEdit is insert -e's path: seed a stub Entry (title/description

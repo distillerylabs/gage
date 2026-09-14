@@ -32,6 +32,28 @@ func TestShowPrintsOnlyValue(t *testing.T) {
 	}
 }
 
+// TestShowMultilineValueHasNoExtraTrailingBlankLine: -m/--multiline
+// stores the value with its trailing newline intact (unlike
+// --value-stdin, which trims one), so show must not add a second one on
+// top — it should print exactly the stored bytes, not value+"\n".
+func TestShowMultilineValueHasNoExtraTrailingBlankLine(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	ins := runCLI(t, []string{"insert", "Recovery codes", "-m"}, "line1\nline2\n")
+	if ins.Code != 0 {
+		t.Fatalf("insert failed: %s", ins.Stderr)
+	}
+
+	show := runCLI(t, []string{"show", "Recovery codes"}, "")
+	if show.Code != 0 {
+		t.Fatalf("show failed: %s", show.Stderr)
+	}
+	if show.Stdout != "line1\nline2\n" {
+		t.Errorf("show output = %q, want %q", show.Stdout, "line1\nline2\n")
+	}
+}
+
 // TestCatPrintsFullYAMLDistinctFromShow: gage cat prints the full
 // decrypted YAML, including metadata — the exact thing show must not.
 func TestCatPrintsFullYAMLDistinctFromShow(t *testing.T) {

@@ -302,6 +302,16 @@ milestone whose surface it touches rather than in a suite of their own.
   `main` under `scripts/` rather than a `gage` subcommand: destroying a
   user's vaults and identities has no place in the CLI's own command
   surface, and keeping it out means it can't be reached by accident.
+- **`gage insert --field NAME=VALUE`** (#58). A non-interactive way to
+  set structured `fields` at creation time — previously only reachable
+  via `insert -e`/`gage edit`, both of which require `$EDITOR`.
+  Repeatable, splits each arg on the *first* `=` only, strips all
+  whitespace from `NAME` (`VALUE` is verbatim), validated before any
+  I/O/unlock (missing `=`, a `NAME` empty once stripped, or a stripped
+  `NAME` repeated across flags are all usage errors — no silent
+  last-wins), and mutually exclusive with `-e/--edit`. Folded into **M4**'s test list
+  (`cmd/gage/insert_field_test.go`) since it extends `insert`'s existing
+  value-input-flag surface rather than opening a new one.
 
 ---
 

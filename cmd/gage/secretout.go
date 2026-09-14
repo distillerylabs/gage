@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/denmark/gage/internal/gage/exitcode"
@@ -26,7 +27,11 @@ func emitSecret(app *App, value string, clip, qr bool) error {
 	case clip:
 		return copySecret(app, value)
 	default:
-		if _, err := fmt.Fprintln(app.Out, value); err != nil {
+		out := value
+		if !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		if _, err := fmt.Fprint(app.Out, out); err != nil {
 			return exitcode.Wrap(exitcode.Internal, err)
 		}
 		return nil

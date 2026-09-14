@@ -38,7 +38,8 @@ fields:
 
 ```
 gage insert <title> [--use NAME] [--description TEXT]
-             [-m|--multiline | --value-stdin | -e|--edit] [-f|--force]
+             [-m|--multiline | --value-stdin | -e|--edit] [--field NAME=VALUE]...
+             [-f|--force]
 ```
 
 Exactly one of `-m`, `--value-stdin`, `-e` may be given. With none of them,
@@ -61,6 +62,21 @@ Enter value: ****************
   file unchanged, or with both `value` and `fields` still empty, aborts the
   insert entirely (no entry written) — the same "empty message aborts the
   commit" convention as `git commit`.
+- **`--field NAME=VALUE`** (repeatable) sets a structured field
+  non-interactively — at insert time, the only way to do so besides
+  `-e`/`--edit`, and the two are mutually exclusive. Splits on the
+  *first* `=` only, so a value may itself contain `=`. All whitespace in
+  `NAME` is removed (`" user"`, `"us er"`, and `"user "` all become
+  `user`); `VALUE` is stored verbatim, and may be empty (`--field
+  user=`). Layers on top of the default prompt, `-m`, or `--value-stdin`,
+  since those only ever set `value`:
+  ```
+  $ gage insert github-token --field user=octocat --field totp_seed=JBSWY3DPEHPK3PXP
+  Enter value: ****************
+  ```
+  A missing `=`, a `NAME` that's empty once whitespace is removed, or the
+  same `NAME` given twice (compared after removing whitespace) is a usage
+  error, checked before any prompt or unlock.
 - **`-f`/`--force`** allows creating an entry whose title duplicates an
   existing one (by default, `gage` warns instead — two entries can share a
   title, but it's usually a mistake).

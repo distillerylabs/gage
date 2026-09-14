@@ -1636,7 +1636,8 @@ gage search <pattern> [--use NAME]          # matches title/description/body
                                               # cached yet; alias: gage grep)
 
 gage insert <title> [--use NAME] [--description TEXT]
-             [-m|--multiline | --value-stdin | -e|--edit] [-f|--force] [--yes]
+             [-m|--multiline | --value-stdin | -e|--edit] [--field NAME=VALUE]...
+             [-f|--force] [--yes]
 gage edit <query>   [--use NAME]            # decrypt to a scratch file, $EDITOR,
                                               # re-encrypt, commit (re-stamps
                                               # updated/updated_by)
@@ -1683,6 +1684,23 @@ Notes on `insert`:
   `value`/`fields`; the duplicate-title check (and whether `-f` is
   required) runs against whatever title is in the file when it's saved,
   not the `<title>` argument the command was invoked with.
+- `--field NAME=VALUE` (repeatable) is the non-interactive way to set
+  `fields` at creation time, alongside whichever of `-m`/`--value-stdin`/
+  default-prompt sets `value` — the two are independent, since those
+  modes only ever touch `value`. Each `NAME=VALUE` splits on the *first*
+  `=` only, so a value may itself contain `=`. Every whitespace character
+  in `NAME` — leading, trailing, or interior — is removed, so a stray
+  space can't create a key that `show --field` can't visibly be asked
+  for; `VALUE` is kept verbatim and may be empty. Validated before any
+  I/O/unlock, the same posture as the `-m`/`--value-stdin`/`-e`
+  exclusivity check above: a missing `=`, a `NAME` that's empty once
+  stripped, or the same stripped `NAME` given across two `--field` flags
+  is a usage error — no silent last-wins. `Insert`'s duplicate-*title*
+  guard is the precedent for erroring rather than overwriting, but
+  unlike a duplicate title there's no `-f` override: a map can't hold
+  both values. Mutually exclusive with `-e`/`--edit`, since that's the
+  other way to set `fields` and combining them is ambiguous about which
+  wins.
 
 Notes on `show`:
 - Default (no flag): prints the `value` field only — not `title`,
