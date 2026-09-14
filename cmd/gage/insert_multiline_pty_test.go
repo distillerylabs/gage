@@ -10,8 +10,6 @@ import (
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
-
-	"github.com/denmark/gage/internal/gage"
 )
 
 // TestInsertMultilineCapturesFromARealTerminalUntilEOF is the M4 test
@@ -90,16 +88,18 @@ func TestInsertMultilineCapturesFromARealTerminalUntilEOF(t *testing.T) {
 		t.Fatalf("gage insert -m exited %d", code)
 	}
 
-	res := runCLI(t, []string{"cat", "Recovery codes"}, "")
-	if res.Code != 0 {
-		t.Fatalf("cat failed: %s", res.Stderr)
+	// gage show, not cat: cat's display format prints a multi-line
+	// value's block-scalar content flush left (no added indentation),
+	// which is no longer valid YAML at that indentation and so no longer
+	// round-trips through gage.UnmarshalEntry — show prints the raw
+	// value with no reformatting, so it is what actually proves the
+	// stored value is byte-identical to what was typed.
+	show := runCLI(t, []string{"show", "Recovery codes"}, "")
+	if show.Code != 0 {
+		t.Fatalf("show failed: %s", show.Stderr)
 	}
-	e, err := gage.UnmarshalEntry([]byte(res.Stdout))
-	if err != nil {
-		t.Fatalf("parsing cat's output: %v\n%s", err, res.Stdout)
-	}
-	if e.Value != value {
-		t.Errorf("round-tripped value = %q, want byte-identical to %q", e.Value, value)
+	if show.Stdout != value {
+		t.Errorf("round-tripped value = %q, want byte-identical to %q", show.Stdout, value)
 	}
 }
 

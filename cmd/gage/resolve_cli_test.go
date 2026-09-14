@@ -99,8 +99,12 @@ func TestShowCatRmResolveIdenticallyAcrossQueryForms(t *testing.T) {
 			if cat.Code != 0 {
 				t.Fatalf("cat %q failed: %s", query, cat.Stderr)
 			}
-			if !strings.Contains(cat.Stdout, "title: AWS root account") {
-				t.Errorf("cat %q resolved to the wrong entry:\n%s", query, cat.Stdout)
+			e, err := gage.UnmarshalEntry([]byte(cat.Stdout))
+			if err != nil {
+				t.Fatalf("parsing cat %q output: %v\n%s", query, err, cat.Stdout)
+			}
+			if e.Title != "AWS root account" {
+				t.Errorf("cat %q resolved to the wrong entry: title = %q\n%s", query, e.Title, cat.Stdout)
 			}
 
 			rm := runCLI(t, []string{"rm", query}, "")

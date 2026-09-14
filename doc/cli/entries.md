@@ -119,7 +119,15 @@ gage cat  <query> [--use NAME]
   dumped whole into a code when you only wanted one piece of it.
 - **`cat`** always prints the entry's full decrypted YAML — metadata
   included — for scripting or when you actually want everything, not just
-  the value.
+  the value. Output also includes the entry's short id (the same one `ls`
+  prints) right after `title`, and left-pads labels so every `:` lines up —
+  note this means naive line-oriented scripts (`grep '^value:'`,
+  `cut -d: -f2`) need to account for the padding. A multi-line value's
+  content is printed flush left with no added indentation, for clean
+  copy/paste; this means an entry with a multi-line value is display-only —
+  it no longer parses back as strict YAML (single-line values are
+  unaffected). Use `gage show` if you need the raw value back
+  programmatically.
 
 ## Editing an entry
 

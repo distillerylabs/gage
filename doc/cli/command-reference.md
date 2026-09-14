@@ -63,7 +63,7 @@ Details: [Identities and recipients](identities-and-recipients.md), [Adding a de
 |---|---|
 | `insert <title> [--use NAME] [--description TEXT] [-m|--multiline \| --value-stdin \| -e|--edit] [--field NAME=VALUE]... [-f|--force]` | Create a new entry. |
 | `show <query> [--use NAME] [-c|--clip] [-q|--qr] [--field NAME]` | Print an entry's value (or one field). |
-| `cat <query> [--use NAME]` | Print an entry's full decrypted contents. |
+| `cat <query> [--use NAME]` | Print an entry's full decrypted contents, including its short id, with labels column-aligned. |
 | `edit <query> [--use NAME]` | Edit an entry's full YAML in `$EDITOR`. |
 | `rename <query> <new-title> [--use NAME] [-f|--force]` | Change an entry's title. |
 | `generate <title> [--use NAME] [--description TEXT] [-l LENGTH] [--no-symbols] [-f|--force] [-c|--clip] [-q|--qr]` | Create a new entry with a randomly generated value. |

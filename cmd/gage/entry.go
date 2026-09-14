@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/config"
@@ -426,7 +427,7 @@ func newCatCommand(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
-				_, e, err := resolveQuery(app, v, args[0], ident)
+				id, e, err := resolveQuery(app, v, args[0], ident)
 				if err != nil {
 					return err
 				}
@@ -435,7 +436,7 @@ func newCatCommand(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if _, err := app.Out.Write(data); err != nil {
+				if _, err := app.Out.Write(alignCatOutput(id, data)); err != nil {
 					return exitcode.Wrap(exitcode.Internal, err)
 				}
 				return nil
@@ -444,6 +445,196 @@ func newCatCommand(app *App) *cobra.Command {
 	}
 	addUseFlag(cmd, &useFlag)
 	return cmd
+}
+
+// catKeyLine is one key `alignCatOutput` aligns: idx is the key's line
+// number in the (already id-inserted) output, 0-based; key is its
+// rendered text, exactly as it appears at the start of that line.
+type catKeyLine struct {
+	idx int
+	key string
+}
+
+// dedentSpan marks a run of lines — a multi-line (block-scalar) value's
+// content — to replace wholesale with content, its original, unindented
+// lines. start/end (inclusive) are indices into the id-inserted line
+// slice `alignCatOutput` builds.
+type dedentSpan struct {
+	start, end int
+	content    []string
+}
+
+// alignCatOutput turns MarshalEntry's raw bytes into cat's display
+// format:
+//
+//   - an `id:` line (the entry's short id, the same one `ls` prints)
+//     inserted right after `title`;
+//   - every top-level line's key left-padded to the widest top-level
+//     label, with `fields`' own keys aligned separately, one level in, to
+//     the widest field name;
+//   - a multi-line value's block-scalar content printed flush left with
+//     no added indentation, rather than the 4-space indent MarshalEntry's
+//     underlying YAML emitter would otherwise add.
+//
+// This re-parses data's own YAML node tree rather than pattern-matching
+// lines as text, specifically so a decrypted value that happens to
+// *contain* a line looking like "key: value" (inside a multi-line
+// secret) is never mistaken for a real key, and so a multi-line value's
+// exact line span — where to stop dedenting — is read off the document
+// structure rather than guessed from indentation. See marshalEntryNodes'
+// fixed field order and MarshalEntry's doc comment for why cat needs its
+// own rendering path rather than touching MarshalEntry itself. A key
+// that itself needs quoting (only reachable via an unusual field/Extra
+// name, or MarshalEntry's rare all-quoted fallback) is left on its
+// original line, unpadded, and excluded from the width computation,
+// rather than risk misparsing a quoted key.
+//
+// Trade-off: flush-left block content is no longer valid YAML at that
+// exact indentation (a real YAML parser needs it indented past its
+// parent), so an entry with a multi-line value can no longer be read
+// back with gage.UnmarshalEntry(catOutput) — cat's documented purpose is
+// display/scripting readability, not a byte-exact serialization of the
+// on-disk format; see "Entry format" in the design doc.
+func alignCatOutput(id uuid.UUID, data []byte) []byte {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil ||
+		len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return data
+	}
+	root := doc.Content[0]
+
+	trailingNewline := strings.HasSuffix(string(data), "\n")
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+
+	idLine := fmt.Sprintf("id: %s", shortEntryID(id.String()))
+	withID := make([]string, 0, len(lines)+1)
+	withID = append(withID, lines[0], idLine)
+	withID = append(withID, lines[1:]...)
+	lines = withID
+
+	// title is always line 1 (marshalEntryNodes' fixed field order), so
+	// it keeps index 0; every key after it shifts down by one line for
+	// the inserted id line.
+	newIndex := func(yamlLine int) int {
+		if yamlLine == 1 {
+			return 0
+		}
+		return yamlLine
+	}
+	// endBound returns the exclusive line-index boundary of a node whose
+	// next sibling starts at YAML line nextLine, or 0 if it has none.
+	endBound := func(nextLine int) int {
+		if nextLine == 0 {
+			return len(lines)
+		}
+		return newIndex(nextLine)
+	}
+
+	var top []catKeyLine
+	var spans []dedentSpan
+	for i := 0; i < len(root.Content); i += 2 {
+		k, v := root.Content[i], root.Content[i+1]
+		if k.Style == 0 {
+			top = append(top, catKeyLine{newIndex(k.Line), k.Value})
+		}
+		if i == 0 {
+			top = append(top, catKeyLine{1, "id"})
+		}
+
+		var nextTopLine int
+		if i+2 < len(root.Content) {
+			nextTopLine = root.Content[i+2].Line
+		}
+
+		switch {
+		case k.Value == "fields" && v.Kind == yaml.MappingNode:
+			var sub []catKeyLine
+			for j := 0; j < len(v.Content); j += 2 {
+				fk, fv := v.Content[j], v.Content[j+1]
+				if fk.Style == 0 {
+					sub = append(sub, catKeyLine{newIndex(fk.Line), fk.Value})
+				}
+				nextSubLine := nextTopLine
+				if j+2 < len(v.Content) {
+					nextSubLine = v.Content[j+2].Line
+				}
+				if isMultilineLiteral(fv) {
+					spans = append(spans, dedentSpan{
+						start:   newIndex(fk.Line) + 1,
+						end:     endBound(nextSubLine) - 1,
+						content: strings.Split(fv.Value, "\n"),
+					})
+				}
+			}
+			padKeyLines(lines, sub)
+		case isMultilineLiteral(v):
+			spans = append(spans, dedentSpan{
+				start:   newIndex(k.Line) + 1,
+				end:     endBound(nextTopLine) - 1,
+				content: strings.Split(v.Value, "\n"),
+			})
+		}
+	}
+	padKeyLines(lines, top)
+	lines = applyDedentSpans(lines, spans)
+
+	out := strings.Join(lines, "\n")
+	if trailingNewline {
+		out += "\n"
+	}
+	return []byte(out)
+}
+
+// isMultilineLiteral reports whether n is a block-scalar (`|`) value
+// spanning more than one line — the only style MarshalEntry's
+// entryScalar produces that occupies multiple, independently indented
+// lines in the rendered output.
+func isMultilineLiteral(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode && n.Style == yaml.LiteralStyle && strings.Contains(n.Value, "\n")
+}
+
+// applyDedentSpans replaces each span's line range with its own content,
+// in one left-to-right pass. Spans come from a single top-to-bottom walk
+// of the document tree, so they arrive already sorted and non-overlapping.
+func applyDedentSpans(lines []string, spans []dedentSpan) []string {
+	if len(spans) == 0 {
+		return lines
+	}
+	out := make([]string, 0, len(lines))
+	s := 0
+	for i := 0; i < len(lines); {
+		if s < len(spans) && spans[s].start == i {
+			out = append(out, spans[s].content...)
+			i = spans[s].end + 1
+			s++
+			continue
+		}
+		out = append(out, lines[i])
+		i++
+	}
+	return out
+}
+
+// padKeyLines left-pads each of lines[k.idx]'s key text, in place, to the
+// width of the widest key in keys — so every line's colon lands in the
+// same column.
+func padKeyLines(lines []string, keys []catKeyLine) {
+	if len(keys) == 0 {
+		return
+	}
+	width := 0
+	for _, k := range keys {
+		if n := utf8.RuneCountInString(k.key); n > width {
+			width = n
+		}
+	}
+	for _, k := range keys {
+		line := lines[k.idx]
+		indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
+		rest := line[len(indent)+len(k.key):]
+		pad := strings.Repeat(" ", width-utf8.RuneCountInString(k.key))
+		lines[k.idx] = indent + k.key + pad + rest
+	}
 }
 
 // newShowCommand builds `gage show`: the value field only, not the full

@@ -454,7 +454,14 @@ trust groups regardless of what `gage` did internally.
 ## Entry format
 
 Once decrypted, an entry is YAML with a fixed set of metadata fields plus
-the actual content:
+the actual content. This is the on-disk/`$EDITOR`-buffer shape only — what
+`gage cat` prints to a terminal is a separate, related-but-not-identical
+rendering (a synthetic `id` line after `title`, every label left-padded so
+its `:` lines up with the others, and a multi-line value's block-scalar
+content printed flush left with no added indentation — which means an
+entry with a multi-line value no longer parses back as strict YAML from
+`cat`'s output; `gage show`/`UnmarshalEntry` against the on-disk format
+are unaffected), so the two are not expected to match byte for byte:
 
 ```yaml
 title: ProtonMail
@@ -1646,7 +1653,8 @@ gage generate <title> [--use NAME] [-l LENGTH] [--no-symbols]
                        [-f|--force] [-c|--clip] [-q|--qr] [--yes]
 
 gage show <query> [--use NAME] [-c|--clip] [-q|--qr] [--field NAME]
-gage cat  <query> [--use NAME]              # always full raw plaintext, for scripting/piping
+gage cat  <query> [--use NAME]              # always full raw plaintext, for scripting/piping —
+                                              # display-only: short id after title, labels column-aligned
 
 gage rm <query> [--use NAME]
 gage mv <query> --to-vault <name> [--use NAME] [--yes]   # decrypt here, re-encrypt + commit

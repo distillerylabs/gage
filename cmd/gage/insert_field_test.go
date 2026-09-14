@@ -189,12 +189,23 @@ func TestInsertFieldWithMultilineSetsBothValueAndFields(t *testing.T) {
 		t.Fatalf("insert failed: %s", res.Stderr)
 	}
 
-	e := catEntry(t, "Site")
-	if e.Value != "line1\nline2\n" {
-		t.Errorf("value = %q, want %q", e.Value, "line1\nline2\n")
+	// show, not catEntry: cat's display format dedents this multi-line
+	// value's block-scalar content, which no longer round-trips through
+	// gage.UnmarshalEntry — show prints the raw value/field verbatim.
+	value := runCLI(t, []string{"show", "Site"}, "")
+	if value.Code != 0 {
+		t.Fatalf("show failed: %s", value.Stderr)
 	}
-	if e.Fields["user"] != "bob" {
-		t.Errorf("Fields[user] = %q, want %q (fields = %v)", e.Fields["user"], "bob", e.Fields)
+	if value.Stdout != "line1\nline2\n" {
+		t.Errorf("value = %q, want %q", value.Stdout, "line1\nline2\n")
+	}
+
+	field := runCLI(t, []string{"show", "Site", "--field", "user"}, "")
+	if field.Code != 0 {
+		t.Fatalf("show --field user failed: %s", field.Stderr)
+	}
+	if field.Stdout != "bob\n" {
+		t.Errorf("Fields[user] = %q, want %q", field.Stdout, "bob\n")
 	}
 }
 

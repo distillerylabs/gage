@@ -141,8 +141,9 @@ amendments [A17](open-questions.md#a17) and [A18](open-questions.md#a18).
   stop `gage history --decrypt foo > audit.txt` from silently writing
   every past value of a secret to disk. Rejected because `gage cat` is
   documented as "always full raw plaintext, for scripting/piping" with no
-  such gate, and gating one but not the other is an inconsistency users
-  would have to memorize.
+  such gate (its bytes get a display-only `id` line and column alignment,
+  but nothing is withheld or gated), and gating one but not the other is
+  an inconsistency users would have to memorize.
 
   What the decision does fix, both testable: **the query stays
   mandatory** — there is no bulk "decrypt the history of everything"

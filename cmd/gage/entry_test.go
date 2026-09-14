@@ -208,13 +208,16 @@ func TestInsertValueStdinTrimsExactlyOneNewline(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("insert failed: %s", res.Stderr)
 	}
-	cat := runCLI(t, []string{"cat", "Site"}, "")
-	e, err := gage.UnmarshalEntry([]byte(cat.Stdout))
-	if err != nil {
-		t.Fatal(err)
+	// show, not cat: cat's display format dedents a multi-line value's
+	// block-scalar content, which this value (ending in a blank line) is
+	// — that no longer round-trips through gage.UnmarshalEntry, so show
+	// (which prints the raw value verbatim) is what proves the trim.
+	show := runCLI(t, []string{"show", "Site"}, "")
+	if show.Code != 0 {
+		t.Fatalf("show failed: %s", show.Stderr)
 	}
-	if e.Value != "line1\n" {
-		t.Errorf("value = %q, want %q (exactly one trailing newline trimmed)", e.Value, "line1\n")
+	if show.Stdout != "line1\n" {
+		t.Errorf("value = %q, want %q (exactly one trailing newline trimmed)", show.Stdout, "line1\n")
 	}
 }
 
@@ -303,8 +306,12 @@ func TestInsertDescriptionStoredAndShownByCat(t *testing.T) {
 	if cat.Code != 0 {
 		t.Fatalf("cat failed: %s", cat.Stderr)
 	}
-	if !strings.Contains(cat.Stdout, "description: personal account") {
-		t.Errorf("cat output missing the description: %q", cat.Stdout)
+	e, err := gage.UnmarshalEntry([]byte(cat.Stdout))
+	if err != nil {
+		t.Fatalf("parsing cat output: %v\n%s", err, cat.Stdout)
+	}
+	if e.Description != "personal account" {
+		t.Errorf("description = %q, want %q", e.Description, "personal account")
 	}
 }
 

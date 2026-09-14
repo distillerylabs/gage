@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denmark/gage/internal/gage"
 	"github.com/denmark/gage/internal/gage/exitcode"
 )
 
@@ -69,10 +70,18 @@ func TestCatPrintsFullYAMLDistinctFromShow(t *testing.T) {
 	if cat.Code != 0 {
 		t.Fatalf("cat failed: %s", cat.Stderr)
 	}
-	for _, want := range []string{"title: GitHub", "description: personal account", "value: hunter2"} {
-		if !strings.Contains(cat.Stdout, want) {
-			t.Errorf("cat output missing %q:\n%s", want, cat.Stdout)
-		}
+	e, err := gage.UnmarshalEntry([]byte(cat.Stdout))
+	if err != nil {
+		t.Fatalf("parsing cat output: %v\n%s", err, cat.Stdout)
+	}
+	if e.Title != "GitHub" {
+		t.Errorf("title = %q, want %q", e.Title, "GitHub")
+	}
+	if e.Description != "personal account" {
+		t.Errorf("description = %q, want %q", e.Description, "personal account")
+	}
+	if e.Value != "hunter2" {
+		t.Errorf("value = %q, want %q", e.Value, "hunter2")
 	}
 }
 
