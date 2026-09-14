@@ -150,7 +150,7 @@ on `insert`.
 ## Listing and searching
 
 ```
-gage ls [--use NAME]
+gage ls [--use NAME] [-H|--header]
 gage search <pattern> [--use NAME]      # alias: gage grep
 ```
 
@@ -159,6 +159,21 @@ writer. `search` matches against title, description, and body text. Both
 require the vault to be unlocked, since titles live inside encrypted
 payloads — see [Addressing entries](addressing-entries.md) for how `gage`
 keeps this fast in session mode.
+
+By default `ls`'s columns are unlabelled and positional — one greppable
+line per entry, nothing to skip — so it stays script-friendly (`gage ls |
+cut -d' ' -f1`, `wc -l`, etc.). `-H`/`--header` opts into a labelled table
+instead: a header row naming each column, a row of dashes under it, and
+`|`-delimited rows after that, meant for a human reading a terminal
+rather than a script:
+
+```
+$ gage ls --header
+title                       | id       | created at | updated at | updated by
+----------------------------+----------+------------+------------+-----------
+secret0                     | 40b5e211 | 2026-09-13 | 2026-09-13 | andys-macbook-air
+test@gmail.com backup codes | 679e4a05 | 2026-09-13 | 2026-09-13 | andys-macbook-air
+```
 
 ## Deleting an entry
 

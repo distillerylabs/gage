@@ -150,6 +150,36 @@ amendments [A17](open-questions.md#a17) and [A18](open-questions.md#a18).
   form, ever — and nothing it decrypts reaches the session history file,
   which only ever records the query as typed.
 
+- **`ls --header` (post-milestone, #54).** Resolved: **a new `-H`/
+  `--header` flag, default off, additive only.** #54 asked for `ls` to
+  print a labelled table — a header row, a row of dashes under it, and
+  `|`-delimited columns — but M4's original `ls` decision (extended by
+  M7) is explicit that the columns are unlabelled and positional
+  specifically so the output stays greppable, and that decision is load-
+  bearing for anyone piping `ls` into `cut`/`awk`/`wc -l` today. Rather
+  than override that default, `--header` sits next to it: plain `gage
+  ls` is byte-for-byte unchanged (`TestLsDefaultOutputUnchangedByHeaderFeature`),
+  and `-H`/`--header` opts into the table shape for a human reading a
+  terminal. Rejected: making headers the default (breaks every existing
+  pipeline built on today's rows, and reverses a decision the codebase
+  reaffirmed twice) and a TTY-conditional header (would make one-shot
+  and session-mode `ls` diverge depending on whether stdout is a
+  terminal, breaking the M7 "one renderer, byte-identical in both modes"
+  guarantee `TestLsRendersIdenticallyInBothModes` already locks in).
+
+  Table shape: the last column (`updated_by`) is never padded on any
+  row, header included, so a long device name never leaves trailing
+  whitespace on a data line the way padding every other column does;
+  its dash segment is therefore sized off the header label
+  (`"updated by"`, 10 chars) rather than the widest device name, so the
+  separator lines up with the header text exactly rather than
+  overshooting it. Column separator is `" | "` everywhere `--header` is
+  set (replacing the default's double-space), and the separator row
+  breaks to `+` at each `|` boundary, matching common ASCII-table
+  rendering (`psql`/`mysql` CLIs). Empty vault: `--header` still prints
+  nothing, matching `ls`'s existing "no rows, no output" rule — a header
+  describing zero entries is noise, not a table.
+
 ## Tests (write first)
 
 - [x] `--clip` copies plaintext to the clipboard and clears it after the
@@ -199,6 +229,14 @@ amendments [A17](open-questions.md#a17) and [A18](open-questions.md#a18).
 - [x] `--script` aborts on the first failing command rather than
       continuing through the rest of the file
 - [x] `--script`/`--stdin` writes nothing to the session history file
+- [x] Plain `gage ls` (no `--header`) is unchanged: no `|`, still exactly
+      one line per entry — pins #54's `--header` addition as additive
+- [x] `gage ls --header` (and its `-H` shorthand) prints a header row
+      naming every column, a dash row broken at each `|` boundary, and
+      `|`-delimited rows with the right title/id/dates/updated_by
+- [x] `gage ls --header` on an empty vault still prints nothing
+- [x] `gage ls --header` renders identically in session and one-shot
+      mode, same as plain `ls` (M7's one-renderer guarantee)
 
 ## Implementation
 
@@ -215,6 +253,8 @@ amendments [A17](open-questions.md#a17) and [A18](open-questions.md#a18).
 - [x] Non-interactive session (`--script`, `--stdin`)
 - [x] `envPrompter` in `cmd/gage` — `GAGE_PASSPHRASE`, unlock-purpose
       only, single attempt
+- [x] `ls --header`/`-H` (#54): labelled, `|`-delimited table rendering
+      alongside the existing default rows, one renderer for both
 
 **Implementation note, flagged so it isn't discovered late:** there is no
 portable, pure-Go way to touch a system clipboard. The realistic options

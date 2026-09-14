@@ -70,7 +70,7 @@ Details: [Identities and recipients](identities-and-recipients.md), [Adding a de
 | `rm <query> [--use NAME]` | Delete an entry. |
 | `mv <query> --to-vault <name> [--use NAME]` | Move an entry to another vault. |
 | `cp <query> --to-vault <name> [--use NAME]` | Copy an entry into another vault, keeping the original. |
-| `ls [--use NAME]` | List entries with their ids, dates, and last writer. |
+| `ls [--use NAME] [-H\|--header]` | List entries with their ids, dates, and last writer. |
 | `search <pattern> [--use NAME]` (alias `grep`) | Find entries by title, description, or body text. |
 | `reindex [--use NAME]` | Force a session's cached metadata index to rebuild. |
 

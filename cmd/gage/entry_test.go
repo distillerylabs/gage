@@ -577,6 +577,181 @@ func TestLsEmptyVaultNoOutput(t *testing.T) {
 	}
 }
 
+// TestLsDefaultOutputUnchangedByHeaderFeature pins the M4/M7 contract
+// that plain `ls` (no --header) stays exactly the unlabelled, positional
+// rows it always was — no `|`, no header line, no dashes — so that
+// #54's --header addition is provably additive rather than a change in
+// disguise. A script depending on today's greppable ls should never need
+// to change because this flag exists.
+func TestLsDefaultOutputUnchangedByHeaderFeature(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	if res, _ := runCLIWithValue(t, []string{"insert", "ProtonMail"}, "v"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+
+	res := runCLI(t, []string{"ls"}, "")
+	if res.Code != 0 {
+		t.Fatalf("ls failed: %s", res.Stderr)
+	}
+	if strings.Contains(res.Stdout, "|") {
+		t.Errorf("plain ls output contains a column separator, want unlabelled rows: %q", res.Stdout)
+	}
+	if strings.Count(res.Stdout, "\n") != 1 {
+		t.Errorf("plain ls printed %d lines, want exactly one row and no header: %q",
+			strings.Count(res.Stdout, "\n"), res.Stdout)
+	}
+}
+
+// TestLsHeaderPrintsLabelledPipeDelimitedTable covers #54: `ls --header`
+// (and its -H shorthand) prints a labelled table — a header row naming
+// every column, a row of dashes under it broken at the same points the
+// `|` column separators fall, then one `|`-delimited row per entry —
+// instead of ls's default unlabelled rows.
+func TestLsHeaderPrintsLabelledPipeDelimitedTable(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	device := readGlobalConfigForTest(t).Vaults["personal"].Device
+
+	ins, _ := runCLIWithValue(t, []string{"insert", "secret0"}, "v1")
+	if ins.Code != 0 {
+		t.Fatalf("insert secret0: %s", ins.Stderr)
+	}
+	// "gage: inserted %q (%s)\n" — the id is everything between the last
+	// "(" and ")" on the line.
+	full := ins.Stdout[strings.LastIndex(ins.Stdout, "(")+1 : strings.LastIndex(ins.Stdout, ")")]
+
+	if res, _ := runCLIWithValue(t, []string{"insert", "test@gmail.com backup codes"}, "v2"); res.Code != 0 {
+		t.Fatalf("insert backup codes: %s", res.Stderr)
+	}
+
+	for _, flag := range []string{"--header", "-H"} {
+		t.Run(flag, func(t *testing.T) {
+			res := runCLI(t, []string{"ls", flag}, "")
+			if res.Code != 0 {
+				t.Fatalf("ls %s failed: %s", flag, res.Stderr)
+			}
+			lines := strings.Split(strings.TrimRight(res.Stdout, "\n"), "\n")
+			if len(lines) != 4 {
+				t.Fatalf("ls %s printed %d lines, want header + separator + 2 rows:\n%s",
+					flag, len(lines), res.Stdout)
+			}
+
+			header, sep, rows := lines[0], lines[1], lines[2:]
+
+			headerCols := strings.Split(header, " | ")
+			wantCols := []string{"title", "id", "created at", "updated at", "updated by"}
+			if len(headerCols) != len(wantCols) {
+				t.Fatalf("header %q has %d columns, want %d", header, len(headerCols), len(wantCols))
+			}
+			for i, want := range wantCols {
+				if strings.TrimRight(headerCols[i], " ") != want {
+					t.Errorf("header column %d = %q, want %q", i, strings.TrimRight(headerCols[i], " "), want)
+				}
+			}
+
+			// The separator is dashes broken at the same column
+			// boundaries as the header/rows, and lines up with them
+			// character-for-character.
+			if strings.Trim(sep, "-+") != "" {
+				t.Errorf("separator line %q contains characters other than '-' and '+'", sep)
+			}
+			if len(sep) != len(header) {
+				t.Errorf("separator line is %d chars, header is %d; they should line up:\nheader: %q\nsep:    %q",
+					len(sep), len(header), header, sep)
+			}
+			for i, r := range header {
+				if r == '|' && rune(sep[i]) != '+' {
+					t.Errorf("separator doesn't break under header's '|' at column %d:\nheader: %q\nsep:    %q", i, header, sep)
+				}
+			}
+
+			// Rows carry the same fields ls always has, just
+			// pipe-delimited and padded to the header's widths.
+			fields := strings.Split(rows[0], " | ")
+			if len(fields) != 5 {
+				t.Fatalf("row %q doesn't split into 5 `|`-delimited fields", rows[0])
+			}
+			if strings.TrimRight(fields[0], " ") != "secret0" {
+				t.Errorf("row title = %q, want %q", strings.TrimRight(fields[0], " "), "secret0")
+			}
+			id := strings.TrimRight(fields[1], " ")
+			if !strings.HasPrefix(full, id) || len(id) >= len(full) {
+				t.Errorf("row id %q is not a proper prefix of the entry's UUID %q", id, full)
+			}
+			today := time.Now().UTC().Format("2006-01-02")
+			if strings.TrimRight(fields[2], " ") != today || strings.TrimRight(fields[3], " ") != today {
+				t.Errorf("row dates = %q/%q, want today %q", fields[2], fields[3], today)
+			}
+			if fields[4] != device {
+				t.Errorf("row updated_by = %q, want %q", fields[4], device)
+			}
+		})
+	}
+}
+
+// TestLsHeaderEmptyVaultNoOutput: --header on an empty vault still prints
+// nothing at all, matching ls's existing "no rows, no output" rule — a
+// header describing zero entries is noise, not a table.
+func TestLsHeaderEmptyVaultNoOutput(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	res := runCLI(t, []string{"ls", "--header"}, "")
+	if res.Code != 0 {
+		t.Fatalf("ls --header on an empty vault failed: %s", res.Stderr)
+	}
+	if res.Stdout != "" {
+		t.Errorf("ls --header on an empty vault produced output: %q", res.Stdout)
+	}
+}
+
+// TestLsHeaderRendersIdenticallyInBothModes extends
+// TestLsRendersIdenticallyInBothModes to --header: the same one-path
+// rendering guarantee (Vault.List vs Session.List, one renderer) must
+// hold for the labelled table too, not just the default rows.
+func TestLsHeaderRendersIdenticallyInBothModes(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	for _, title := range []string{"AWS root account", "a", "Café"} {
+		if res, _ := runCLIWithValue(t, []string{"insert", title}, "v-"+title); res.Code != 0 {
+			t.Fatalf("insert %q: %s", title, res.Stderr)
+		}
+	}
+
+	oneShot := runCLI(t, []string{"ls", "--header"}, "")
+	if oneShot.Code != 0 {
+		t.Fatalf("one-shot ls --header: %s", oneShot.Stderr)
+	}
+
+	session := runSessionScript(t, script("use personal", testPassphrase, "ls --header", "exit"))
+	if session.Code != 0 {
+		t.Fatalf("session ls --header: %s", session.Stderr)
+	}
+
+	var got []string
+	for _, line := range strings.Split(session.Stdout, "\n") {
+		if i := strings.LastIndex(line, "gage> "); i >= 0 {
+			line = line[i+len("gage> "):]
+		}
+		if strings.TrimSpace(line) == "" || strings.Contains(line, "Enter passphrase") {
+			continue
+		}
+		got = append(got, line)
+	}
+	want := strings.Split(strings.TrimRight(oneShot.Stdout, "\n"), "\n")
+
+	if len(got) != len(want) {
+		t.Fatalf("session ls --header printed %d rows, one-shot printed %d:\nsession:  %q\none-shot: %q", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d differs between modes:\none-shot: %q\nsession:  %q", i, want[i], got[i])
+		}
+	}
+}
+
 // TestRmDeletesFileAndCommitsThenCatAndLsNoLongerShowIt.
 func TestRmDeletesFileAndCommitsThenCatAndLsNoLongerShowIt(t *testing.T) {
 	isolateXDG(t)

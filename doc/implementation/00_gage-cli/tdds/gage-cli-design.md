@@ -1635,9 +1635,11 @@ few decisions worth calling out" explains.
 ### Entry CRUD
 
 ```
-gage ls [--use NAME]                        # list entries: title, short id, created,
+gage ls [--use NAME] [-H|--header]          # list entries: title, short id, created,
                                               # updated, updated_by (requires unlock —
-                                              # see below)
+                                              # see below). Default: unlabelled,
+                                              # positional rows (greppable). -H/--header:
+                                              # a labelled, |-delimited table instead.
 gage search <pattern> [--use NAME]          # matches title/description/body
                                               # (decrypts in bulk if no index
                                               # cached yet; alias: gage grep)

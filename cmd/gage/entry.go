@@ -911,16 +911,22 @@ func newRmCommand(app *App) *cobra.Command {
 // formatting loops that happen to agree today.
 func newLsCommand(app *App) *cobra.Command {
 	var useFlag string
+	var headerFlag bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: commandShort("ls"),
-		// The columns are positional and unlabelled, so that `ls` stays
-		// one greppable line per entry (M4's decision). The legend for
-		// them belongs here, where `gage help ls` will show it, rather
-		// than in a header line every script would have to skip.
+		// The columns are positional and unlabelled by default, so that
+		// `ls` stays one greppable line per entry (M4's decision,
+		// reaffirmed in M7). --header is purely additive on top of that:
+		// it opts into a labelled, `|`-delimited table for a human
+		// reading a terminal, and changes nothing about the default rows
+		// a script would parse. The legend for the default columns
+		// belongs here, where `gage help ls` will show it, rather than
+		// in a header line every script would have to skip.
 		Long: commandShort("ls") + ".\n\n" +
 			"Columns: title, short id, created, updated, updated_by.\n" +
-			"Dates are UTC, to the day; `gage cat <query>` shows the full entry.",
+			"Dates are UTC, to the day; `gage cat <query>` shows the full entry.\n" +
+			"--header prints a labelled table instead of plain rows.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if app.Session != nil {
@@ -928,7 +934,7 @@ func newLsCommand(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				writeLsRows(app, rows)
+				writeLsRows(app, rows, headerFlag)
 				return nil
 			}
 			return withUnlockedVault(app, useFlag, func(v *gage.Vault, ident *gage.Identity) error {
@@ -936,14 +942,21 @@ func newLsCommand(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				writeLsRows(app, rows)
+				writeLsRows(app, rows, headerFlag)
 				return nil
 			})
 		},
 	}
 	addUseFlag(cmd, &useFlag)
+	cmd.Flags().BoolVarP(&headerFlag, "header", "H", false,
+		"print a labelled, |-delimited table instead of plain unlabelled rows")
 	return cmd
 }
+
+// lsColumns names ls's columns, in display order, for --header's table.
+// Kept alongside writeLsRows rather than inlined so the header labels and
+// the row-building loop can't drift out of column-count sync.
+var lsColumns = [...]string{"title", "id", "created at", "updated at", "updated by"}
 
 // writeLsRows prints one line per entry: title, short id, created,
 // updated, updated_by. Title and updated_by are the only variable-width
@@ -952,35 +965,101 @@ func newLsCommand(app *App) *cobra.Command {
 //
 // An empty vault prints nothing at all — not a header, not a blank line
 // — which is what keeps `gage ls | wc -l` honest and matches M4's
-// "succeeds with no output and exit 0".
-func writeLsRows(app *App, rows []gage.ListEntry) {
+// "succeeds with no output and exit 0". That holds under --header too:
+// a header describing zero rows is noise, not a table.
+func writeLsRows(app *App, rows []gage.ListEntry, header bool) {
 	if len(rows) == 0 {
 		return
 	}
-	// Runes, not bytes: fmt's %-*s pads to a width counted in runes, so
-	// measuring the same way is what keeps a title like "Café" or a
-	// CJK one from pushing its row's later columns out of line. (A
-	// double-width glyph still occupies two terminal cells against one
-	// rune of padding; matching fmt is as far as this goes without a
-	// display-width dependency.)
-	titleWidth := 0
-	for _, r := range rows {
-		if n := utf8.RuneCountInString(r.Title); n > titleWidth {
-			titleWidth = n
-		}
-	}
 
-	lines := make([]string, 0, len(rows))
-	for _, r := range rows {
-		lines = append(lines, strings.TrimRight(fmt.Sprintf("%-*s  %s  %s  %s  %s",
-			titleWidth, r.Title,
+	cells := make([][5]string, len(rows))
+	for i, r := range rows {
+		cells[i] = [5]string{
+			r.Title,
 			shortEntryID(r.ID.String()),
 			lsDate(r.Created),
 			lsDate(r.Updated),
 			lsField(r.UpdatedBy),
-		), " "))
+		}
 	}
-	writeOut(app.Out, lines)
+
+	if !header {
+		// Runes, not bytes: fmt's %-*s pads to a width counted in runes,
+		// so measuring the same way is what keeps a title like "Café" or
+		// a CJK one from pushing its row's later columns out of line. (A
+		// double-width glyph still occupies two terminal cells against
+		// one rune of padding; matching fmt is as far as this goes
+		// without a display-width dependency.)
+		titleWidth := 0
+		for _, c := range cells {
+			if n := utf8.RuneCountInString(c[0]); n > titleWidth {
+				titleWidth = n
+			}
+		}
+		lines := make([]string, 0, len(rows))
+		for _, c := range cells {
+			lines = append(lines, strings.TrimRight(fmt.Sprintf("%-*s  %s  %s  %s  %s",
+				titleWidth, c[0], c[1], c[2], c[3], c[4]), " "))
+		}
+		writeOut(app.Out, lines)
+		return
+	}
+
+	writeOut(app.Out, lsTable(cells))
+}
+
+// lsTable renders cells as a labelled table: a header row of lsColumns, a
+// row of dashes under it (broken at the same points the `|` column
+// separators fall, mysql/psql-style), then one `|`-delimited row per
+// entry. Every column but the last is padded to the widest value it
+// holds anywhere in the table, header included. The last column
+// (updated_by) is never padded on any row — a long device name would
+// otherwise leave trailing whitespace on every shorter row — so its dash
+// segment is sized off the header label alone; nothing follows it, so it
+// need only reach as far as "updated by" does.
+func lsTable(cells [][5]string) []string {
+	var width [5]int
+	for i, name := range lsColumns {
+		width[i] = utf8.RuneCountInString(name)
+	}
+	for _, c := range cells {
+		for i, v := range c {
+			if i == len(c)-1 {
+				continue
+			}
+			if n := utf8.RuneCountInString(v); n > width[i] {
+				width[i] = n
+			}
+		}
+	}
+
+	pad := func(s string, w int) string {
+		return s + strings.Repeat(" ", w-utf8.RuneCountInString(s))
+	}
+	joinRow := func(fields [5]string) string {
+		parts := make([]string, 5)
+		for i, v := range fields {
+			if i == len(fields)-1 {
+				parts[i] = v
+				continue
+			}
+			parts[i] = pad(v, width[i])
+		}
+		return strings.Join(parts, " | ")
+	}
+
+	dashes := [5]string{}
+	for i, w := range width {
+		dashes[i] = strings.Repeat("-", w)
+	}
+
+	lines := make([]string, 0, len(cells)+2)
+	lines = append(lines, joinRow(lsColumns))
+	lines = append(lines, strings.Join(dashes[:], "-+-"))
+	for _, c := range cells {
+		lines = append(lines, joinRow(c))
+	}
+	return lines
 }
 
 // lsDate renders one timestamp as a plain UTC date. A zero time — an
