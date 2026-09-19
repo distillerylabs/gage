@@ -1,5 +1,9 @@
 # gage
 
+[![Test](https://github.com/denmark/gage/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/denmark/gage/actions/workflows/test.yml)
+[![Lint](https://github.com/denmark/gage/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/denmark/gage/actions/workflows/lint.yml)
+[![Vuln](https://github.com/denmark/gage/actions/workflows/vuln.yml/badge.svg?branch=main)](https://github.com/denmark/gage/actions/workflows/vuln.yml)
+
 `gage` (`git` + `age`) is a git-backed, age-encrypted secret and notes manager for the command line, written in Go.
 
 Secrets and notes are stored as individual [age](https://age-encryption.org/)-encrypted files in a git repository. Git handles history, sync, and multi-device distribution; `gage` handles encryption, recipient management, and giving you a fast CLI (and REPL) for storing and retrieving entries. There is no server, no daemon, and no proprietary storage format — a vault is just a git repo you can clone, back up, and inspect like any other.

@@ -58,6 +58,45 @@ build:
 test:
 	GOPROXY=off GOFLAGS=-mod=readonly go test -timeout 20m ./...
 
+# Same command as `test` plus a coverage profile. -coverpkg=./... credits
+# a package for lines exercised by *other* packages' tests, which matters
+# here because cmd/gage's in-process CLI tests drive most of internal/gage.
+# CI runs this instead of `test`; `test` stays for a quick local run.
+.PHONY: cover
+cover:
+	GOPROXY=off GOFLAGS=-mod=readonly go test -timeout 20m -covermode=atomic -coverprofile=coverage.out -coverpkg=./... ./...
+
+# Pinned for the same reason as golangci-lint below. Each tool installs
+# into its own version-stamped directory under bin/, so changing the pin
+# yields a new path and make reinstalls without any version parsing.
+GO_TEST_COVERAGE_VERSION := v2.19.0
+GO_TEST_COVERAGE_BIN     := $(CURDIR)/bin/go-test-coverage-$(GO_TEST_COVERAGE_VERSION)/go-test-coverage$(shell go env GOEXE)
+
+$(GO_TEST_COVERAGE_BIN):
+	@echo "installing go-test-coverage $(GO_TEST_COVERAGE_VERSION) into bin/..."
+	@GOBIN=$(dir $(GO_TEST_COVERAGE_BIN)) go install github.com/vladopajic/go-test-coverage/v2@$(GO_TEST_COVERAGE_VERSION)
+
+# Reads coverage.out (run `make cover` first); thresholds live in
+# .testcoverage.yml.
+.PHONY: cover-check
+cover-check: $(GO_TEST_COVERAGE_BIN)
+	"$(GO_TEST_COVERAGE_BIN)" --config=.testcoverage.yml
+
+# Unlike the rest of the toolchain this needs network: govulncheck fetches
+# the Go vulnerability database at run time, so it can't run under the
+# GOPROXY=off used by `test`/`cover`. The result can also change without a
+# code change, when a new advisory is published.
+GOVULNCHECK_VERSION := v1.8.0
+GOVULNCHECK_BIN     := $(CURDIR)/bin/govulncheck-$(GOVULNCHECK_VERSION)/govulncheck$(shell go env GOEXE)
+
+$(GOVULNCHECK_BIN):
+	@echo "installing govulncheck $(GOVULNCHECK_VERSION) into bin/..."
+	@GOBIN=$(dir $(GOVULNCHECK_BIN)) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+.PHONY: vuln
+vuln: $(GOVULNCHECK_BIN)
+	"$(GOVULNCHECK_BIN)" ./...
+
 # Pinned rather than tracking latest: golangci-lint's config schema
 # changed between v1 and v2, and a linter that silently gains new checks
 # on a version bump turns an unrelated CI run red.

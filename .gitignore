@@ -6,6 +6,9 @@
 # Pinned lint toolchain, installed by `make lint` (see GOLANGCI_BIN)
 /bin/
 
+# Coverage profile, written by `make cover`
+/coverage.out
+
 # OS cruft
 .DS_Store
 Thumbs.db

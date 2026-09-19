@@ -1,0 +1,18 @@
+# Config for go-test-coverage, run by `make cover-check` after `make cover`.
+#
+# Only the overall figure gates for now: 80% total, set just below the
+# 85.7% measured when this was added so an ordinary change doesn't trip it.
+# File and package thresholds stay at 0 (report-only); add per-package
+# overrides here if a package needs a different bar.
+profile: coverage.out
+
+threshold:
+  file: 0
+  package: 0
+  total: 80
+
+# scripts/ holds standalone dev-only tools (e.g. resetlocalstate) that are
+# never shipped in the gage binary, so they don't count toward coverage.
+exclude:
+  paths:
+    - ^scripts/

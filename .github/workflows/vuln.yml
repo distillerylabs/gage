@@ -1,0 +1,27 @@
+name: Vuln
+
+on:
+  workflow_dispatch:
+
+# Its own workflow, rather than a job in test.yml, so it gets its own status
+# badge: unlike build/test/lint, this result can change without a code
+# change when a new advisory lands. Needs network (govulncheck fetches the
+# vulnerability database), and is platform-independent, so it runs once.
+jobs:
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Cache vuln toolchain
+        uses: actions/cache@v4
+        with:
+          path: bin
+          key: vuln-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: make vuln
+        run: make vuln

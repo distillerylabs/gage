@@ -20,7 +20,7 @@ Run a single test: `go test ./internal/gage/ -run TestName -v` (or the relevant 
 
 `golangci-lint` is pinned (see `GOLANGCI_VERSION` in the Makefile) and installed into `./bin`, not resolved from `PATH` — `make lint` handles installing it.
 
-CI (`.github/workflows/ci.yml`) runs build/test/lint natively on Linux, macOS, and Windows — not cross-compiled. Several invariants (page-locking, vault file locking, core-dump suppression) only hold if real platform syscalls run, so cross-platform breakage can't be caught on one OS alone.
+CI (`.github/workflows/test.yml` for build/test/coverage, `lint.yml` for lint) runs natively on Linux, macOS, and Windows — not cross-compiled. `vuln.yml` runs `govulncheck` once on Linux. Several invariants (page-locking, vault file locking, core-dump suppression) only hold if real platform syscalls run, so cross-platform breakage can't be caught on one OS alone.
 
 ## Development workflow
 

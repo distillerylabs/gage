@@ -1,10 +1,15 @@
-name: CI
+name: Lint
 
 on:
   workflow_dispatch:
 
+# Its own workflow, rather than a step in test.yml, so it gets its own
+# status badge. Still run across the full OS matrix: golangci-lint only
+# analyzes files whose build constraints match the platform it runs on, so
+# the platform-specific code (memlock, vaultlock, ...) is only linted
+# natively.
 jobs:
-  test:
+  lint:
     strategy:
       fail-fast: false
       matrix:
@@ -29,30 +34,10 @@ jobs:
           path: bin
           key: golangci-${{ runner.os }}-${{ hashFiles('Makefile') }}
 
-      # windows-latest doesn't ship GNU make; every other platform in the
-      # matrix already has it. The plan requires make build/test/lint to
-      # run natively (not cross-compiled) on all three OSes, so this is
-      # the one bit of matrix-specific setup rather than a reason to
-      # avoid a Makefile.
+      # windows-latest doesn't ship GNU make; see test.yml.
       - name: Install make (Windows)
         if: runner.os == 'Windows'
         run: choco install make --no-progress -y
-
-      # `make test` runs with GOPROXY=off so the test suite can never reach
-      # the network. That requires every module to already be in the module
-      # cache, which isn't true on a cold runner, so populate it explicitly
-      # here rather than relying on setup-go's cache being warm.
-      - name: go mod download
-        run: go mod download
-        shell: bash
-
-      - name: make build
-        run: make build
-        shell: bash
-
-      - name: make test
-        run: make test
-        shell: bash
 
       - name: make lint
         run: make lint
