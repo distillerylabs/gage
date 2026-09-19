@@ -85,3 +85,7 @@ The library/CLI split is intentional and enforced by lint rules: `internal/gage`
 ## Status and documentation
 
 `gage` is under active milestone-based development. Full design rationale lives in [doc/implementation/00_gage-cli/tdds/gage-cli-design.md](doc/implementation/00_gage-cli/tdds/gage-cli-design.md); the build plan (milestones and cross-milestone contracts) lives in [doc/implementation/00_gage-cli/plans/gage-cli-design/index.md](doc/implementation/00_gage-cli/plans/gage-cli-design/index.md).
+
+## License
+
+`gage` is licensed under the [Apache License 2.0](LICENSE).
