@@ -10,8 +10,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
 // Two devices enrolling at once.

@@ -10,7 +10,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 func TestClassifyPushSortsTheThreeBuckets(t *testing.T) {

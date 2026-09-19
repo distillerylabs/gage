@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
 // xdgRoot is where the process's XDG roots point right now. These tests

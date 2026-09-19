@@ -1,4 +1,4 @@
-module github.com/denmark/gage
+module github.com/distillerylabs/gage
 
 go 1.26.6
 

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
 // preparedConflict leaves dir diverged from its remote on seed.txt —

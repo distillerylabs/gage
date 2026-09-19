@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/syncerr"
-	"github.com/denmark/gage/internal/gage/vaultlock"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/syncerr"
+	"github.com/distillerylabs/gage/internal/gage/vaultlock"
 )
 
 // RemoteOpTimeout bounds every network operation gage starts on its own —

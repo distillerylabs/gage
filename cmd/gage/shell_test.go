@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 func TestResolveShellSettingsDefaults(t *testing.T) {

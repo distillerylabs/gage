@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // fakeClipboard stands in for the system clipboard. Every clipboard test

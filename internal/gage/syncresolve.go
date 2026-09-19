@@ -8,9 +8,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/syncerr"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/syncerr"
 )
 
 // ErrNotInteractive is what resolution fails with when there is nobody to

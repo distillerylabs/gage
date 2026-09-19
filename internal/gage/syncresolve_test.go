@@ -15,10 +15,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/gittest"
-	"github.com/denmark/gage/internal/gage/vaultlock"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/vaultlock"
 )
 
 // resolvingPrompter is a Prompter that can also answer an entry conflict —

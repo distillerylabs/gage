@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // insertNamed is resolve_test.go's own small helper: sampleEntry with a

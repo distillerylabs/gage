@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 func sampleSeedEntry() gage.Entry {

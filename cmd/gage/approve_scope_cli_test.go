@@ -10,11 +10,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/recipients"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/recipients"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
 )
 
 // ---------------------------------------------------------------------

@@ -11,9 +11,9 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/denmark/gage/internal/gage/atomicfile"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/memlock"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/memlock"
 )
 
 // shippedScryptWorkFactor is the log2 cost gage wraps identity files at

@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // ErrNoCurrentVault is what every current-vault-scoped Session call

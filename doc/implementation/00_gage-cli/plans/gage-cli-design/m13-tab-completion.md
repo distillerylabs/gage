@@ -19,7 +19,7 @@ mode, and not shell-side completion scripts — see "Out of scope"):
    needed: typing `ident` and pressing Enter runs `identity` if it's the
    only session-visible command starting with `ident`.
 
-Both opened as [#25](https://github.com/denmark/gage/issues/25) and are
+Both opened as [#25](https://github.com/distillerylabs/gage/issues/25) and are
 new scope raised after the original plan shipped in full — filed as its
 own milestone rather than folded into "Post-plan changes" in the index,
 because it carries its own up-front decisions and test list rather than

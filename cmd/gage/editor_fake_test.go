@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // setFakeEditor points $EDITOR at this same test binary (os.Args[0]) and

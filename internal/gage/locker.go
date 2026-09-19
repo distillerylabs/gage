@@ -1,6 +1,6 @@
 package gage
 
-import "github.com/denmark/gage/internal/gage/memlock"
+import "github.com/distillerylabs/gage/internal/gage/memlock"
 
 // Locker is the seam between Vault.Unlock/Identity.Close and the
 // platform's page-locking syscalls. Production and every realistic test

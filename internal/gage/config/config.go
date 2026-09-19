@@ -9,7 +9,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/denmark/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
 )
 
 // GitMeta is the git-type-specific metadata for a vault entry, namespaced

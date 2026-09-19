@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/devicename"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/devicename"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // ErrDeviceNameTaken is AddIdentity refusing a device name the vault

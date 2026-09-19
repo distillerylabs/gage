@@ -9,11 +9,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
-	"github.com/denmark/gage/internal/gage/vaultlock"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage/vaultlock"
 )
 
 // E0 — vault-id keying (A20 / Q-ORPHAN-BY-NAME).

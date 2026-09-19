@@ -8,11 +8,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
 )
 
 // newVaultCommand groups the vault-generic lifecycle commands that

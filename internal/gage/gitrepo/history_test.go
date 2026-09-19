@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
 // contentsOf renders a log as the sequence of blob states it reports,

@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/denmark/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
 )
 
 // Read parses path as one public key per line. Blank lines are skipped;

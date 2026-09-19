@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // TestPendingFileNameRoundTrips pins D-ENROLL-EXPIRY-IN-NAME's format:

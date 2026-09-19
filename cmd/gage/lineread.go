@@ -10,7 +10,7 @@ import (
 
 	"github.com/chzyer/readline"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // errInterrupted is Ctrl-C at the prompt: abandon the line being typed,

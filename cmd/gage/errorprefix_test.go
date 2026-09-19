@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
 // doubledPrefix is what this file exists to keep out of gage's output.

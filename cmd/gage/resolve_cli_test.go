@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // noChoicePrompter answers a passphrase normally (an ambiguous query is

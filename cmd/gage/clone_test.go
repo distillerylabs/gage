@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gittest"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
 )
 
 // publishedVault creates a vault in one XDG root, publishes it to a bare

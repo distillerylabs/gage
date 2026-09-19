@@ -24,9 +24,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 
-	"github.com/denmark/gage/internal/gage/atomicfile"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 var (

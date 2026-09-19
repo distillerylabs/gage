@@ -14,8 +14,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // newSessionDevice lays out one simulated machine holding several real

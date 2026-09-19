@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 func main() {

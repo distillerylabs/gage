@@ -1,4 +1,4 @@
-MODULE := github.com/denmark/gage
+MODULE := github.com/distillerylabs/gage
 
 VERSION := $(shell git describe --tags --exact-match 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)

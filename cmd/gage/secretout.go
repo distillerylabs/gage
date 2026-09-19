@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // emitSecret is the one place a decrypted value leaves gage, and the

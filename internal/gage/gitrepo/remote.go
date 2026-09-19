@@ -13,8 +13,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/memory"
 
-	"github.com/denmark/gage/internal/gage/remoteauth"
-	"github.com/denmark/gage/internal/gage/syncerr"
+	"github.com/distillerylabs/gage/internal/gage/remoteauth"
+	"github.com/distillerylabs/gage/internal/gage/syncerr"
 )
 
 // RemoteState describes how a vault's local branch relates to the last

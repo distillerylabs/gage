@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
 // publishedRepo is a working repository whose one commit is already on a

@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // recordingDefaultYes is a bare Prompter that records every

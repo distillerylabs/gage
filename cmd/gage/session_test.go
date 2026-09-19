@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // TestBareGageOnTTYEntersSessionMode asserts the dispatch-level decision

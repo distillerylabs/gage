@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/denmark/gage/internal/gage/gittest"
-	"github.com/denmark/gage/internal/gage/remoteauth"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/remoteauth"
 )
 
 // testToken is what the fake prompter answers `auth login`'s token

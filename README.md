@@ -1,8 +1,8 @@
 # gage
 
-[![Test](https://github.com/denmark/gage/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/denmark/gage/actions/workflows/test.yml)
-[![Lint](https://github.com/denmark/gage/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/denmark/gage/actions/workflows/lint.yml)
-[![Vuln](https://github.com/denmark/gage/actions/workflows/vuln.yml/badge.svg?branch=main)](https://github.com/denmark/gage/actions/workflows/vuln.yml)
+[![Test](https://github.com/distillerylabs/gage/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/distillerylabs/gage/actions/workflows/test.yml)
+[![Lint](https://github.com/distillerylabs/gage/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/distillerylabs/gage/actions/workflows/lint.yml)
+[![Vuln](https://github.com/distillerylabs/gage/actions/workflows/vuln.yml/badge.svg?branch=main)](https://github.com/distillerylabs/gage/actions/workflows/vuln.yml)
 
 `gage` (`git` + `age`) is a git-backed, age-encrypted secret and notes manager for the command line, written in Go.
 
