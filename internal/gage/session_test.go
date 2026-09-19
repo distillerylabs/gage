@@ -7,6 +7,8 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -371,6 +373,133 @@ func TestSessionResolveRefusesAnIDThatWasNeverOffered(t *testing.T) {
 
 	if _, _, err := s.Resolve("", "AWS"); !errors.Is(err, ErrNotACandidate) {
 		t.Errorf("Resolve error = %v, want ErrNotACandidate", err)
+	}
+}
+
+// TestEntryTitleCandidatesEmptyWithNoCurrentVault is M13's completion
+// source with nothing selected yet: no current vault means no titles,
+// not an error.
+func TestEntryTitleCandidatesEmptyWithNoCurrentVault(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	s, _ := newTestSession(t, open, SessionConfig{})
+
+	got, err := s.EntryTitleCandidates()
+	if err != nil {
+		t.Fatalf("EntryTitleCandidates: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("EntryTitleCandidates with no current vault = %v, want none", got)
+	}
+}
+
+// TestEntryTitleCandidatesEmptyWhenLockedNeverPrompts is the M13 plan's
+// "never completes into a silent unlock": a current vault this session
+// hasn't unlocked (or has since locked) yields no title candidates, and
+// critically never calls the Prompter to get one.
+func TestEntryTitleCandidatesEmptyWhenLockedNeverPrompts(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	s, p := newTestSession(t, open, SessionConfig{Current: "personal"})
+
+	// The vault is named as current but never Use'd, so it's unheld.
+	got, err := s.EntryTitleCandidates()
+	if err != nil {
+		t.Fatalf("EntryTitleCandidates on an unheld current vault: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("EntryTitleCandidates on an unheld vault = %v, want none", got)
+	}
+	if p.unlockCount("personal") != 0 {
+		t.Fatalf("EntryTitleCandidates on an unheld vault called Prompter.Unlock")
+	}
+
+	// Unlock it, then lock it again: same expectation, now via a held
+	// record whose Identity has been dropped rather than one that was
+	// never opened.
+	if err := s.Use("personal"); err != nil {
+		t.Fatalf("Use: %v", err)
+	}
+	if err := s.Lock("personal"); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	got, err = s.EntryTitleCandidates()
+	if err != nil {
+		t.Fatalf("EntryTitleCandidates on a locked vault: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("EntryTitleCandidates on a locked vault = %v, want none", got)
+	}
+	if p.unlockCount("personal") != 1 {
+		t.Fatalf("EntryTitleCandidates re-unlocked a locked vault: unlockCount = %d, want 1 (from the earlier Use)",
+			p.unlockCount("personal"))
+	}
+}
+
+// TestEntryTitleCandidatesListsCurrentVaultTitlesOnly proves the "current
+// vault only" decision: a second vault this session also holds unlocked
+// never leaks its titles into the first vault's candidate list.
+func TestEntryTitleCandidatesListsCurrentVaultTitlesOnly(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal", "work")
+	s, _ := newTestSession(t, open, SessionConfig{})
+
+	if err := s.Use("personal"); err != nil {
+		t.Fatalf("Use personal: %v", err)
+	}
+	v, ident, err := s.Vault("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertTitled(t, v, ident, "ProtonMail")
+	insertTitled(t, v, ident, "AWS")
+
+	workVault, workIdent, err := s.Vault("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertTitled(t, workVault, workIdent, "GitHub")
+
+	got, err := s.EntryTitleCandidates()
+	if err != nil {
+		t.Fatalf("EntryTitleCandidates: %v", err)
+	}
+	want := []string{"AWS", "ProtonMail"}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("EntryTitleCandidates = %v, want %v (never \"work\"'s titles)", got, want)
+	}
+}
+
+// TestEntryTitleCandidatesBuildsIndexOnce is the index-reuse half of the
+// M13 test list: completing against an unlocked-but-unindexed vault
+// triggers exactly one decrypt pass, and a second call reuses it rather
+// than rebuilding per keystroke.
+func TestEntryTitleCandidatesBuildsIndexOnce(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	v, err := open("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestSession(t, open, SessionConfig{Current: "personal"})
+	_, ident, err := s.Vault("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertTitled(t, v, ident, "AWS")
+	insertTitled(t, v, ident, "GitHub")
+
+	var decrypts int
+	v.onDecrypt = func() { decrypts++ }
+
+	if _, err := s.EntryTitleCandidates(); err != nil {
+		t.Fatalf("EntryTitleCandidates: %v", err)
+	}
+	if decrypts != 2 {
+		t.Fatalf("first EntryTitleCandidates decrypted %d times, want exactly 2 (one pass)", decrypts)
+	}
+	if _, err := s.EntryTitleCandidates(); err != nil {
+		t.Fatalf("second EntryTitleCandidates: %v", err)
+	}
+	if decrypts != 2 {
+		t.Errorf("second EntryTitleCandidates re-decrypted the vault: %d total, want still 2", decrypts)
 	}
 }
 

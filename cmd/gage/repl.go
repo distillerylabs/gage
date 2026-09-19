@@ -223,6 +223,17 @@ func execSessionLine(app *App, line string) (quit bool, err error) {
 // values persist on a command once parsed — a reused tree would carry
 // the previous line's --use or -f into this one.
 func runSessionCommand(app *App, args []string) error {
+	// No-Tab abbreviation dispatch (M13): expand an unambiguous top-level
+	// prefix (e.g. "ident" -> "identity") before anything else runs.
+	// Subcommands and flags are untouched — only the first token is ever
+	// rewritten, per the M13 plan's "abbreviation reach: top-level
+	// commands only" decision.
+	resolved, err := resolveSessionCommandName(args[0])
+	if err != nil {
+		return err
+	}
+	args[0] = resolved
+
 	if ci, ok := findCommand(args[0]); ok {
 		switch ci.Name {
 		case "use":

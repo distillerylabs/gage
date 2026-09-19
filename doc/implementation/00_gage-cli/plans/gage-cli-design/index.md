@@ -48,6 +48,7 @@ The aim is for this file to describe the tool as it actually is.
 | M10 | [Local trust cache](m10-trust-cache.md) | `[x]` | Sonnet* | `known-config.toml`, recipient-change detection |
 | M11 | [Cross-vault sharing](m11-cross-vault-sharing.md) | `[x]` | Sonnet | `mv`/`cp --to-vault` |
 | M12 | [Polish / output modes](m12-polish.md) | `[x]` | Sonnet | `--clip`, `--qr`, `--field`, `log`, `history`, `--script` |
+| M13 | [Tab completion & abbreviation](m13-tab-completion.md) | `[x]` | Sonnet* | Session-mode Tab completion and unambiguous command-name abbreviation |
 
 **† These milestones shipped complete, then had their contracts
 amended.** [A19](open-questions.md#a19) makes re-encryption
@@ -60,6 +61,12 @@ rather than by the local vault name (M1's config schema and
 [E0](../gage-cli-init-design/e0-vault-id-keying.md), together with
 [Q-ORPHAN-BY-NAME](open-questions.md#q-orphan-by-name). Both amended
 contracts are now what the code does.
+
+**A thirteenth milestone was opened after that: [M13 — Tab completion &
+command abbreviation](m13-tab-completion.md)** ([#25](https://github.com/denmark/gage/issues/25)),
+covering Tab completion and unambiguous command-name abbreviation in the
+session-mode REPL. Filed as its own milestone rather than a "post-plan
+change" because it carries its own up-front decisions and test list.
 
 **Model column.** `⚑` marks a milestone worth an Opus review pass over
 its *tests* before moving on, even where Sonnet wrote them. `*` marks a
@@ -96,6 +103,10 @@ M0 ─┬─> M1 ──> M2 ──> M3 ──> M4 ─┬─> M5 ──> M6 ─�
 
 M12's items are mutually independent and individually deferrable; the rest
 of the chain is genuinely sequential.
+
+**M13** depends on M0 (registry), M6 (REPL), and M7 (metadata index) —
+all already upstream of M12 in the chain above — and gates nothing later,
+so it isn't drawn as its own branch in the diagram.
 
 **Why M1 has no crypto and M2 does.** The original draft of this plan had
 M1 generate the first device's identity, and simultaneously claimed M2

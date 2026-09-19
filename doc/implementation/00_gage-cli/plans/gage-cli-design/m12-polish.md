@@ -1,6 +1,6 @@
 # M12 — Polish / output modes
 
-[← M11](m11-cross-vault-sharing.md) · [plan index](index.md)
+[← M11](m11-cross-vault-sharing.md) · [plan index](index.md) · next: [M13 — Tab completion & command abbreviation](m13-tab-completion.md)
 
 > **Recommended model: Sonnet.** Independent, individually deferrable items. All four up-front decisions are resolved below, so what's left is implementation against a settled spec.
 

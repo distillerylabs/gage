@@ -125,6 +125,7 @@ func newTTYLineReader(app *App, hist *history) (*ttyLineReader, error) {
 		EOFPrompt:       "exit",
 		Stdout:          app.Out,
 		Stderr:          app.Err,
+		AutoComplete:    newSessionCompleter(app),
 	}
 	// readline needs a real file to put into raw mode. Left to itself it
 	// raw-modes the *process's* stdin and asks that same descriptor

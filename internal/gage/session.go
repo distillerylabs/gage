@@ -587,6 +587,37 @@ func (s *Session) ForgetEntry(vault string, id uuid.UUID) {
 	held.index.remove(id)
 }
 
+// EntryTitleCandidates returns the current vault's cached entry titles,
+// for tab-completion of an entry-query argument (M13). It never unlocks:
+// no current vault, or one this session hasn't unlocked, yields no
+// candidates rather than a prompt. When the vault is already unlocked,
+// it reuses ensureIndex's lazy build exactly like Resolve/List/Search do,
+// so completing against an unlocked-but-unindexed vault triggers one
+// decrypt pass, never one per keystroke.
+//
+// Only the *current* vault, never one named by --use elsewhere on the
+// line and never another vault this session happens to have unlocked —
+// see the M13 plan's "entry-title candidates: current vault only".
+func (s *Session) EntryTitleCandidates() ([]string, error) {
+	if s.current == "" {
+		return nil, nil
+	}
+	held, ok := s.vaults[s.current]
+	if !ok || held.ident == nil {
+		return nil, nil
+	}
+	if err := s.ensureIndex(held, held.ident); err != nil {
+		return nil, err
+	}
+	titles := held.index.titles()
+	out := make([]string, 0, len(titles))
+	for _, t := range titles {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // heldVaultFor resolves name ("" meaning the current vault) to this
 // session's held record for it, or nil if that vault has never been
 // used this session. Unlike Vault, it never opens or unlocks anything —

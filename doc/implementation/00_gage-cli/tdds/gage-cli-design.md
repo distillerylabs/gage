@@ -1003,6 +1003,61 @@ pays the full decrypt-every-entry cost from scratch. That's fine for a
 handful of entries, but it's the real cost of hiding names: for a large
 vault, prefer session mode for anything beyond a single known lookup.
 
+### Tab completion & command abbreviation
+
+The interactive REPL has two related conveniences, both scoped to
+session mode only — neither exists in one-shot mode, and neither is
+shell-side completion (`gage completion bash|zsh|fish`, Cobra's built-in
+generator, is a separate mechanism entirely and isn't implemented):
+
+- **Tab completion** at the `gage>` prompt, for command/subcommand names,
+  flags, vault names, and entry queries.
+- **Unambiguous abbreviation as input, with no Tab**: typing `ident` and
+  pressing Enter runs `identity` if it's the only session-visible command
+  starting with `ident`.
+
+Both share one primitive — "what matches this prefix, among
+session-visible names" — but it is a genuinely different rule from the
+substring matching "Addressing entries" describes above: prefix only.
+`ident` matches `identity` because it starts with it; `enti` does not,
+because "contains" is not "starts with." That difference is also why the
+two stay separate resolvers rather than one generalized to cover both:
+entry addressing and CLI-command ergonomics change for unrelated reasons,
+and entry-title matching's substring stages have no business leaking into
+how a command name resolves. Tab completion renders every match on the
+shared prefix primitive (or completes the line fully on a single match);
+bare abbreviation dispatch auto-runs on a single match and refuses to
+guess on more than one — the same "list candidates, don't guess" posture
+ambiguous entry queries take, in spirit, without sharing that resolver's
+code.
+
+Abbreviation reach is deliberately narrow: only the *first* token of a
+typed line is eligible (`ident` → `identity`; `identity ad` does not
+resolve `identity add` — that's typed in full). Subcommands and flags
+stay Tab-completable, just not abbreviation-dispatchable, which keeps the
+abbreviation change's blast radius to one place — the first token of a
+session command line — rather than reopening the rest of the line for
+reinterpretation.
+
+Every candidate source is either static (the command registry, a
+command's own registered flags) or, when dynamic, reads state that
+carries no risk of a silent unlock:
+
+- `use`/`lock`/`--use` complete against every vault name in global
+  config, independent of which vaults are actually unlocked right now.
+- An entry-query argument (`show`/`cat`/`edit`/`rename`/`generate`/
+  `rm`/`mv`/`cp`) completes against the *current* vault's in-memory
+  metadata index, and only when that vault is already unlocked — a
+  locked current vault offers no title candidates at all, and completion
+  never calls anything that could prompt for a passphrase. It's always
+  the current vault's titles, too, even when `--use NAME` names a
+  different one earlier on the same line: `--use` itself completes
+  against vault *names*, never against that other vault's entries.
+
+`init` and `clone` are excluded from every candidate set and from
+abbreviation dispatch, the same as their existing exclusion from
+in-session `help` (see "Session-only commands").
+
 ### Why an idle timeout still matters despite process-scoped keys
 
 Process lifetime is a clean boundary in theory, but terminal multiplexers

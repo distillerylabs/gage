@@ -64,6 +64,54 @@ help
 exit / quit / ^D
 ```
 
+### Tab completion and command abbreviation
+
+Both are REPL-only — neither exists in one-shot mode, and neither is
+shell-side completion (`gage completion bash|zsh|fish` is a different,
+unrelated mechanism and isn't implemented here).
+
+Press Tab at the prompt to complete command names, subcommand names,
+flags, vault names, and entry queries — it completes fully on a single
+match, or lists every match when the prefix is ambiguous:
+
+```
+gage> u<Tab>
+gage> use
+gage> l<Tab>
+lock  log  ls
+gage> use pers<Tab>
+gage> use personal
+Enter passphrase: ****
+[personal🔓] gage> identity <Tab>
+add  enroll  list
+[personal🔓] gage> show Prot<Tab>
+gage> show ProtonMail
+```
+
+An unambiguous top-level abbreviation also runs with no Tab at all —
+typing `stat` and pressing Enter runs `status` if it's the only
+session-visible command starting with `stat`:
+
+```
+[personal🔓] gage> stat
+* personal    unlocked  (last used 2s ago)
+```
+
+An ambiguous one is refused rather than guessed — the same "list
+candidates, don't guess" shape an ambiguous entry query takes:
+
+```
+[personal🔓] gage> l
+gage: "l" matches more than one command: lock, log, ls
+```
+
+Abbreviation reach stops at the first word: `identity ad` still has to be
+typed in full (Tab-completing it, as above, works fine — it just isn't a
+no-Tab abbreviation). Vault-name completion (`use`/`lock`/`--use`) never
+depends on which vaults happen to be unlocked, and entry-query completion
+never triggers an unlock — a locked current vault simply offers no title
+candidates.
+
 ### Everything else works in a session too
 
 Every other command — entry commands (`show`, `cat`, `ls`, `insert`,
