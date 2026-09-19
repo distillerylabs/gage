@@ -13,7 +13,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // testKeypair generates a throwaway X25519 identity and returns it

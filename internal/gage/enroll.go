@@ -15,13 +15,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/atomicfile"
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/devicename"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/syncerr"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/devicename"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/syncerr"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 var (

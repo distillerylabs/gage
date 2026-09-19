@@ -7,7 +7,7 @@ import (
 
 	"rsc.io/qr"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // qrLevel is the error-correction level every gage QR is encoded at.

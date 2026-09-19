@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
 )
 
 // TestInsertEditOpensTemplateAndInsertsEditedValueAndFields.

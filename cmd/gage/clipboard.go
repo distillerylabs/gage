@@ -9,7 +9,7 @@ import (
 
 	"github.com/atotto/clipboard"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // clipboardPort is the system clipboard, behind one signature — the same

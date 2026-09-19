@@ -11,8 +11,8 @@ import (
 	"filippo.io/age"
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // The shared fixtures every enrollment test builds on. They write into

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/vaultlock"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/vaultlock"
 )
 
 // vaultLockTimeout bounds how long a write waits for a contended vault

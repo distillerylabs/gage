@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
 // newSyncSession wires a Session over a vault that has a remote, the way

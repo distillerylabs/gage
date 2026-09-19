@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // openSessionRun builds the Session both session modes run on —

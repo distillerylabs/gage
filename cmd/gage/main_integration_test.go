@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // exeName returns name with the platform's executable extension, so a

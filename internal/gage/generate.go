@@ -6,7 +6,7 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // GenerateDefaultLength is gage generate's value length when -l isn't

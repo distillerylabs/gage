@@ -63,7 +63,7 @@ rather than by the local vault name (M1's config schema and
 contracts are now what the code does.
 
 **A thirteenth milestone was opened after that: [M13 — Tab completion &
-command abbreviation](m13-tab-completion.md)** ([#25](https://github.com/denmark/gage/issues/25)),
+command abbreviation](m13-tab-completion.md)** ([#25](https://github.com/distillerylabs/gage/issues/25)),
 covering Tab completion and unambiguous command-name abbreviation in the
 session-mode REPL. Filed as its own milestone rather than a "post-plan
 change" because it carries its own up-front decisions and test list.

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/gittest"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // ---------------------------------------------------------------------

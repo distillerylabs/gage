@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/config"
 )
 
 // runSessionScript drives a whole session the way a human would: bare

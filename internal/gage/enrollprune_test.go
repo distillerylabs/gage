@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
 )
 
 // ---------------------------------------------------------------------

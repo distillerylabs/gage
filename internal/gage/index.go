@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/denmark/gage/internal/gage/memlock"
+	"github.com/distillerylabs/gage/internal/gage/memlock"
 )
 
 // indexArenaMinSize is the smallest arena Index ever allocates. Small

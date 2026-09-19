@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // assumeYesPrompter answers M10's recipient-change question with yes,

@@ -13,8 +13,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
-	"github.com/denmark/gage/internal/gage/gittest"
-	"github.com/denmark/gage/internal/gage/syncerr"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/syncerr"
 )
 
 // newPublishedRepo creates a working repo with one commit, wired to a

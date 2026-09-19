@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // crockfordAlphabet is Crockford's base32 encoding alphabet: the digits

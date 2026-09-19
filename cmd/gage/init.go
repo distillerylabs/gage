@@ -9,13 +9,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/devicename"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/remoteauth"
-	"github.com/denmark/gage/internal/gage/syncerr"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/devicename"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/remoteauth"
+	"github.com/distillerylabs/gage/internal/gage/syncerr"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
 )
 
 // newInitCommand builds `gage init`, a thin wiring layer over

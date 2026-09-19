@@ -4,10 +4,10 @@ import (
 	"errors"
 	"path/filepath"
 
-	"github.com/denmark/gage/internal/gage/devicename"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/devicename"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // ErrUnsafePathComponent is returned when a device name or a vault id

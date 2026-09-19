@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/gittest"
-	"github.com/denmark/gage/internal/gage/remoteauth"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/remoteauth"
 )
 
 // TestInitSolicitsATokenWhenNoneIsStored proves `gage init --remote`

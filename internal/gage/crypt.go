@@ -8,7 +8,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // The typed errors this package's crypto layer returns. They're sentinels

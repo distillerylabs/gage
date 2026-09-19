@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // failOnUnlockPrompter fails the test the instant it's asked for a

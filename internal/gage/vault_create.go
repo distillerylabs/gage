@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/agekey"
-	"github.com/denmark/gage/internal/gage/atomicfile"
-	"github.com/denmark/gage/internal/gage/devicename"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/recipients"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage/agekey"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/devicename"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/recipients"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
 )
 
 // The only accepted values for CreateSpec.Type and CreateSpec.Method

@@ -3,7 +3,7 @@ package main
 import (
 	"io"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // Run builds the command tree, executes it against args, and returns the

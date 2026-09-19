@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
 )
 
 // ErrEnrollmentNameTaken is a request whose device name — the one it was

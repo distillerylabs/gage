@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 func TestHelpFlagExitsZero(t *testing.T) {

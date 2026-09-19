@@ -14,8 +14,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/denmark/gage/internal/gage/atomicfile"
-	"github.com/denmark/gage/internal/gage/devicename"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/devicename"
 )
 
 // CurrentFormatVersion is the only format_version this build of gage

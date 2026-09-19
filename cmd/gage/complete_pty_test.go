@@ -14,7 +14,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // TestTabCompletionAtThePromptExpandsAPartialCommand is the M13 plan's

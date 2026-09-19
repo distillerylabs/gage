@@ -3,7 +3,7 @@ package gage
 import (
 	"strings"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // Field returns one entry from an Entry's `fields` map — what `gage show

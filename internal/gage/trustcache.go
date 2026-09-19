@@ -21,11 +21,11 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/denmark/gage/internal/gage/atomicfile"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/gitrepo"
-	"github.com/denmark/gage/internal/gage/vaultconfig"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/atomicfile"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gitrepo"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // ErrRecipientChangeDeclined is an encrypting method refusing to write

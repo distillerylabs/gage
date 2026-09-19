@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/denmark/gage/internal/gage"
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // maxPassphraseAttempts is gage's wrong-passphrase retry policy, and it

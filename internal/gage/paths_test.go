@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/vaultconfig"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // fixedVaultID is a canonical id for tests that only need *a* valid one.

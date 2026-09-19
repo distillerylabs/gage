@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // Clone's offer to enroll. There is deliberately no --enroll flag: clone

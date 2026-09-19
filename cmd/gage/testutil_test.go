@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // testPassphrase is what the fake prompter answers every passphrase

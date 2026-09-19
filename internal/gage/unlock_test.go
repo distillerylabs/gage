@@ -11,8 +11,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 const testPassphrase = "correct horse battery staple"

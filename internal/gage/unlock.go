@@ -8,9 +8,9 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/denmark/gage/internal/gage/config"
-	"github.com/denmark/gage/internal/gage/exitcode"
-	"github.com/denmark/gage/internal/gage/xdgpaths"
+	"github.com/distillerylabs/gage/internal/gage/config"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // maxUnlockAttempts is a runaway guard, not a retry policy. Retry policy

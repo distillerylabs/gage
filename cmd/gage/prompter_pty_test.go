@@ -13,7 +13,7 @@ import (
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 
-	"github.com/denmark/gage/internal/gage"
+	"github.com/distillerylabs/gage/internal/gage"
 )
 
 // TestRealPrompterReadsAPassphraseWithoutEchoing is one of the few tests

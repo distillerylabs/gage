@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // TestRandomStringDrawIsStructural substitutes a fully deterministic

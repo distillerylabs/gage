@@ -5,7 +5,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/denmark/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // Identity wraps one device's unlocked private key material for one vault.
