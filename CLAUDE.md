@@ -26,6 +26,12 @@ CI (`.github/workflows/test.yml` for build/test/coverage, `lint.yml` for lint) r
 
 **Never commit or push on your own initiative.** Leave all changes staged/unstaged in the working tree for the user to review locally. Only run `git commit` or `git push` when the user explicitly asks for that specific action in the current request — a prior commit/push approval does not carry forward to later changes.
 
+**Plan mode always ends in a GitHub issue and a branch, before any implementation.** When a session starts in plan mode, the outcome of that planning is not code — it is:
+1. A GitHub issue (`gh issue create`) documenting the feature/fix: the problem, the agreed approach from the plan, and the acceptance criteria (for milestone work, the test list from the plan doc).
+2. A branch created for that issue (e.g. `gh issue develop <N> --checkout`, or `git checkout -b <N>-short-slug`) off `main`, which is where all implementation work happens.
+
+Only after both exist may implementation begin. Never start implementing straight out of plan mode without first documenting the work in a GitHub issue, and never implement on `main`. Reference the issue number in the branch name, and leave the branch uncommitted/unpushed per the rule above unless asked. Creating the issue and branch is the one step here that is expected as part of plan-mode output; if the plan is not yet settled or the user hasn't approved it, ask before filing.
+
 **Before considering any change done:** `make lint` (gofmt check + golangci-lint) and `make test` must both be clean, `go vet ./...` is a fast intermediate check while iterating. Don't leave this for CI to catch — CI's only job is cross-platform confirmation (Linux/macOS/Windows), not first-pass discovery.
 
 **Write tests first, at task granularity.** Write a task's tests before its implementation, then implement to green, then move to the next task — don't write the whole implementation and backfill tests after, and don't try to author a whole milestone's test suite upfront against APIs that don't exist yet. This is the project's actual convention (see "Test conventions" in [doc/implementation/00_gage-cli/plans/gage-cli-design/index.md](doc/implementation/00_gage-cli/plans/gage-cli-design/index.md)), not a generic suggestion.
