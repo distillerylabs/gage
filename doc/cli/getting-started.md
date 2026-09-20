@@ -3,6 +3,12 @@
 ## Building/installing
 
 ```
+go install github.com/distillerylabs/gage/cmd/gage@latest
+```
+
+Or build from a checkout:
+
+```
 make build       # builds ./cmd/gage -> ./gage
 ```
 

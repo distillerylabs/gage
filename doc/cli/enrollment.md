@@ -61,12 +61,12 @@ second, or answered `n` above:
 
 ```
 $ gage identity enroll --use personal
-gage: creating identity "andys-macbook-air" for vault "personal".
+gage: creating identity "laptop-1" for vault "personal".
 gage: this passphrase protects this device's private key. It cannot be recovered or reset.
 gage: it stays on this device and is never sent to anyone.
 Choose a passphrase:
 Confirm passphrase:
-gage: this device is "andys-macbook-air", public key age1hs5xpch6r8vxwvn7v2zn7va5td2her8lzethz68edtr5zqlnsy9qjz5a9r
+gage: this device is "laptop-1", public key age1hs5xpch6r8vxwvn7v2zn7va5td2her8lzethz68edtr5zqlnsy9qjz5a9r
 
 gage: enrollment request published (expires in 24h).
 
@@ -194,14 +194,14 @@ Then approve:
 $ gage recipient approve --code GAGE-EQ7M-ZX5R-42MJ-E5FV
 gage: opened 1 pending request.
 
-  device:  andys-macbook-air
+  device:  laptop-1
   pubkey:  age1hs5xpch6r8vxwvn7v2zn7va5td2her8lzethz68edtr5zqlnsy9qjz5a9r
   method:  passphrase
   created: 2026-09-11 22:25  (expires in 24h)
 
-Add "andys-macbook-air" as a recipient of "demo"? It will be able to read all 1 entry, including everything already in the vault. [y/N] y
+Add "laptop-1" as a recipient of "demo"? It will be able to read all 1 entry, including everything already in the vault. [y/N] y
 Enter passphrase for vault "demo" (device laptop):
-gage: approved "andys-macbook-air" (age1hs5xpch6r8vxwvn7v2zn7va5td2her8lzethz68edtr5zqlnsy9qjz5a9r)
+gage: approved "laptop-1" (age1hs5xpch6r8vxwvn7v2zn7va5td2her8lzethz68edtr5zqlnsy9qjz5a9r)
 gage: 1 recipient added, 1 entry re-encrypted, 1 request cleared; committed locally as 2e3e08e28bd9
 ```
 

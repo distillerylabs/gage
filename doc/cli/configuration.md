@@ -144,7 +144,7 @@ created = '2026-09-12'
 default = 'passphrase'
 
 [[recipients]]
-device = 'andys-macbook-air'
+device = 'laptop-1'
 pubkey = 'age18srydkf39n9sx40xtut6ry89fs22zetfng7gxqjdkkz0asjv9qnsjppaqj'
 ```
 
