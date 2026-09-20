@@ -24,7 +24,7 @@ session, `use <vault>` sets the session's current vault instead, and
 
 | Command | Description |
 |---|---|
-| `init <name> [--dir PATH] [--remote URL] [--type git] [--method passphrase] [--device NAME] [--recipient PUBKEY ...]` | Create a new vault. **One-shot only.** |
+| `init <name> [--dir PATH] [--remote URL] [--type git] [--method passphrase] [--device NAME] [--recipient PUBKEY ...] [--no-recovery-key \| --recovery-key-out FILE]` | Create a new vault and, by default, an offline recovery key shown once. **One-shot only.** |
 | `clone <remote-url> [--name NAME] [--dir PATH] [--device NAME]` | Clone an existing vault from a remote; offers to enroll this device. **One-shot only.** |
 | `vault list` | List registered vaults. |
 | `vault info [<name>]` | Show a vault's name, id, type, method, recipient count, and (for git) remote/status. |
@@ -51,6 +51,7 @@ Details: [Identities and recipients](identities-and-recipients.md), [Adding a de
 | `recipient remove <pubkey-or-name> --reencrypt [--use NAME]` | Revoke a recipient and re-encrypt the vault without its key. |
 | `recipient list [--use NAME]` | List every device this vault is encrypted to. |
 | `recipient verify [--use NAME] [--repair]` | Check `.age-recipients` and `config.toml` still agree; `--repair` rewrites the former from the latter and commits it. |
+| `recovery verify [--use NAME]` | Check a pasted recovery key is still one of the vault's recipients. Needs no passphrase. **One-shot only.** |
 | `recipient pending [--use NAME]` | List enrollment requests waiting to be approved. |
 | `recipient approve [ID...] [--code CODE ...] [--use NAME] [--device NAME]` | Admit an enrolling device and re-encrypt the vault to include it. |
 | `recipient deny <ID> [--use NAME]` | Remove an enrollment request without granting anything. |

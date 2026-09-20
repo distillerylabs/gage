@@ -28,6 +28,12 @@ current default. By default the vault's files live under `$GAGE_DATA/vaults/pers
 (see [Configuration](configuration.md) for exactly where that is on your OS) —
 pass `--dir PATH` to put it somewhere else.
 
+`init` also generates an **offline recovery key** and shows it once. Write it
+down and keep it somewhere safe and offline — it is how you get your
+secrets back if this device's identity file or passphrase is ever lost, and
+`gage` keeps no copy. See [Storing your recovery key](identities-and-recipients.md#storing-your-recovery-key)
+for what to do (and not do) with it.
+
 The vault starts with no remote. If you want it to sync to a git host later,
 see [Git remotes and authentication](git-and-auth.md) — or create it with a
 remote up front:

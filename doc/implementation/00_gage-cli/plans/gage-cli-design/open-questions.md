@@ -808,6 +808,11 @@ so its security is physical custody and the output and docs say so.
 `gage` keeps no copy, which preserves "recovery problem, not a backup
 problem".
 
+**Known limit:** the recovery key decrypts entries with stock `age`, but
+`gage` cannot unlock with it — only the passphrase method exists. It
+recovers secrets, not a running gage. An `age-key` method would close it;
+not built.
+
 ---
 
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}

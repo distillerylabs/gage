@@ -256,6 +256,12 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "recovery verify",
+		Short:        "Check a stored recovery key is still one of this vault's recipients",
+		Group:        GroupRecipient,
+		Availability: AvailOneShotOnly,
+	},
+	{
 		Name:         "recipient pending",
 		Short:        "List enrollment requests waiting to be approved",
 		Group:        GroupRecipient,
