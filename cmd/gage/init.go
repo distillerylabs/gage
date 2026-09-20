@@ -154,6 +154,18 @@ func runInit(app *App, opt initOptions) error {
 		path = filepath.Join(vaultsDir, opt.name)
 	}
 
+	// Checked here rather than with the other flag validation: whether a
+	// destination is safe depends on where this vault is going, which is
+	// only settled above. Still before anything is created, which is the
+	// property that matters — a destination that cannot be written, or
+	// that gage would later delete, must not be discovered after there is
+	// a key riding on it.
+	if recoveryMode == recoveryKeyFile {
+		if err := checkRecoveryKeyOutPath(opt.recoveryKeyOut, path); err != nil {
+			return err
+		}
+	}
+
 	// The vault's id is minted here, before the identity, and handed to
 	// Create below rather than minted there. Ordering is the whole point:
 	// the identity file is filed under this id (see IdentitiesDir), so an
@@ -259,11 +271,15 @@ func runInit(app *App, opt initOptions) error {
 
 	// After registration, so a key is never shown for a vault that isn't
 	// usable yet, and before the summary, so the one thing needing action
-	// isn't the thing that scrolled off. A refused confirmation returns
-	// here — the vault stays, as the error says.
-	if err := deliverRecoveryKey(app, recoveryMode, opt.name, opt.recoveryKeyOut, recoveryKey); err != nil {
-		return err
-	}
+	// isn't the thing that scrolled off.
+	//
+	// Its error is held rather than returned: by this point the vault is
+	// created, committed and registered, and init has a remote to publish
+	// to and a summary to print. Returning here would abandon both, so a
+	// fumbled confirmation would leave a vault that exists, is registered,
+	// and was never pushed — with nothing on screen saying so. Everything
+	// init was asked to do still happens; the command then exits on this.
+	deliveryErr := deliverRecoveryKey(app, recoveryMode, opt.name, opt.recoveryKeyOut, recoveryKey)
 
 	summary := []string{
 		fmt.Sprintf("gage: initialized vault %q at %s", opt.name, path),
@@ -275,10 +291,19 @@ func runInit(app *App, opt initOptions) error {
 	}
 	writeOut(app.Out, summary)
 
-	if opt.remote == "" {
-		return nil
+	if opt.remote != "" {
+		if err := publishNewVault(app, v, opt.remote); err != nil {
+			if deliveryErr == nil {
+				return err
+			}
+			// Both failed. The recovery key is the worse of the two — a
+			// vault that exists but isn't published can be pushed again,
+			// while a key nobody has cannot be reissued — so that is what
+			// the exit code reports, and this is reported alongside it.
+			writeError(app.Err, err)
+		}
 	}
-	return publishNewVault(app, v, opt.remote)
+	return deliveryErr
 }
 
 // publishNewVault pushes a freshly created vault's first commit to the

@@ -49,6 +49,40 @@ here rather than left to be re-derived from the code:
   is checked before anything is created. The realistic thing at a path
   named `recovery.key` is another vault's recovery key.
 
+Three more were settled by the secret-handling review, after the first
+implementation pass:
+
+- **`--recovery-key-out` refuses any destination gage manages.** Inside a
+  vault was a data-loss bug, not a papercut: the next write after an
+  interrupted one runs `resetDirtyWorkTree` → `gitrepo.ResetHard`, which
+  removes untracked files, so gage deleted the user's only copy of an
+  unencrypted key and reported it as discarding an interrupted write. The
+  check now refuses the vault being created, any vault found by walking up
+  for `.gage/config.toml` (so unregistered ones too), and anything under
+  `$GAGE_DATA`, which `scripts/resetlocalstate` exists to delete. It runs
+  first, before the existence and parent-directory stats, because it is the
+  only reason that holds when nothing on the path exists yet.
+- **A failed delivery no longer skips the rest of init.** The error is held
+  rather than returned: the summary still prints and `--remote` still
+  publishes, and the command then exits on the held error. Returning early
+  left a vault created, registered and silently unpushed. When the push
+  fails too, the delivery error is the one that sets the exit code — an
+  unpublished vault can be pushed again, a key nobody has cannot be
+  reissued — and the push failure is reported alongside it.
+- **The destination's writability is proven, not assumed.** Stat says
+  nothing about a read-only or full directory, so the pre-flight now creates
+  and removes a probe file. Without it the failure landed after the vault
+  existed with the key as a recipient, and the error blamed the disk
+  changing underneath for what was deterministic.
+
+**Accepted gap: the recovery secret is never page-locked**, unlike identity
+secrets (`identityfile.go` uses `memlock.Alloc`), so it can reach swap.
+`showRecoveryKey` has to convert it to a Go string for `renderQR` and for
+printing, and that copy can be neither locked nor zeroed; locking only the
+`[]byte` beside it would look like a protection it does not provide.
+Closing this properly means reworking the shared QR path to take `[]byte`,
+which is out of scope here. Recorded rather than quietly left.
+
 One consequence worth flagging: with the key on by default and D2 failing
 closed, every existing test that ran `init` without a terminal now states
 `--no-recovery-key`. That is ~57 call sites across 10 test files,

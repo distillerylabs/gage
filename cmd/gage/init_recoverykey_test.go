@@ -14,6 +14,8 @@ import (
 
 	"github.com/distillerylabs/gage/internal/gage"
 	"github.com/distillerylabs/gage/internal/gage/exitcode"
+	"github.com/distillerylabs/gage/internal/gage/gittest"
+	"github.com/distillerylabs/gage/internal/gage/xdgpaths"
 )
 
 // ageSecretKeyPattern matches a bare age secret key wherever it appears —
@@ -545,5 +547,128 @@ func TestInitRecoveryKeyWrongConfirmationRetriesThenFailsWithoutReshowing(t *tes
 	}
 	if !strings.Contains(res.Stderr, "cannot be shown again") {
 		t.Errorf("the failure doesn't tell the user the key is gone:\n%s", res.Stderr)
+	}
+}
+
+// TestInitRefusesToWriteTheRecoveryKeyWhereGageWillDeleteIt is the whole
+// point of the destination check: gage resets a vault's working tree on
+// the next write after an interrupted one, and ResetHard removes untracked
+// files. A key filed inside a vault — any vault — is a key gage deletes
+// itself, with a message about discarding an interrupted write.
+func TestInitRefusesToWriteTheRecoveryKeyWhereGageWillDeleteIt(t *testing.T) {
+	isolateXDG(t)
+
+	// An existing vault, to aim at from the second case below.
+	existing := filepath.Join(t.TempDir(), "other")
+	if res := runCLI(t, []string{"init", "other", "--dir", existing, "--no-recovery-key"}, ""); res.Code != 0 {
+		t.Fatalf("seeding a vault: %s", res.Stderr)
+	}
+	dataDir, err := xdgpaths.DataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "personal")
+
+	tests := []struct {
+		name string
+		out  string
+		why  string
+	}{
+		{"inside the vault being created", filepath.Join(target, "recovery.key"), "vault"},
+		{"below the vault being created", filepath.Join(target, "keys", "recovery.key"), "vault"},
+		{"inside an existing vault", filepath.Join(existing, "recovery.key"), "vault"},
+		{"below an existing vault's entries", filepath.Join(existing, "entries", "r.key"), "vault"},
+		{"under $GAGE_DATA", filepath.Join(dataDir, "recovery.key"), "gage"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runCLI(t, []string{"init", "personal", "--dir", target,
+				"--recovery-key-out", tc.out}, "")
+			if res.Code != int(exitcode.Usage) {
+				t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+			}
+			if !strings.Contains(res.Stderr, tc.why) {
+				t.Errorf("the refusal doesn't explain itself (%q):\n%s", tc.why, res.Stderr)
+			}
+			if _, err := os.Stat(tc.out); !os.IsNotExist(err) {
+				t.Error("a refused path was written to anyway")
+			}
+			// Refused before anything is created, like every other
+			// knowable failure init has.
+			if _, ok := readGlobalConfigForTest(t).Vaults["personal"]; ok {
+				t.Error("a refused init registered the vault anyway")
+			}
+			if _, err := os.Stat(filepath.Join(target, ".gage")); !os.IsNotExist(err) {
+				t.Error("a refused init created the vault directory")
+			}
+		})
+	}
+}
+
+// TestInitChecksTheRecoveryKeyDestinationIsWritableBeforeCreating: a
+// destination that cannot be written to is knowable up front, and finding
+// out afterwards means a vault that exists with a recovery key nobody has.
+func TestInitChecksTheRecoveryKeyDestinationIsWritableBeforeCreating(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory write permission is not enforced the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	isolateXDG(t)
+
+	dir := filepath.Join(t.TempDir(), "readonly")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	res := runCLI(t, []string{"init", "personal", "--recovery-key-out", filepath.Join(dir, "recovery.key")}, "")
+	if res.Code != int(exitcode.Usage) {
+		t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+	}
+	if _, ok := readGlobalConfigForTest(t).Vaults["personal"]; ok {
+		t.Error("init created the vault before discovering it could not write the key")
+	}
+	identities := filepath.Join(os.Getenv("XDG_DATA_HOME"), "gage", "identities")
+	if got := wrappedIdentityFiles(t, identities); len(got) != 0 {
+		t.Errorf("a refused init left identity files: %v", got)
+	}
+}
+
+// TestInitStillPublishesWhenTheRecoveryConfirmationFails: the confirmation
+// is the last gate, not an early exit. Everything init was asked to do has
+// already happened by then, and skipping the push would leave a vault
+// created, registered and quietly unpublished.
+func TestInitStillPublishesWhenTheRecoveryConfirmationFails(t *testing.T) {
+	isolateXDG(t)
+
+	remote := gittest.NewBareRemote(t)
+	p := &recoveryPrompter{
+		fakePrompter: fakePrompter{passphrases: []string{testPassphrase}},
+		answer:       "NOTTHEKEY",
+	}
+	res, _ := runCLIWithApp(t, []string{"init", "personal", "--device", "laptop-1", "--remote", remote},
+		strings.NewReader(""), true, p, p.watch(t))
+
+	if res.Code != int(exitcode.Conflict) {
+		t.Fatalf("exit code = %d, want %d (Conflict); stderr=%s", res.Code, exitcode.Conflict, res.Stderr)
+	}
+	// The summary still reports what exists, so the failure is not also a
+	// mystery about where the vault went.
+	entry, ok := readGlobalConfigForTest(t).Vaults["personal"]
+	if !ok {
+		t.Fatal("the vault was created but not registered")
+	}
+	if !strings.Contains(res.Stdout, entry.Path) {
+		t.Errorf("the summary doesn't name the vault's path:\n%s", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "published") {
+		t.Errorf("init did not publish the vault:\n%s", res.Stdout)
+	}
+	// And the push really happened, not just the message.
+	other := gittest.NewDevice(t, remote)
+	if !other.Exists(t, ".age-recipients") {
+		t.Error("the vault never reached the remote")
 	}
 }
