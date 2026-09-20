@@ -81,9 +81,26 @@ type CreateSpec struct {
 	// name for a bare public key handed in on the command line. Real
 	// per-recipient device naming arrives with M9's `recipient add`.
 	Recipients []string
+	// ExtraRecipients are additional recipients that arrive with a real
+	// label — today, the generated recovery key (RecoveryDeviceLabel). They
+	// land after the device's own key and before any generic
+	// "recipient-N" ones. Optional; when empty, Create behaves exactly as it
+	// did before this field existed.
+	//
+	// Unlike Recipients, they are checked for collisions: a key already
+	// listed, or a label already taken, is ErrRecipientExists. The check is
+	// scoped to this field so a repeated --recipient stays legal.
+	ExtraRecipients []LabelledRecipient
 	// Remote is an optional git remote ("origin") URL. Empty means the
 	// vault starts local-only; see "Git-specific commands".
 	Remote string
+}
+
+// LabelledRecipient is a recipient handed to Create with the device label
+// it should carry, rather than the generic "recipient-N".
+type LabelledRecipient struct {
+	Device string
+	Pubkey string
 }
 
 // Create lays out a brand-new vault's on-disk skeleton: the directory
@@ -119,6 +136,9 @@ func Create(spec CreateSpec) (*Vault, error) {
 		if err := agekey.ValidateRecipient(r); err != nil {
 			return nil, exitcode.Wrap(exitcode.Usage, err)
 		}
+	}
+	if err := validateExtraRecipients(spec); err != nil {
+		return nil, err
 	}
 	if spec.Path == "" {
 		return nil, exitcode.New(exitcode.Usage, "gage: target path is required")
@@ -186,6 +206,7 @@ func writeSkeleton(spec CreateSpec) error {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
 
+	recipientList := buildRecipients(spec)
 	vf := vaultconfig.File{
 		Vault: vaultconfig.VaultMeta{
 			Name:          spec.Name,
@@ -195,13 +216,17 @@ func writeSkeleton(spec CreateSpec) error {
 			Created:       time.Now().UTC().Format("2006-01-02"),
 		},
 		Method:     vaultconfig.Method{Default: spec.Method},
-		Recipients: buildRecipients(spec.Device, spec.Recipients),
+		Recipients: recipientList,
 	}
 	if err := vaultconfig.Write(filepath.Join(spec.Path, ".gage", "config.toml"), vf); err != nil {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
 
-	if err := recipients.Write(filepath.Join(spec.Path, ".age-recipients"), spec.Recipients); err != nil {
+	pubkeys := make([]string, len(recipientList))
+	for i, r := range recipientList {
+		pubkeys[i] = r.Pubkey
+	}
+	if err := recipients.Write(filepath.Join(spec.Path, ".age-recipients"), pubkeys); err != nil {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
 
@@ -234,20 +259,70 @@ func writePlainFile(path, content string) error {
 	return nil
 }
 
-// buildRecipients labels the first key as device (this vault's
-// initializing device) and every key after it with a generic,
-// position-based label — see CreateSpec.Recipients for why M1 can't do
-// better than that for extra keys handed in as bare strings.
-func buildRecipients(device string, pubkeys []string) []vaultconfig.Recipient {
-	out := make([]vaultconfig.Recipient, len(pubkeys))
-	for i, pk := range pubkeys {
-		label := device
+// buildRecipients returns the vault's full recipient list in file order:
+// this device's key (labelled spec.Device), then any ExtraRecipients under
+// their own labels, then every remaining spec.Recipients entry with a
+// generic, position-based label — see CreateSpec.Recipients for why a bare
+// public key handed in on the command line can't be named better than
+// that. The generic label's number is the key's position in
+// spec.Recipients, so it is unaffected by extras.
+func buildRecipients(spec CreateSpec) []vaultconfig.Recipient {
+	out := make([]vaultconfig.Recipient, 0, len(spec.Recipients)+len(spec.ExtraRecipients))
+	for i, pk := range spec.Recipients {
+		label := spec.Device
 		if i > 0 {
 			label = fmt.Sprintf("recipient-%d", i+1)
 		}
-		out[i] = vaultconfig.Recipient{Device: label, Pubkey: pk}
+		out = append(out, vaultconfig.Recipient{Device: label, Pubkey: pk})
+		if i == 0 {
+			for _, e := range spec.ExtraRecipients {
+				out = append(out, vaultconfig.Recipient{Device: e.Device, Pubkey: e.Pubkey})
+			}
+		}
 	}
 	return out
+}
+
+// validateExtraRecipients checks ExtraRecipients: each must be a valid
+// device label and a valid public key, and none may share a key or a label
+// with anything else in the vault's final recipient list. It does nothing
+// when there are no extras, which is what keeps repeated --recipient keys
+// legal.
+func validateExtraRecipients(spec CreateSpec) error {
+	if len(spec.ExtraRecipients) == 0 {
+		return nil
+	}
+	for _, e := range spec.ExtraRecipients {
+		if !devicename.Valid(e.Device) {
+			return exitcode.Newf(exitcode.Usage, "gage: recipient label %q is invalid", e.Device)
+		}
+		if err := agekey.ValidateRecipient(e.Pubkey); err != nil {
+			return exitcode.Wrap(exitcode.Usage, err)
+		}
+	}
+
+	all := buildRecipients(spec)
+	extraKeys := make(map[string]bool, len(spec.ExtraRecipients))
+	for _, e := range spec.ExtraRecipients {
+		extraKeys[e.Pubkey] = true
+	}
+	seenKey := map[string]string{}
+	seenLabel := map[string]bool{}
+	for _, r := range all {
+		if seenLabel[r.Device] {
+			return exitcode.Wrap(exitcode.Conflict,
+				fmt.Errorf("%w: the label %q would be used twice", ErrRecipientExists, r.Device))
+		}
+		seenLabel[r.Device] = true
+		// Only a collision involving an extra is an error; two identical
+		// --recipient keys stay legal.
+		if prev, dup := seenKey[r.Pubkey]; dup && extraKeys[r.Pubkey] {
+			return exitcode.Wrap(exitcode.Conflict,
+				fmt.Errorf("%w: %s would be listed as both %q and %q", ErrRecipientExists, r.Pubkey, prev, r.Device))
+		}
+		seenKey[r.Pubkey] = r.Device
+	}
+	return nil
 }
 
 func contains(list []string, v string) bool {
