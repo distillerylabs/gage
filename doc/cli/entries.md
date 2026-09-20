@@ -171,8 +171,8 @@ rather than a script:
 $ gage ls --header
 title                       | id       | created at | updated at | updated by
 ----------------------------+----------+------------+------------+-----------
-secret0                     | 40b5e211 | 2026-09-13 | 2026-09-13 | andys-macbook-air
-test@gmail.com backup codes | 679e4a05 | 2026-09-13 | 2026-09-13 | andys-macbook-air
+secret0                     | 40b5e211 | 2026-09-13 | 2026-09-13 | laptop-1
+test@gmail.com backup codes | 679e4a05 | 2026-09-13 | 2026-09-13 | laptop-1
 ```
 
 ## Deleting an entry

@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"golang.org/x/term"
 )
@@ -22,7 +23,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gage: could not disable core dumps:", err)
 	}
 
-	build := BuildInfo{Version: version, Commit: commit}
+	build := resolveBuildInfo(version, commit, debug.ReadBuildInfo)
 	isTerminal := func() bool {
 		return term.IsTerminal(int(os.Stdin.Fd()))
 	}
