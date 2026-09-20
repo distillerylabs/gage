@@ -29,12 +29,14 @@ import (
 // that check.
 func newInitCommand(app *App) *cobra.Command {
 	var (
-		dirFlag        string
-		typeFlag       string
-		methodFlag     string
-		deviceFlag     string
-		recipientFlags []string
-		remoteFlag     string
+		dirFlag           string
+		typeFlag          string
+		methodFlag        string
+		deviceFlag        string
+		recipientFlags    []string
+		remoteFlag        string
+		noRecoveryKeyFlag bool
+		recoveryKeyOut    string
 	)
 
 	cmd := &cobra.Command{
@@ -44,9 +46,13 @@ func newInitCommand(app *App) *cobra.Command {
 			"Generates this device's identity, wraps its private key with a passphrase\n" +
 			"you choose, and writes the public half into the vault's recipient files.\n" +
 			"The wrapped key is stored outside the vault and is never committed or synced.\n\n" +
+			"A vault that depends on one identity file surviving forever has no recovery\n" +
+			"story, so init also generates an offline recovery key and shows it once. It is\n" +
+			"not encrypted and gage keeps no copy: write it down, store it offline, and\n" +
+			"treat the paper as you would the secrets it opens. --no-recovery-key skips it;\n" +
+			"--recovery-key-out writes it to a file instead of the screen.\n\n" +
 			"--recipient is additive: each one is written alongside this device's own key,\n" +
-			"which is how a recovery key gets into a vault from the start. A vault that\n" +
-			"depends on exactly one identity file surviving forever has no recovery story.\n\n" +
+			"for recipients you already hold public keys for.\n\n" +
 			"--remote publishes the new vault immediately. If its host needs a token and\n" +
 			"none is stored yet, init asks for one on the spot (leave blank to skip and\n" +
 			"try anonymously) — the same prompt as `gage auth login`, so a private repo\n" +
@@ -54,13 +60,15 @@ func newInitCommand(app *App) *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(app, initOptions{
-				name:       args[0],
-				dir:        dirFlag,
-				typ:        typeFlag,
-				method:     methodFlag,
-				device:     deviceFlag,
-				recipients: recipientFlags,
-				remote:     remoteFlag,
+				name:           args[0],
+				dir:            dirFlag,
+				typ:            typeFlag,
+				method:         methodFlag,
+				device:         deviceFlag,
+				recipients:     recipientFlags,
+				remote:         remoteFlag,
+				noRecoveryKey:  noRecoveryKeyFlag,
+				recoveryKeyOut: recoveryKeyOut,
 			})
 		},
 	}
@@ -72,19 +80,25 @@ func newInitCommand(app *App) *cobra.Command {
 		fmt.Sprintf("default identity method for devices joining this vault (accepted: %v)", gage.AllowedMethods()))
 	cmd.Flags().StringVar(&deviceFlag, "device", "", "this device's name (default: normalized hostname)")
 	cmd.Flags().StringArrayVar(&recipientFlags, "recipient", nil,
-		"additional recipient public key, e.g. a recovery key (repeatable; this device's own key is always included)")
+		"additional recipient public key (repeatable; this device's own key is always included)")
 	cmd.Flags().StringVar(&remoteFlag, "remote", "", "git remote (origin) URL; omit to start local-only")
+	cmd.Flags().BoolVar(&noRecoveryKeyFlag, "no-recovery-key", false,
+		"don't generate an offline recovery key (leaves this device's identity file the only way in)")
+	cmd.Flags().StringVar(&recoveryKeyOut, "recovery-key-out", "",
+		"write the recovery key to this file (mode 0600) instead of showing it")
 	return cmd
 }
 
 type initOptions struct {
-	name       string
-	dir        string
-	typ        string
-	method     string
-	device     string
-	recipients []string
-	remote     string
+	name           string
+	dir            string
+	typ            string
+	method         string
+	device         string
+	recipients     []string
+	remote         string
+	noRecoveryKey  bool
+	recoveryKeyOut string
 }
 
 func runInit(app *App, opt initOptions) error {
@@ -99,6 +113,24 @@ func runInit(app *App, opt initOptions) error {
 	device, err := resolveDeviceName(opt.device, hostname)
 	if err != nil {
 		return err
+	}
+
+	// Settled before anything is created, alongside the other knowable
+	// failures: an unusable --recovery-key-out, or a default run with no
+	// terminal to show a key on, costs nobody a passphrase entry.
+	recoveryMode, err := planRecoveryKey(app, opt.noRecoveryKey, opt.recoveryKeyOut)
+	if err != nil {
+		return err
+	}
+	// The recovery recipient's label is fixed, so a device claiming it
+	// would be a collision Create rejects. Catching it here keeps the
+	// refusal in the same class as an invalid --device: nothing generated,
+	// nothing rolled back. With no recovery key there is no label to
+	// collide with, and the name is ordinary.
+	if recoveryMode != recoveryKeyNone && device == gage.RecoveryDeviceLabel {
+		return exitcode.Newf(exitcode.Usage,
+			"gage: %q is the name gage gives this vault's recovery key, so a device can't use it; pass --device NAME, or --no-recovery-key",
+			gage.RecoveryDeviceLabel)
 	}
 
 	g, err := readGlobalConfig()
@@ -147,15 +179,34 @@ func runInit(app *App, opt initOptions) error {
 	// correct.
 	recipients := append([]string{pubkey}, opt.recipients...)
 
+	// The recovery key is generated here but not shown until the vault
+	// exists — see deliverRecoveryKey. Nothing needs rolling back if
+	// anything below fails: it was never written down, stored, or seen.
+	var (
+		recoveryKey    gage.RecoveryKey
+		extraRecipient []gage.LabelledRecipient
+	)
+	if recoveryMode != recoveryKeyNone {
+		recoveryKey, err = gage.NewRecoveryKey()
+		if err != nil {
+			return err
+		}
+		defer zeroBytes(recoveryKey.Secret)
+		extraRecipient = []gage.LabelledRecipient{
+			{Device: gage.RecoveryDeviceLabel, Pubkey: recoveryKey.Pubkey},
+		}
+	}
+
 	spec := gage.CreateSpec{
-		Name:       opt.name,
-		ID:         id,
-		Path:       path,
-		Type:       opt.typ,
-		Method:     opt.method,
-		Device:     device,
-		Recipients: recipients,
-		Remote:     opt.remote,
+		Name:            opt.name,
+		ID:              id,
+		Path:            path,
+		Type:            opt.typ,
+		Method:          opt.method,
+		Device:          device,
+		Recipients:      recipients,
+		ExtraRecipients: extraRecipient,
+		Remote:          opt.remote,
 	}
 	v, err := gage.Create(spec)
 	if err != nil {
@@ -206,10 +257,23 @@ func runInit(app *App, opt initOptions) error {
 		return exitcode.Wrap(exitcode.Internal, err)
 	}
 
-	writeOut(app.Out, []string{
+	// After registration, so a key is never shown for a vault that isn't
+	// usable yet, and before the summary, so the one thing needing action
+	// isn't the thing that scrolled off. A refused confirmation returns
+	// here — the vault stays, as the error says.
+	if err := deliverRecoveryKey(app, recoveryMode, opt.name, opt.recoveryKeyOut, recoveryKey); err != nil {
+		return err
+	}
+
+	summary := []string{
 		fmt.Sprintf("gage: initialized vault %q at %s", opt.name, path),
 		fmt.Sprintf("gage: this device is %q, public key %s", device, pubkey),
-	})
+	}
+	if recoveryMode != recoveryKeyNone {
+		summary = append(summary,
+			fmt.Sprintf("gage: recovery key is %q, public key %s", gage.RecoveryDeviceLabel, recoveryKey.Pubkey))
+	}
+	writeOut(app.Out, summary)
 
 	if opt.remote == "" {
 		return nil

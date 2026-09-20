@@ -75,7 +75,7 @@ func TestUnknownCommandShowsFullHelpListing(t *testing.T) {
 // genuine Cobra parsing rejection does.
 func TestCodedApplicationErrorsDoNotGrowUsageText(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("seeding: %s", res.Stderr)
 	}
 
@@ -97,7 +97,7 @@ func TestCodedApplicationErrorsDoNotGrowUsageText(t *testing.T) {
 // doesn't reach.
 func TestSessionWrongArgCountShowsCommandUsage(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("seeding: %s", res.Stderr)
 	}
 
