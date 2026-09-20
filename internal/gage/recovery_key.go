@@ -52,7 +52,11 @@ func NewRecoveryKey() (RecoveryKey, error) {
 // key is readable and matches, not that the vault's entries are intact.
 //
 // Surrounding whitespace is ignored, since the key usually arrives by
-// paste. secret is neither modified nor retained.
+// paste. secret is neither modified nor retained — deliberately unlike
+// RecoverDevice, which zeroes what it is handed. The difference is how
+// long each holds the key: this returns immediately having only compared
+// a public key, while RecoverDevice keeps the secret live across a lock,
+// a full re-encryption and a push, and is the one worth erasing eagerly.
 func (v *Vault) VerifyRecoveryKey(secret []byte) error {
 	ident, err := age.ParseX25519Identity(string(bytes.TrimSpace(secret)))
 	if err != nil {
