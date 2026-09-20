@@ -32,6 +32,29 @@ CI (`.github/workflows/test.yml` for build/test/coverage, `lint.yml` for lint) r
 
 Only after both exist may implementation begin. Never start implementing straight out of plan mode without first documenting the work in a GitHub issue, and never implement on `main`. Reference the issue number in the branch name, and leave the branch uncommitted/unpushed per the rule above unless asked. Creating the issue and branch is the one step here that is expected as part of plan-mode output; if the plan is not yet settled or the user hasn't approved it, ask before filing.
 
+**Work that needs more than one milestone uses a parent issue, sub-issues, and a stack of branches.** When a plan is too big for one reviewable change, it is split into milestones and set up as follows. This is the standing process; don't wait to be re-told it. (Single-milestone work keeps the simple issue + branch flow above.)
+
+*Splitting the work.*
+- Aim for milestones that are each independently reviewable and mergeable, ending green on `make lint` and `make test`, with a strictly linear dependency order. Typically 2-4; more usually means the scope should be cut instead.
+- Split by risk and layer: library first (`internal/gage`, additive and easy to test), then CLI integration (`cmd/gage`), then any secondary command plus docs last so docs describe shipped behavior. Isolate security-sensitive or crash-safety work in its own milestone.
+- Recommend a model per milestone in the plan, following the core plan's model-selection guidance: Opus for security-sensitive ordering, secret handling, or crash-safety reasoning; Sonnet for well-specified, additive, pattern-following work and docs.
+- Any decision the plan makes is recorded as resolved in the plan docs, with a `Q-<NAME>` entry in [doc/implementation/00_gage-cli/plans/gage-cli-design/open-questions.md](doc/implementation/00_gage-cli/plans/gage-cli-design/open-questions.md).
+
+*When the plan is approved (still no implementation):*
+1. File one **parent issue** (`gh issue create`): problem, agreed approach, resolved decisions, the milestone table, overall acceptance criteria, and the plan-doc paths.
+2. Create the parent's branch off `main` with `gh issue develop <P> --checkout --name <P>-<slug>`. Note this also creates the branch on the remote, which is expected.
+3. On that branch, write **all** the plan docs under `doc/implementation/00_gage-cli/plans/<feature-slug>/`: `index.md` (why, resolved decisions, milestone table with model/dependency/status columns, process notes) plus one `r<N>-<slug>.md` per milestone in the existing milestone-doc layout (nav line, "Recommended model" blockquote, Goal, Depends on, Design references, Decisions to make first, tests-first task checklist, Definition of done).
+4. File one **sub-issue per milestone**, each attached to the parent through the sub-issue API (`gh api -X POST repos/<owner>/<repo>/issues/<P>/sub_issues -F sub_issue_id=<numeric id from .id>`, not the issue number). Each body links its plan doc (a blob URL on the parent branch), states the recommended model and dependency, and says the plan doc's test list is the definition of done.
+5. Stop and wait for the user to review, commit, and open the PR for the parent branch. No sub-issue branches yet.
+
+*Implementing a milestone (only when the user says to start it):*
+1. Branches are a **stack**, everything ultimately merging down into `main`: `main` <- parent branch (plan docs) <- R0 <- R1 <- R2. Cut each milestone's branch off the *previous* milestone's branch (R0 off the parent branch), linked to its sub-issue: `gh issue develop <sub-N> --checkout --base <previous-branch> --name <sub-N>-<slug>`. If `gh` insists the base exist on the remote, fall back to `git checkout -b <sub-N>-<slug>` from the previous local branch.
+2. Check `git status` first and stop on a dirty tree: uncommitted changes follow a checkout, so the previous phase must already be committed by the user.
+3. Follow the milestone doc's tests-first task list, keep its checkboxes and the index's status column current, and finish with `make lint` and `make test` clean.
+4. Stop at the end of the milestone and wait for review. Never start the next milestone unprompted. Merge order for the stack is the user's call.
+
+The no-commit/no-push rule above applies throughout: the exception is only what the user explicitly asks for in the current request (for example "commit these and create a PR"). When writing a `gh` body with backticks, use a quoted heredoc or `--body-file` and don't escape the backticks, which otherwise appear literally.
+
 **Before considering any change done:** `make lint` (gofmt check + golangci-lint) and `make test` must both be clean, `go vet ./...` is a fast intermediate check while iterating. Don't leave this for CI to catch — CI's only job is cross-platform confirmation (Linux/macOS/Windows), not first-pass discovery.
 
 **Write tests first, at task granularity.** Write a task's tests before its implementation, then implement to green, then move to the next task — don't write the whole implementation and backfill tests after, and don't try to author a whole milestone's test suite upfront against APIs that don't exist yet. This is the project's actual convention (see "Test conventions" in [doc/implementation/00_gage-cli/plans/gage-cli-design/index.md](doc/implementation/00_gage-cli/plans/gage-cli-design/index.md)), not a generic suggestion.
