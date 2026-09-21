@@ -112,6 +112,9 @@ const enrollmentClockSkewThreshold = time.Hour
 //  7. Seal, write into pending/, commit.
 //  8. Push, then release the lock.
 func (v *Vault) Enroll(ctx context.Context, device string, ttl time.Duration, p Prompter) (EnrollmentRequest, error) {
+	if err := checkDeviceLabelFree(device); err != nil {
+		return EnrollmentRequest{}, err
+	}
 	if !devicename.Valid(device) {
 		return EnrollmentRequest{}, exitcode.Newf(exitcode.Usage, "gage: device name %q is invalid", device)
 	}

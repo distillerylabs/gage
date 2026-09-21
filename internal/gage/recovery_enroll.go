@@ -23,6 +23,33 @@ import (
 // decrypt everything perfectly well.
 var ErrNotRecoveryKey = errors.New("gage: that key is not this vault's recovery key")
 
+// ErrReservedDeviceLabel is a device trying to name itself
+// RecoveryDeviceLabel.
+//
+// The label is reserved because `recovery rotate` evicts whatever holds it,
+// and rotate has no way to tell a recovery key from any other X25519 key —
+// the label *is* the distinction. A device sitting under it would be
+// dropped from the recipient list and the vault re-encrypted to the new
+// paper key alone, locking out the machine that ran the command. Keeping
+// the label unavailable is what makes rotate's eviction safe, so the check
+// belongs at every point a device names itself rather than in rotate.
+var ErrReservedDeviceLabel = errors.New("gage: that device name is reserved for this vault's recovery key")
+
+// checkDeviceLabelFree rejects a device claiming the recovery key's fixed
+// label. It is deliberately *not* part of devicename.Valid: the label is a
+// perfectly valid device name, and the recovery recipient itself has to be
+// written under it — by Create's ExtraRecipients and by the swap in this
+// file, neither of which goes through the paths that call this.
+func checkDeviceLabelFree(device string) error {
+	if device != RecoveryDeviceLabel {
+		return nil
+	}
+	return exitcode.Wrap(exitcode.Usage, fmt.Errorf(
+		"%w: %q names the key gage generates for this vault, and `gage recovery rotate` "+
+			"replaces whatever holds it — a device there would be locked out by its own rotation",
+		ErrReservedDeviceLabel, RecoveryDeviceLabel))
+}
+
 // RecoverSpec is the change RecoverDevice makes to a vault's recipient
 // list, in one commit.
 type RecoverSpec struct {
@@ -314,7 +341,14 @@ func (v *Vault) swapRecipients(sw recipientSwap, ident *Identity) (reencrypted i
 		// Said before the work rather than after: by the time the commit
 		// lands there is nothing left to reconsider, and what the warning
 		// is for is that revocation is narrower than it sounds.
-		for _, label := range sw.remove {
+		// Both kinds of removal, not just sw.remove: rotate retires through
+		// removeIfPresent, and the leak-response user running it is exactly
+		// the one who needs to hear that the retired key still opens
+		// history. Only labels the list actually had are named.
+		for _, label := range append(append([]string{}, sw.remove...), sw.removeIfPresent...) {
+			if !heldBy(current, label) {
+				continue
+			}
 			warn(ident.warnTo(),
 				"gage: removing %q revokes future access only — it still opens every version of "+
 					"every entry already in this vault's git history.", label)
@@ -335,6 +369,16 @@ func (v *Vault) swapRecipients(sw recipientSwap, ident *Identity) (reencrypted i
 		return 0, "", err
 	}
 	return reencrypted, commit, nil
+}
+
+// heldBy reports whether any recipient carries label.
+func heldBy(list []VaultRecipient, label string) bool {
+	for _, r := range list {
+		if r.Device == label {
+			return true
+		}
+	}
+	return false
 }
 
 // applySwap computes the final recipient list, refusing anything the list
@@ -450,6 +494,16 @@ func (v *Vault) RotateRecoveryKey(newPubkey string, ident *Identity) (RotateResu
 					return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
 						"%w: %s is the recovery key this rotation is retiring, so it cannot also be "+
 							"its own replacement — generate a new one", ErrRecipientExists, newPubkey))
+				}
+				// The backstop under checkDeviceLabelFree. Rotate cannot
+				// tell a recovery key from any other key, so if something
+				// ever does slip under the label, the one outcome it must
+				// not produce is locking out the device running it.
+				if r.Pubkey == ident.Recipient() {
+					return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+						"%w: the key this vault was unlocked with is the one registered as %q, so "+
+							"rotating would remove this device's own access. Re-register this device "+
+							"under its own name first", ErrRecipientExists, RecoveryDeviceLabel))
 				}
 			}
 			res.Created = res.Retired == ""

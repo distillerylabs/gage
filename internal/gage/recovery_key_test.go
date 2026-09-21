@@ -186,9 +186,13 @@ func TestCreateRejectsDuplicateOrInvalidExtraRecipients(t *testing.T) {
 		{"label duplicates another extra", func(s *CreateSpec) {
 			s.ExtraRecipients = append(s.ExtraRecipients, LabelledRecipient{Device: RecoveryDeviceLabel, Pubkey: other.Pubkey})
 		}, ErrRecipientExists, exitcode.Conflict},
+		// The reservation answers before the label collision does, and with
+		// the better reason: the name is not merely taken, it is not
+		// available to a device at all — see checkDeviceLabelFree. This
+		// expectation changed when the label became reserved unconditionally.
 		{"device named like the recovery label", func(s *CreateSpec) {
 			s.Device = RecoveryDeviceLabel
-		}, ErrRecipientExists, exitcode.Conflict},
+		}, ErrReservedDeviceLabel, exitcode.Usage},
 		{"label collides with a generic recipient-N label", func(s *CreateSpec) {
 			s.Recipients = []string{testRecipient1, testRecipient2}
 			s.ExtraRecipients[0].Device = "recipient-2"

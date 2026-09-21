@@ -329,6 +329,14 @@ func (v *Vault) addRecipientsLocked(add []VaultRecipient, w recipientWrite, iden
 		if !devicename.Valid(r.Device) {
 			return 0, "", exitcode.Newf(exitcode.Usage, "gage: device name %q is invalid", r.Device)
 		}
+		// Both this function's callers — `recipient add` and enrollment
+		// approval — are a device being given a name, so neither may take
+		// the recovery key's. The swap in recovery_enroll.go writes the
+		// recovery recipient through commitRecipientList instead, which is
+		// why it is unaffected.
+		if err := checkDeviceLabelFree(r.Device); err != nil {
+			return 0, "", err
+		}
 		if err := agekey.ValidateRecipient(r.Pubkey); err != nil {
 			return 0, "", exitcode.Wrap(exitcode.Usage, err)
 		}

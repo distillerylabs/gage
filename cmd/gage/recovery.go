@@ -195,6 +195,15 @@ func runRecoveryEnroll(app *App, opt recoveryEnrollOptions) error {
 		}
 	}
 
+	// The reserved label first, so its own reason is what the user sees:
+	// the collision check below would otherwise answer, and suggest
+	// `--replaces recovery-paper-key`, which the library then refuses.
+	if device == gage.RecoveryDeviceLabel {
+		return exitcode.Wrap(exitcode.Usage, fmt.Errorf(
+			"%w: %q names the key gage generates for this vault; enroll under a different --device NAME",
+			gage.ErrReservedDeviceLabel, gage.RecoveryDeviceLabel))
+	}
+
 	// A name the vault already lists is knowable from the plaintext
 	// recipient list, so it is refused here rather than by the swap — which
 	// would only say so after the paste and a full passphrase entry, for a
@@ -496,13 +505,21 @@ func runRecoveryRotate(app *App, use, recoveryKeyOut string) error {
 		return err
 	}
 
-	return withUnlockedVault(app, use, func(v *gage.Vault, ident *gage.Identity) error {
-		if mode == recoveryKeyFile {
-			if err := checkRecoveryKeyOutPath(recoveryKeyOut, v.Path); err != nil {
-				return err
-			}
+	// The destination is checked before the unlock, not inside it: it is
+	// knowable from the path alone, and finding out after the passphrase
+	// prompt and a remote sync charges the user twice for one mistake.
+	// Same rule as init and `recovery enroll`.
+	if mode == recoveryKeyFile {
+		v, err := vaultWithoutUnlocking(app, use)
+		if err != nil {
+			return err
 		}
+		if err := checkRecoveryKeyOutPath(recoveryKeyOut, v.Path); err != nil {
+			return err
+		}
+	}
 
+	return withUnlockedVault(app, use, func(v *gage.Vault, ident *gage.Identity) error {
 		key, err := gage.NewRecoveryKey()
 		if err != nil {
 			return err

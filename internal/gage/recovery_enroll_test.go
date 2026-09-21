@@ -1022,3 +1022,151 @@ func TestRotateRecoveryKeyStillAsksM10sQuestion(t *testing.T) {
 		t.Error("a declined rotation still committed")
 	}
 }
+
+// ---------------------------------------------------------------------
+// The label is reserved: no device may hold it
+// ---------------------------------------------------------------------
+
+// TestTheRecoveryLabelIsReservedForTheRecoveryKey. Rotate evicts whatever
+// holds the label, and it has no way to tell a recovery key from any other
+// X25519 key — the label *is* the distinction. So the label has to be
+// unavailable to devices everywhere a device names itself, or rotate would
+// drop a real device and re-encrypt to the new paper key alone, locking out
+// the machine that ran it.
+func TestTheRecoveryLabelIsReservedForTheRecoveryKey(t *testing.T) {
+	t.Run("Create refuses it even with no recovery key", func(t *testing.T) {
+		isolateXDG(t)
+		path := filepath.Join(t.TempDir(), "personal")
+		_, err := Create(CreateSpec{
+			Name: "personal", ID: vaultIDForTest("personal"), Path: path,
+			Type: TypeGit, Method: MethodPassphrase,
+			Device:     RecoveryDeviceLabel,
+			Recipients: []string{testRecipient1},
+		})
+		if !errors.Is(err, ErrReservedDeviceLabel) {
+			t.Fatalf("err = %v, want ErrReservedDeviceLabel", err)
+		}
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("CodeOf = %v, want Usage", exitcode.CodeOf(err))
+		}
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Error("a refused Create left the vault directory behind")
+		}
+	})
+
+	t.Run("AddIdentity refuses it", func(t *testing.T) {
+		f := newRecoverFixture(t, "personal", "laptop-1")
+		var err error
+		withXDGRoot(t, f.owner.root, func() {
+			_, err = f.v.AddIdentity(RecoveryDeviceLabel, &fakePrompter{passphrases: []string{testPassphrase}})
+		})
+		if !errors.Is(err, ErrReservedDeviceLabel) {
+			t.Fatalf("err = %v, want ErrReservedDeviceLabel", err)
+		}
+	})
+
+	t.Run("AddRecipient refuses it", func(t *testing.T) {
+		f := newRecoverFixture(t, "personal", "laptop-1")
+		insertAs(t, f.v, f.owner, "first")
+		before := headHash(t, f.v)
+
+		var err error
+		withXDGRoot(t, f.owner.root, func() {
+			id := unlockAs(t, f.v, f.owner)
+			defer func() { _ = id.Close() }()
+			_, err = f.v.AddRecipient(RecoveryDeviceLabel, freshPubkey(t), &id)
+		})
+		if !errors.Is(err, ErrReservedDeviceLabel) {
+			t.Fatalf("err = %v, want ErrReservedDeviceLabel", err)
+		}
+		if headHash(t, f.v) != before {
+			t.Error("a refused AddRecipient still committed")
+		}
+	})
+
+	// The one path that must still write it: the recovery key itself.
+	t.Run("but the recovery recipient is still written", func(t *testing.T) {
+		f := newRecoverFixture(t, "personal", "laptop-1")
+		if got := deviceLabels(t, f.v); !equalStrings(got, []string{"laptop-1", RecoveryDeviceLabel}) {
+			t.Errorf("recipients = %v; Create must still write the recovery recipient", got)
+		}
+		insertAs(t, f.v, f.owner, "first")
+		next, err := NewRecoveryKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rotateAs(t, f, next.Pubkey, &fakePrompter{}); err != nil {
+			t.Fatalf("rotate must still be able to write the label: %v", err)
+		}
+	})
+}
+
+// TestRotateRefusesToEvictTheActingDevice is the backstop under the
+// reservation above: even if some path ever let a device hold the label,
+// rotate must not be what locks out the machine running it.
+func TestRotateRefusesToEvictTheActingDevice(t *testing.T) {
+	// A vault whose owner's own key holds the recovery label — the state
+	// the reservation now prevents, constructed directly.
+	d := newTestDevice(t, "personal", "laptop-1")
+	var v *Vault
+	withXDGRoot(t, d.root, func() {
+		var err error
+		v, err = Create(CreateSpec{
+			Name: "personal", ID: d.vaultID, Path: filepath.Join(t.TempDir(), "personal"),
+			Type: TypeGit, Method: MethodPassphrase, Device: "laptop-1",
+			Recipients:      []string{testRecipient1},
+			ExtraRecipients: []LabelledRecipient{{Device: RecoveryDeviceLabel, Pubkey: d.pubkey}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	insertAs(t, v, d, "first")
+	f := recoverFixture{v: v, owner: d}
+	before := headHash(t, v)
+
+	_, err := rotateAs(t, f, freshPubkey(t), &fakePrompter{})
+	if err == nil {
+		t.Fatal("rotate evicted the key it was unlocked with")
+	}
+	if exitcode.CodeOf(err) != exitcode.Conflict {
+		t.Errorf("CodeOf = %v, want Conflict", exitcode.CodeOf(err))
+	}
+	if headHash(t, v) != before {
+		t.Error("a refused rotation still committed")
+	}
+}
+
+// TestRotateWarnsThatRetirementIsFutureOnly: the leak-response user is the
+// one who most needs to hear that the retired key still opens history, and
+// rotate removes through removeIfPresent, which the warning loop missed.
+func TestRotateWarnsThatRetirementIsFutureOnly(t *testing.T) {
+	f := newRecoverFixture(t, "personal", "laptop-1")
+	insertAs(t, f.v, f.owner, "first")
+
+	next, err := NewRecoveryKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &fakePrompter{passphrases: []string{testPassphrase}}
+	withXDGRoot(t, f.owner.root, func() {
+		id, uerr := f.v.Unlock(p)
+		if uerr != nil {
+			t.Fatal(uerr)
+		}
+		defer func() { _ = id.Close() }()
+		if _, err := f.v.RotateRecoveryKey(next.Pubkey, &id); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	var found bool
+	for _, w := range p.warnings {
+		if strings.Contains(w, "git history") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("rotate never warned that the retired key still opens history: %v", p.warnings)
+	}
+}

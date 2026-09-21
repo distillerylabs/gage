@@ -79,6 +79,57 @@ add one later and needs no separate command.
   is now true: the recovery key has exactly one power inside gage, and it is
   not an unlock method. An `age-key` method stays deliberately unbuilt.
 
+## Found by review
+
+A `/code-review` pass found four issues; all are fixed on the same branch,
+each with a test that failed first.
+
+- **`recovery rotate` evicted whatever held the `recovery-paper-key` label,
+  recovery key or not.** The label was only reserved when a key was actually
+  being generated, and `recipient add --device recovery-paper-key` reserved
+  nothing at all — so `init v --no-recovery-key --device recovery-paper-key`
+  was accepted, and rotate on that vault (the flow this milestone's own help
+  advertises) dropped the device and re-encrypted to the new paper key
+  alone, locking out the machine that ran it. `RecoverDevice` was safe only
+  because `recoveryIdentity` proves the pasted key carries the label; rotate
+  had no equivalent and cannot have one, since a recovery key is just an
+  X25519 key and **the label is the only thing that distinguishes it**.
+
+  Fixed by reserving the label rather than by narrowing rotate:
+  `checkDeviceLabelFree` now runs in `Create`, `AddIdentity`, `Enroll` and
+  `addRecipientsLocked` (which covers both `recipient add` and enrollment
+  approval), plus ahead of `recovery enroll`'s own collision check so its
+  reason is the one reported. It is deliberately *not* part of
+  `devicename.Valid`: the label is a valid name, and the recovery recipient
+  is written under it by `Create`'s `ExtraRecipients` and by the swap,
+  neither of which goes through those paths. `init` keeps an early check of
+  its own, now unconditional rather than gated on a key being generated, so
+  the refusal arrives before the passphrase prompt instead of from `Create`
+  after it.
+
+  **This is a deliberate behavior change from how R1 shipped.**
+  `--no-recovery-key` used to leave the label free, and one R1 test asserted
+  exactly that; it now asserts the opposite, with the reason recorded beside
+  it. A vault made without a recovery key can still grow one through
+  `rotate`, so the label has to stay reserved there too.
+
+  **Removing `--no-recovery-key` was considered and rejected.** It would
+  have been neither sufficient (the `recipient add` route stays open) nor
+  necessary (the reservation closes both), and it would have forced every
+  scripted `init` to write a plaintext key file, since that flag is one of
+  the two ways past the no-terminal rule.
+- **Rotate now refuses to evict the acting identity's own key**, as a
+  backstop under the reservation: even if something ever slips under the
+  label again, rotate must not be what locks out the device running it.
+- **The out-path check moved ahead of the unlock.** It was inside
+  `withUnlockedVault`, so a bad `--recovery-key-out` was rejected only after
+  the passphrase prompt and a remote sync, while the comment beside it
+  claimed otherwise.
+- **The "revokes future access only" warning now covers `removeIfPresent`.**
+  It looped over `remove` alone, so rotate never emitted it — for exactly
+  the leak-response user who most needs to hear that the retired key still
+  opens git history.
+
 ## Definition of done
 
 Every item green on all three CI platforms, `make lint` and `make test`

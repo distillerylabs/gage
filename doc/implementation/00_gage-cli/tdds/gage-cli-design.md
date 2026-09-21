@@ -766,8 +766,16 @@ only makes the second way in exist from the first commit.
 - **`--recovery-key-out` refuses places gage deletes from.** A key inside a
   vault is removed by the reset that follows an interrupted write; a key
   under `$GAGE_DATA` is in a tree `scripts/resetlocalstate` wipes.
-- **The label is fixed** (`recovery-paper-key`), so `init`, `recovery
-  verify` and the docs all name the same thing; a device may not use it.
+- **The label is fixed** (`recovery-paper-key`) and **reserved**: no device
+  may take it, through `init`, `identity add`, `recipient add`, `identity
+  enroll`, enrollment approval or `recovery enroll`, whether or not the
+  vault has a recovery key. The reservation is what makes `recovery
+  rotate`'s eviction safe — rotate cannot tell a recovery key from any
+  other X25519 key, the label *is* the distinction, so a device sitting
+  under it would be dropped and the vault re-encrypted to the new paper key
+  alone. It is deliberately not part of `devicename.Valid`: the label is a
+  perfectly valid name, and the recovery recipient itself is written under
+  it.
 - **`gage recovery verify`** checks a pasted key against the recipient list.
   It needs no unlock, because a recovery key is what you reach for when the
   identity file is gone. It proves the copy is intact and belongs to this

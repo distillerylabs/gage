@@ -122,15 +122,16 @@ func runInit(app *App, opt initOptions) error {
 	if err != nil {
 		return err
 	}
-	// The recovery recipient's label is fixed, so a device claiming it
-	// would be a collision Create rejects. Catching it here keeps the
-	// refusal in the same class as an invalid --device: nothing generated,
-	// nothing rolled back. With no recovery key there is no label to
-	// collide with, and the name is ordinary.
-	if recoveryMode != recoveryKeyNone && device == gage.RecoveryDeviceLabel {
-		return exitcode.Newf(exitcode.Usage,
-			"gage: %q is the name gage gives this vault's recovery key, so a device can't use it; pass --device NAME, or --no-recovery-key",
-			gage.RecoveryDeviceLabel)
+	// The label is reserved whether or not this run generates a key: a
+	// vault made with --no-recovery-key can still grow one through
+	// `gage recovery rotate`, which replaces whatever holds the label — so
+	// a device sitting there would be evicted by its own rotation. Create
+	// refuses it too, but only after CreateIdentity has already asked for a
+	// passphrase, and this is knowable from the flags alone.
+	if device == gage.RecoveryDeviceLabel {
+		return exitcode.Wrap(exitcode.Usage, fmt.Errorf(
+			"%w: %q names the key gage generates for a vault; pass a different --device NAME",
+			gage.ErrReservedDeviceLabel, gage.RecoveryDeviceLabel))
 	}
 
 	g, err := readGlobalConfig()

@@ -988,3 +988,79 @@ func TestRecoveryRotateIsListedInHelp(t *testing.T) {
 		t.Errorf("`gage help` doesn't list recovery rotate (exit %d):\n%s", res.Code, res.Stdout)
 	}
 }
+
+// TestRecoveryRotateChecksTheKeyDestinationBeforeTheUnlock: init and
+// recovery enroll both reject an unusable --recovery-key-out before any
+// prompt, and rotate's own comment claims the same. A bad path found after
+// the passphrase and a remote sync is a knowable failure charged to the
+// user twice.
+func TestRecoveryRotateChecksTheKeyDestinationBeforeTheUnlock(t *testing.T) {
+	isolateXDG(t)
+	initVaultWithRecoveryKeyFile(t, "personal")
+
+	// Inside the vault, which the destination rules refuse: gage resets a
+	// vault's working tree and would delete the key.
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+	p := &fakePrompter{passphrases: []string{testPassphrase}}
+	res, _ := runCLIWithPrompter(t, []string{"recovery", "rotate",
+		"--recovery-key-out", filepath.Join(entry.Path, "rk")}, "", false, p)
+
+	if res.Code != int(exitcode.Usage) {
+		t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+	}
+	if len(p.requests) != 0 {
+		t.Errorf("rotate asked for a passphrase before rejecting the destination: %+v", p.requests)
+	}
+}
+
+// TestNoCommandLetsADeviceTakeTheRecoveryLabel walks the CLI surface that
+// names a device. The label has to be unavailable on every one of them,
+// because `recovery rotate` evicts whatever holds it.
+func TestNoCommandLetsADeviceTakeTheRecoveryLabel(t *testing.T) {
+	label := gage.RecoveryDeviceLabel
+
+	t.Run("init, even with --no-recovery-key", func(t *testing.T) {
+		isolateXDG(t)
+		dir := filepath.Join(t.TempDir(), "personal")
+		res := runCLI(t, []string{"init", "personal", "--dir", dir,
+			"--device", label, "--no-recovery-key"}, "")
+		if res.Code != int(exitcode.Usage) {
+			t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".gage")); !os.IsNotExist(err) {
+			t.Error("a refused init created the vault")
+		}
+	})
+
+	t.Run("identity add", func(t *testing.T) {
+		isolateXDG(t)
+		initVaultWithRecoveryKeyFile(t, "personal")
+		res := runCLI(t, []string{"identity", "add", "--device", label}, "")
+		if res.Code != int(exitcode.Usage) {
+			t.Errorf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+		}
+	})
+
+	t.Run("recipient add", func(t *testing.T) {
+		isolateXDG(t)
+		initVaultWithRecoveryKeyFile(t, "personal")
+		spare, err := gage.NewRecoveryKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := runCLI(t, []string{"recipient", "add", spare.Pubkey, "--device", label}, "")
+		if res.Code == 0 {
+			t.Error("recipient add let a key take the recovery label")
+		}
+	})
+
+	t.Run("recovery enroll", func(t *testing.T) {
+		isolateXDG(t)
+		pasted := initVaultWithRecoveryKeyFile(t, "personal")
+		loseTheIdentityFile(t)
+		res, _, _ := runEnroll(t, pasted, "--device", label)
+		if res.Code != int(exitcode.Usage) {
+			t.Errorf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+		}
+	})
+}
