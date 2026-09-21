@@ -118,7 +118,7 @@ func runInit(app *App, opt initOptions) error {
 	// Settled before anything is created, alongside the other knowable
 	// failures: an unusable --recovery-key-out, or a default run with no
 	// terminal to show a key on, costs nobody a passphrase entry.
-	recoveryMode, err := planRecoveryKey(app, opt.noRecoveryKey, opt.recoveryKeyOut)
+	recoveryMode, err := planRecoveryKey(app, "--no-recovery-key", opt.noRecoveryKey, opt.recoveryKeyOut)
 	if err != nil {
 		return err
 	}

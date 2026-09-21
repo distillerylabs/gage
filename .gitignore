@@ -2,6 +2,10 @@
 /gage
 /gage.exe
 /dist/
+# `go build ./...` run from inside cmd/gage drops the binary there, which
+# the root-anchored patterns above do not cover.
+/cmd/gage/gage
+/cmd/gage/gage.exe
 
 # Pinned lint toolchain, installed by `make lint` (see GOLANGCI_BIN)
 /bin/

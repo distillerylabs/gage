@@ -45,11 +45,12 @@ const (
 	recoveryKeyFile
 )
 
-// planRecoveryKey settles what init will do about the recovery key, and
-// refuses now rather than later if it cannot do anything sensible.
+// planRecoveryKey settles what a command will do about the recovery key it
+// is about to generate, and refuses now rather than later if it cannot do
+// anything sensible. `init` and `recovery enroll` share it.
 //
-// The refusal that matters is D2's: by default init generates a key and
-// shows it, and "shows it" is meaningless without a human watching. A
+// The refusal that matters is D2's: by default a key is generated and
+// shown, and "shows it" is meaningless without a human watching. A
 // piped or redirected init would write an unencrypted private key into
 // whatever is collecting the output — a log, a CI transcript, a file
 // nobody reads — which is precisely the exposure keeping the key off disk
@@ -61,10 +62,17 @@ const (
 // It runs before the target directory is touched and before the passphrase
 // prompt, so a flag combination that was never going to work costs nobody
 // a vault directory or two blind passphrase entries.
-func planRecoveryKey(app *App, noRecoveryKey bool, outPath string) (recoveryKeyMode, error) {
+//
+// skipFlag is the name of the caller's own opt-out flag: `init` spells it
+// --no-recovery-key and `recovery enroll` spells it --no-new-recovery-key,
+// because one is making a vault's first key and the other is replacing a
+// key it just spent. The refusals below have to name the flag the operator
+// can actually pass, so it is a parameter rather than a constant.
+func planRecoveryKey(app *App, skipFlag string, noRecoveryKey bool, outPath string) (recoveryKeyMode, error) {
 	if noRecoveryKey && outPath != "" {
-		return recoveryKeyNone, exitcode.New(exitcode.Usage,
-			"gage: --no-recovery-key and --recovery-key-out are mutually exclusive; the first says not to make a key, the second says where to put one")
+		return recoveryKeyNone, exitcode.Newf(exitcode.Usage,
+			"gage: %s and --recovery-key-out are mutually exclusive; the first says not to make a key, the second says where to put one",
+			skipFlag)
 	}
 	if noRecoveryKey {
 		return recoveryKeyNone, nil
@@ -80,11 +88,12 @@ func planRecoveryKey(app *App, noRecoveryKey bool, outPath string) (recoveryKeyM
 	// and is exactly the run that would file an unencrypted private key
 	// into a build log.
 	if !app.IsTerminal() || !app.errIsTerminal() {
-		return recoveryKeyNone, exitcode.New(exitcode.Usage,
-			"gage: init generates a recovery key and shows it once, which needs a terminal.\n"+
-				"gage: pass --recovery-key-out FILE to write it to a file instead, or --no-recovery-key\n"+
-				"gage: to create a vault without one (which leaves this device's identity file as the\n"+
-				"gage: only way in — if it or its passphrase is lost, the vault is unreadable forever).")
+		return recoveryKeyNone, exitcode.Newf(exitcode.Usage,
+			"gage: this generates a recovery key and shows it once, which needs a terminal.\n"+
+				"gage: pass --recovery-key-out FILE to write it to a file instead, or %s to\n"+
+				"gage: go without one (which leaves this device's identity file as the only way\n"+
+				"gage: in — if it or its passphrase is lost, the vault is unreadable forever).",
+			skipFlag)
 	}
 	return recoveryKeyShow, nil
 }
