@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -670,5 +671,43 @@ func TestInitStillPublishesWhenTheRecoveryConfirmationFails(t *testing.T) {
 	other := gittest.NewDevice(t, remote)
 	if !other.Exists(t, ".age-recipients") {
 		t.Error("the vault never reached the remote")
+	}
+}
+
+// TestRecoveryKeyOutRejectsARelativePathInsideAVault. The ancestor walk
+// that finds "am I inside a vault" has to start from an absolute path:
+// filepath.Dir(".") is ".", so a relative destination would walk its own
+// prefix, find no .gage/config.toml, and let the key land exactly where
+// gage's next reset deletes it.
+func TestRecoveryKeyOutRejectsARelativePathInsideAVault(t *testing.T) {
+	isolateXDG(t)
+
+	vault := filepath.Join(t.TempDir(), "other")
+	if res := runCLI(t, []string{"init", "other", "--dir", vault, "--no-recovery-key"}, ""); res.Code != 0 {
+		t.Fatalf("seeding a vault: %s", res.Stderr)
+	}
+
+	// Run from inside that vault, so a bare filename resolves into it.
+	t.Chdir(filepath.Join(vault, "entries"))
+
+	for i, rel := range []string{"recovery.key", "./recovery.key", "../recovery.key"} {
+		t.Run(rel, func(t *testing.T) {
+			// A fresh vault name per case: a refusal must leave nothing
+			// registered, but a *passing* case would, and the collision
+			// would then mask what this is testing.
+			name := fmt.Sprintf("personal-%d", i)
+			res := runCLI(t, []string{"init", name,
+				"--dir", filepath.Join(t.TempDir(), name),
+				"--recovery-key-out", rel}, "")
+			if res.Code != int(exitcode.Usage) {
+				t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+			}
+			if !strings.Contains(res.Stderr, "vault") {
+				t.Errorf("the refusal doesn't explain itself:\n%s", res.Stderr)
+			}
+			if _, err := os.Stat(rel); !os.IsNotExist(err) {
+				t.Error("a refused path was written to anyway")
+			}
+		})
 	}
 }

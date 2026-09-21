@@ -102,7 +102,9 @@ func (v *Vault) RecoverDevice(spec RecoverSpec, secret []byte, p Prompter) (Reco
 	}
 	defer func() { _ = ident.Close() }()
 
-	if err := v.checkRecoverSpec(spec); err != nil {
+	// The retired key's own public half is passed in, because "retired"
+	// has to mean retired: see checkRecoverSpec.
+	if err := v.checkRecoverSpec(spec, ident.Recipient()); err != nil {
 		return RecoverResult{}, err
 	}
 
@@ -140,7 +142,15 @@ func (v *Vault) RecoverDevice(spec RecoverSpec, secret []byte, p Prompter) (Reco
 // which checks against the *final* list — rebuilding a machine under the
 // name it always had is the ordinary case, and a check against the
 // current list would refuse it.
-func (v *Vault) checkRecoverSpec(spec RecoverSpec) error {
+//
+// retired is the public half of the key authorizing this call, and the one
+// collision swapRecipients structurally cannot catch: it removes the
+// recovery label before checking the additions, so by then the retired key
+// looks like any unused public key. Re-admitting it is exactly what this
+// operation exists to prevent — as a device it would make a bare,
+// passphrase-less secret a permanent device recipient, and as its own
+// replacement it would report a retirement that did not happen.
+func (v *Vault) checkRecoverSpec(spec RecoverSpec, retired string) error {
 	if !devicename.Valid(spec.Device) {
 		return exitcode.Newf(exitcode.Usage, "gage: device name %q is invalid", spec.Device)
 	}
@@ -152,9 +162,19 @@ func (v *Vault) checkRecoverSpec(spec RecoverSpec) error {
 	if err := agekey.ValidateRecipient(spec.Pubkey); err != nil {
 		return exitcode.Wrap(exitcode.Usage, err)
 	}
+	if spec.Pubkey == retired {
+		return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+			"%w: %s is the recovery key this operation is retiring, so it cannot also be enrolled as %q — "+
+				"generate a new key for the device", ErrRecipientExists, retired, spec.Device))
+	}
 	if spec.NewRecoveryPubkey != "" {
 		if err := agekey.ValidateRecipient(spec.NewRecoveryPubkey); err != nil {
 			return exitcode.Wrap(exitcode.Usage, err)
+		}
+		if spec.NewRecoveryPubkey == retired {
+			return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+				"%w: %s is the recovery key this operation is retiring, so it cannot also be its own "+
+					"replacement — generate a new one", ErrRecipientExists, retired))
 		}
 	}
 	if spec.Replaces == RecoveryDeviceLabel {

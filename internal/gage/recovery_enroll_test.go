@@ -745,3 +745,69 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestRecoverDeviceRefusesToReAddTheRetiredKey is the invariant the whole
+// feature rests on, stated as a test because the swap makes it easy to
+// break: the recovery label is removed before the additions are checked
+// for collisions, so without an explicit check the retired key sails back
+// in under a different label and "retirement" reports success while the
+// pasted secret stays a full recipient forever.
+func TestRecoverDeviceRefusesToReAddTheRetiredKey(t *testing.T) {
+	tests := []struct {
+		name string
+		spec func(f recoverFixture) RecoverSpec
+	}{
+		{
+			// The worst shape: a bare, passphrase-less secret becomes a
+			// permanent *device* recipient.
+			name: "as the enrolled device's key",
+			spec: func(f recoverFixture) RecoverSpec {
+				return RecoverSpec{Device: "laptop-2", Pubkey: f.key.Pubkey}
+			},
+		},
+		{
+			// Retired and re-registered under the same fixed label, so
+			// RetiredRecovery == NewRecoveryPubkey and nothing changed.
+			name: "as its own replacement",
+			spec: func(f recoverFixture) RecoverSpec {
+				return RecoverSpec{
+					Device:            "laptop-2",
+					Pubkey:            freshPubkey(t),
+					NewRecoveryPubkey: f.key.Pubkey,
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRecoverFixture(t, "personal", "laptop-1")
+			insertAs(t, f.v, f.owner, "first")
+			before := headHash(t, f.v)
+			beforeList := labels(t, f.v)
+			used := append([]byte(nil), f.key.Secret...)
+
+			_, err := recoverAs(t, f, tc.spec(f), f.key.Secret, &fakePrompter{})
+			if err == nil {
+				t.Fatal("the retired recovery key was accepted back into the recipient list")
+			}
+			if !errors.Is(err, ErrRecipientExists) {
+				t.Errorf("errors.Is(err, ErrRecipientExists) = false: %v", err)
+			}
+			if got := exitcode.CodeOf(err); got != exitcode.Conflict {
+				t.Errorf("CodeOf = %v, want Conflict", got)
+			}
+			if got := headHash(t, f.v); got != before {
+				t.Error("a refused swap moved HEAD")
+			}
+			if got := labels(t, f.v); !equalStrings(got, beforeList) {
+				t.Errorf("a refused swap changed the recipient list: %v", got)
+			}
+			// The refusal is not a silent partial: the key is exactly as
+			// it was, still the vault's recovery key, so a corrected retry
+			// works.
+			if !decryptsWith(t, f.v, used) {
+				t.Error("a refused swap still re-encrypted away from the recovery key")
+			}
+		})
+	}
+}
