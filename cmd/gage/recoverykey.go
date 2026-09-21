@@ -355,10 +355,10 @@ func confirmRecoveryKeySaved(app *App, secret string) error {
 
 	return exitcode.New(exitcode.Conflict,
 		"gage: the recovery key was not confirmed.\n"+
-			"gage: the vault was still created and that key is still one of its recipients, so it\n"+
+			"gage: the change is committed and that key is one of this vault's recipients, so it\n"+
 			"gage: is worth saving from the screen above — gage kept no copy and it cannot be shown\n"+
-			"gage: again. If it is already gone, `gage recipient add` a fresh recovery key and\n"+
-			"gage: `gage recipient remove` this one.")
+			"gage: again. If it is already gone, generate a keypair with `age-keygen`, add it with\n"+
+			"gage: `gage recipient add`, and remove this one with `gage recipient remove`.")
 }
 
 // writeRecoveryKeyFile is --recovery-key-out: the key goes to a file
@@ -381,10 +381,15 @@ func writeRecoveryKeyFile(app *App, vaultName, path string, key gage.RecoveryKey
 		// here means the disk changed under us. The vault is fine and this
 		// device can still open it; what is gone is the second way in, and
 		// the fix is to make another one rather than to start over.
+		// Deliberately says only what is true of both callers: `init` has
+		// just created the vault and `recovery enroll` has just changed an
+		// existing one, and naming the wrong one mid-recovery would tell
+		// the user about an operation they never ran.
 		return exitcode.Wrap(exitcode.Internal, fmt.Errorf(
-			"gage: %q was created, but writing its recovery key to %s failed: %w\n"+
-				"gage: that key is lost — add a replacement with `gage recipient add`, then\n"+
-				"gage: `gage recipient remove %s`", vaultName, path, err, gage.RecoveryDeviceLabel))
+			"gage: %q's recipient list is committed, but writing its recovery key to %s failed: %w\n"+
+				"gage: that key is lost — generate a keypair with `age-keygen`, add it with\n"+
+				"gage: `gage recipient add <pubkey> --device %s`, and remove the one just written\n"+
+				"gage: off with `gage recipient remove`", vaultName, path, err, gage.RecoveryDeviceLabel))
 	}
 
 	writeOut(app.Err, []string{

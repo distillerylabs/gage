@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -193,6 +194,14 @@ func runRecoveryEnroll(app *App, opt recoveryEnrollOptions) error {
 		}
 	}
 
+	// A name the vault already lists is knowable from the plaintext
+	// recipient list, so it is refused here rather than by the swap — which
+	// would only say so after the paste and a full passphrase entry, for a
+	// mistake visible before either.
+	if err := checkDeviceNameFree(v, device, opt.replaces); err != nil {
+		return err
+	}
+
 	// A local identity file for this device is replaced only when
 	// --replaces says this device is being rebuilt; otherwise it is a
 	// different machine's key and enrolling over it would strand a vault
@@ -251,20 +260,38 @@ func runRecoveryEnroll(app *App, opt recoveryEnrollOptions) error {
 		return backup.restoreAfter(err)
 	}
 
-	if err := recordLocalIdentity(v.Name, device, gage.MethodPassphrase, pubkey); err != nil {
-		return err
-	}
-
-	// Held, not returned, for the reason init's is: the vault has already
-	// changed and been pushed, and abandoning the summary would leave the
-	// user guessing what state they are in.
+	// The replacement key goes out first, ahead of everything that could
+	// still fail. By this point the swap has committed and pushed, so that
+	// key is already the vault's and its private half exists only in this
+	// process — anything that errors after RecoverDevice and before this
+	// would take it with it. Its own error is held, as init holds it.
 	deliveryErr := deliverRecoveryKey(app, mode, v.Name, opt.recoveryKeyOut, newKey)
+
+	// Now the local bookkeeping. A failure here is real but recoverable —
+	// the identity file exists and the vault lists it, so re-running
+	// `gage identity add --device <name>` re-registers it — and it must not
+	// be what swallows the key above.
+	recordErr := recordLocalIdentity(v.Name, device, gage.MethodPassphrase, pubkey)
 
 	writeOut(app.Out, recoveryEnrollLines(v.Name, device, pubkey, res))
 	if mode == recoveryKeyNone {
 		warnNoRecoveryKey(app, v.Name)
 	}
-	return deliveryErr
+	if deliveryErr != nil {
+		// The lost key is the worse of the two, so it sets the exit code;
+		// the other is reported beside it.
+		if recordErr != nil {
+			writeError(app.Err, recordErr)
+		}
+		return deliveryErr
+	}
+	if recordErr != nil {
+		return exitcode.Newf(exitcode.CodeOf(recordErr),
+			"%v\ngage: the vault change is committed and %q is a recipient; re-run "+
+				"`gage identity add --device %s` to register it on this machine",
+			recordErr, device, device)
+	}
+	return nil
 }
 
 // checkPastedRecoveryKey is the early half of the two-stage check on the
@@ -306,7 +333,9 @@ func warnNoRecoveryKey(app *App, vault string) {
 	writeOut(app.Err, []string{
 		fmt.Sprintf("gage: %q now has no recovery key. This device's identity file is the only", vault),
 		"gage: way in; if it or its passphrase is lost, the vault is unreadable forever.",
-		"gage: `gage recovery rotate` adds one.",
+		"gage: to add one: generate a keypair with `age-keygen`, then",
+		fmt.Sprintf("gage:   gage recipient add <its public key> --device %s", gage.RecoveryDeviceLabel),
+		"gage: and store the private half offline.",
 	})
 }
 
@@ -338,11 +367,11 @@ func identityBackupFor(v *gage.Vault, device string, replacing bool) (*identityB
 	case err != nil:
 		return nil, exitcode.Wrap(exitcode.Internal, err)
 	case !replacing:
-		return nil, exitcode.Newf(exitcode.Usage,
-			"%v: %s already exists.\n"+
+		return nil, exitcode.Wrap(exitcode.Usage, fmt.Errorf(
+			"%w: %s already exists.\n"+
 				"gage: if this machine is being rebuilt under that name, say so with --replaces %s;\n"+
-				"gage: otherwise enroll under a different --device NAME.",
-			ErrLocalIdentityExists, path, device)
+				"gage: otherwise enroll under a different --device NAME",
+			ErrLocalIdentityExists, path, device))
 	default:
 		return &identityBackup{vaultID: v.ID, device: device, path: path, content: content}, nil
 	}
@@ -363,6 +392,16 @@ func (b *identityBackup) restoreAfter(cause error) error {
 	if b.content == nil {
 		return cause
 	}
+	// The directory has to be remade first. RemoveIdentity prunes the
+	// marker and the now-empty identities/<vault-id>/ alongside the key, so
+	// on a machine holding only this identity the parent is gone by now —
+	// and atomicfile.WriteFile does not create it, it writes a temp file
+	// beside the target. Without this the restore fails with ENOENT and
+	// destroys the very file this type exists to protect.
+	if err := os.MkdirAll(filepath.Dir(b.path), identityDirMode); err != nil {
+		return exitcode.Newf(exitcode.Internal,
+			"gage: %v (and restoring the identity file at %s failed: %v)", cause, b.path, err)
+	}
 	if err := atomicfile.WriteFile(b.path, b.content, identityFileMode); err != nil {
 		return exitcode.Newf(exitcode.Internal,
 			"gage: %v (and restoring the identity file at %s failed: %v)", cause, b.path, err)
@@ -370,6 +409,42 @@ func (b *identityBackup) restoreAfter(cause error) error {
 	return cause
 }
 
-// identityFileMode is the mode CreateIdentity writes a wrapped identity
-// with, repeated here for the restore path.
-const identityFileMode = 0o600
+// identityFileMode and identityDirMode are what CreateIdentity writes a
+// wrapped identity and its directory with, repeated here for the restore
+// path. The directory is 0700 for the same reason entries/ is: its listing
+// alone says which devices this machine holds keys for.
+const (
+	identityFileMode = 0o600
+	identityDirMode  = 0o700
+)
+
+// checkDeviceNameFree refuses a device name the vault already lists,
+// before anything is asked for.
+//
+// The swap would refuse it too, but only from inside RecoverDevice — after
+// the key has been pasted and a new passphrase chosen twice. Both are
+// avoidable for a mistake that is visible in a plaintext file this command
+// has already read.
+//
+// The name being replaced is the exception, and the common one: rebuilding
+// a machine under the name it always had.
+func checkDeviceNameFree(v *gage.Vault, device, replaces string) error {
+	if device == replaces {
+		return nil
+	}
+	rs, err := v.Recipients()
+	if err != nil {
+		return err
+	}
+	for _, r := range rs {
+		if r.Device != device {
+			continue
+		}
+		return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+			"%w: %q is already a recipient of vault %q.\n"+
+				"gage: if this machine is being rebuilt under that name, say so with --replaces %s;\n"+
+				"gage: otherwise enroll under a different --device NAME",
+			gage.ErrRecipientExists, device, v.Name, device))
+	}
+	return nil
+}

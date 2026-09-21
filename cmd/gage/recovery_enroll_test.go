@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -202,23 +204,6 @@ func TestRecoveryEnrollRebuildsADeviceWhosePassphraseIsForgotten(t *testing.T) {
 	}
 	if show := runCLI(t, []string{"show", "api-token"}, ""); show.Code != 0 {
 		t.Fatalf("the rebuilt device cannot read: %s", show.Stderr)
-	}
-}
-
-func TestRecoveryEnrollRefusesAnExistingIdentityFile(t *testing.T) {
-	isolateXDG(t)
-	pasted := initVaultWithRecoveryKeyFile(t, "personal")
-
-	// laptop-1's file is present and --replaces does not name it.
-	res, _, p := runEnroll(t, pasted, "--device", "laptop-1")
-	if res.Code != int(exitcode.Usage) {
-		t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
-	}
-	if len(p.requests) != 0 {
-		t.Error("enroll prompted for a passphrase before refusing")
-	}
-	if !strings.Contains(res.Stderr, "--replaces") {
-		t.Errorf("the refusal doesn't name the way out:\n%s", res.Stderr)
 	}
 }
 
@@ -550,5 +535,233 @@ func TestRecoveryEnrollIsListedInHelp(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "recovery enroll") {
 		t.Errorf("`gage help` doesn't list recovery enroll:\n%s", res.Stdout)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Rollback when the machine still holds the identity it is replacing.
+// Every other rollback test here loses the identity file first, which is
+// what hid the bug below: with nothing to back up, the restore path never
+// ran at all.
+// ---------------------------------------------------------------------
+
+// abortingPrompter answers the paste and then refuses the new passphrase,
+// which is what a user pressing Ctrl-C at "Choose a passphrase" looks like
+// from here.
+type abortingPrompter struct {
+	fakePrompter
+	pasted string
+}
+
+func (p *abortingPrompter) Value(prompt string) (string, error) {
+	p.valuePrompts = append(p.valuePrompts, prompt)
+	p.valueCalls++
+	return p.pasted, nil
+}
+
+func (p *abortingPrompter) Unlock(req gage.UnlockRequest) (gage.UnlockResponse, error) {
+	p.requests = append(p.requests, req)
+	return gage.UnlockResponse{}, errors.New("interrupted")
+}
+
+// TestRecoveryEnrollRestoresTheIdentityItDisplacedWhenAborted is the
+// promise identityBackup exists to keep: rebuilding a machine under its own
+// name is legitimate with a perfectly good key on disk, and a run abandoned
+// half-way must not be what destroys it.
+func TestRecoveryEnrollRestoresTheIdentityItDisplacedWhenAborted(t *testing.T) {
+	isolateXDG(t)
+	pasted := initVaultWithRecoveryKeyFile(t, "personal")
+
+	path := identityFileForTest(t, "personal", "laptop-1")
+	original, err := os.ReadFile(path) // #nosec G304 -- test fixture path
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := &abortingPrompter{
+		fakePrompter: fakePrompter{passphrases: []string{testPassphrase}},
+		pasted:       pasted,
+	}
+	res, _ := runCLIWithPrompter(t, []string{"recovery", "enroll",
+		"--device", "laptop-1", "--replaces", "laptop-1",
+		"--recovery-key-out", filepath.Join(t.TempDir(), "new.key")}, "", false, p)
+	if res.Code == 0 {
+		t.Fatal("expected the aborted passphrase to fail the command")
+	}
+
+	// The only identity this machine had must still be there, byte for
+	// byte, and must still open the vault.
+	after, err := os.ReadFile(path) // #nosec G304 -- test fixture path
+	if err != nil {
+		t.Fatalf("the identity file was destroyed by an aborted enroll: %v", err)
+	}
+	if !bytes.Equal(original, after) {
+		t.Error("the identity file came back changed")
+	}
+	if show := runCLI(t, []string{"recipient", "list"}, ""); show.Code != 0 {
+		t.Errorf("the vault is unusable after an aborted enroll: %s", show.Stderr)
+	}
+}
+
+// TestRecoveryEnrollShowsTheNewKeyEvenIfRegistrationFails: by the time the
+// swap has committed and pushed, the replacement key is the vault's and its
+// private half exists only in this process. Anything that fails afterwards
+// must not be what swallows it.
+func TestRecoveryEnrollShowsTheNewKeyEvenIfRegistrationFails(t *testing.T) {
+	isolateXDG(t)
+	pasted := initVaultWithRecoveryKeyFile(t, "personal")
+	loseTheIdentityFile(t)
+
+	// The global config directory is made read-only: reads still work, so
+	// the run gets as far as the swap, and the atomic write that records
+	// the new identity afterwards is what fails. No injected seam — this
+	// is the real failure, produced by the real filesystem.
+	if runtime.GOOS == "windows" {
+		t.Skip("directory write permission is not enforced the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	cfgDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "gage")
+	if err := os.Chmod(cfgDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cfgDir, 0o700) })
+
+	out := filepath.Join(t.TempDir(), "new.key")
+	p := &fakePrompter{passphrases: []string{testPassphrase}, values: []string{pasted}}
+	res, _ := runCLIWithPrompter(t, []string{"recovery", "enroll",
+		"--device", "laptop-2", "--recovery-key-out", out}, "", false, p)
+
+	if res.Code == 0 {
+		t.Fatal("expected the failed registration to fail the command")
+	}
+	// The swap happened, so the key is real. It must have reached the user.
+	data, err := os.ReadFile(out) // #nosec G304 -- test fixture path
+	if err != nil {
+		t.Fatalf("the replacement recovery key was never delivered: %v", err)
+	}
+	if !ageSecretKeyPattern.MatchString(strings.TrimSpace(string(data))) {
+		t.Errorf("the delivered file holds no key: %q", data)
+	}
+}
+
+// TestRecoveryEnrollRefusesAColidingNameBeforeThePaste: a name already in
+// use is knowable from the recipient list alone, so it must not cost a
+// paste and a full passphrase entry to find out.
+func TestRecoveryEnrollRefusesACollidingNameBeforeThePaste(t *testing.T) {
+	isolateXDG(t)
+	pasted := initVaultWithRecoveryKeyFile(t, "personal")
+	loseTheIdentityFile(t)
+
+	// laptop-1 is still a recipient and --replaces does not name it.
+	res, _, p := runEnroll(t, pasted, "--device", "laptop-1")
+	if res.Code != int(exitcode.Conflict) {
+		t.Fatalf("exit code = %d, want %d (Conflict); stderr=%s", res.Code, exitcode.Conflict, res.Stderr)
+	}
+	if len(p.valuePrompts) != 0 {
+		t.Errorf("it asked for the key before refusing: %v", p.valuePrompts)
+	}
+	if len(p.requests) != 0 {
+		t.Error("it asked for a passphrase before refusing")
+	}
+	if !strings.Contains(res.Stderr, "--replaces") {
+		t.Errorf("the refusal doesn't name the way out:\n%s", res.Stderr)
+	}
+}
+
+// TestRecoveryEnrollReplacesADifferentLostDevice covers the other --replaces
+// shape: a new machine taking over from one that is gone, under a new name.
+func TestRecoveryEnrollReplacesADifferentLostDevice(t *testing.T) {
+	isolateXDG(t)
+	pasted := initVaultWithRecoveryKeyFile(t, "personal")
+	loseTheIdentityFile(t)
+
+	res, _, _ := runEnroll(t, pasted, "--device", "laptop-2", "--replaces", "laptop-1")
+	if res.Code != 0 {
+		t.Fatalf("recovery enroll failed: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+	vf := readVaultConfigForTest(t, "personal")
+	got := make([]string, 0, len(vf.Recipients))
+	for _, r := range vf.Recipients {
+		got = append(got, r.Device)
+	}
+	want := "laptop-2," + gage.RecoveryDeviceLabel
+	if strings.Join(got, ",") != want {
+		t.Errorf("recipients = %v, want [%s]", got, want)
+	}
+	if !strings.Contains(res.Stdout, "laptop-1") {
+		t.Errorf("the summary doesn't say what was removed:\n%s", res.Stdout)
+	}
+}
+
+func TestRecoveryEnrollLocalIdentityErrorIsMatchable(t *testing.T) {
+	isolateXDG(t)
+	pasted := initVaultWithRecoveryKeyFile(t, "personal")
+
+	// A device with a local identity file whose name is not a recipient,
+	// so the identity-file check is what refuses rather than the name
+	// collision.
+	if res := runCLI(t, []string{"identity", "add", "--device", "spare-1"}, ""); res.Code != 0 {
+		t.Fatalf("seeding a second identity: %s", res.Stderr)
+	}
+	res, _, _ := runEnroll(t, pasted, "--device", "spare-1")
+	if res.Code != int(exitcode.Usage) {
+		t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, ErrLocalIdentityExists.Error()) {
+		t.Errorf("the refusal doesn't carry the sentinel's text:\n%s", res.Stderr)
+	}
+}
+
+// TestNoRecoveryKeyWarningNamesARealCommand: pointing at a command that
+// does not exist is worse than saying nothing — the suggested fix prints
+// usage and exits 0, so the user believes the vault has a recovery key.
+func TestNoRecoveryKeyWarningNamesARealCommand(t *testing.T) {
+	isolateXDG(t)
+	pasted := initVaultWithRecoveryKeyFile(t, "personal")
+	loseTheIdentityFile(t)
+
+	p := &fakePrompter{passphrases: []string{testPassphrase}, values: []string{pasted}}
+	res, _ := runCLIWithPrompter(t, []string{"recovery", "enroll",
+		"--device", "laptop-2", "--no-new-recovery-key"}, "", false, p)
+	if res.Code != 0 {
+		t.Fatalf("recovery enroll failed: %s", res.Stderr)
+	}
+
+	// Whatever the warning tells the user to run has to be a real command.
+	for _, line := range strings.Split(res.Stderr, "\n") {
+		for _, word := range []string{"gage recovery rotate", "gage recovery enroll", "gage recipient add"} {
+			if !strings.Contains(line, word) {
+				continue
+			}
+			args := strings.Fields(strings.TrimPrefix(word, "gage "))
+			if _, ok := findCommand(strings.Join(args, " ")); !ok {
+				t.Errorf("the warning suggests %q, which is not a registered command:\n%s", word, line)
+			}
+		}
+	}
+}
+
+// TestCloneAndSessionPointAtRecoveryEnroll: a sole owner holding a paper
+// key was told only to publish an enrollment request, which needs somebody
+// else to approve it. For them that is a dead end.
+func TestCloneAndSessionPointAtRecoveryEnroll(t *testing.T) {
+	isolateXDG(t)
+
+	remote := gittest.NewBareRemote(t)
+	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1",
+		"--remote", remote, "--recovery-key-out", filepath.Join(t.TempDir(), "rk")}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	isolateXDG(t)
+	res := runCLI(t, []string{"clone", remote, "--name", "personal"}, "")
+	if res.Code != 0 {
+		t.Fatalf("clone failed: %s", res.Stderr)
+	}
+	out := res.Stdout + res.Stderr
+	if !strings.Contains(out, "recovery enroll") {
+		t.Errorf("clone's no-identity advice never mentions the recovery key:\n%s", out)
 	}
 }

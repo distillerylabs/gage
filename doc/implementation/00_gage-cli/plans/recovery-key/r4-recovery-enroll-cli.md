@@ -146,6 +146,53 @@ in tests.
   passphrase, which is exactly the wrong move when a forgotten passphrase is
   why the command was run. Refusing is a frontend policy.
 
+## Found by review
+
+A `/code-review` pass after the milestone was first reported done found
+seven issues; all are fixed on the same branch, each with a test that
+failed first.
+
+- **`identityBackup.restoreAfter` could never restore a sole identity
+  file.** `clear()` → `RemoveIdentity` prunes the now-empty
+  `identities/<vault-id>/`, and `atomicfile.WriteFile` writes a temp file
+  beside the target rather than creating the directory, so the restore
+  failed with ENOENT — destroying the one file the type exists to protect.
+  It now `MkdirAll`s first. **No test caught this because every rollback
+  test called `loseTheIdentityFile()` first**, leaving `backup.content`
+  nil, so the restore path never ran at all. The new test keeps the
+  identity and aborts at the passphrase prompt.
+- **A `recordLocalIdentity` failure discarded the replacement key.** It is
+  committed and pushed by then and its private half exists only in this
+  process, so delivery now happens *first*, before any step that can still
+  fail; the registration error is reported after, with the remedy named.
+- **`warnNoRecoveryKey` pointed at `gage recovery rotate`,** which does not
+  exist until R5: it printed usage and exited 0, so the user believed they
+  had added a key. It now names `age-keygen` plus `recipient add`, which
+  work today. A test walks every command the warnings suggest through
+  `findCommand`, so a stale suggestion cannot survive again.
+- **A colliding device name was refused only after the paste and a full
+  passphrase entry**, by the swap. It is knowable from the plaintext
+  recipient list, so `checkDeviceNameFree` now refuses before either.
+- **`ErrLocalIdentityExists` was formatted with `%v`,** so `errors.Is`
+  against the exported sentinel was always false. Now `%w`.
+- **Init's wording reached enroll**: "the vault was still created" was
+  shown mid-recovery for an operation the user never ran. Both shared
+  messages now say only what is true of either caller.
+- **The `clone` hint task was ticked but not implemented.** `clone.go` and
+  `repl.go` named only `gage identity enroll` — a dead end for a sole owner
+  holding a paper key, since it needs somebody else to approve. Both now
+  name `gage recovery enroll` too. Same false-`[x]` class as R3's
+  `ErrLocalIdentityExists`, and the reason the definition of done below now
+  ends in a check rather than a claim.
+
+One earlier test was removed rather than repaired:
+`TestRecoveryEnrollRefusesAnExistingIdentityFile` used a device that was
+both a recipient and held a local identity file, so after the reordering
+the name collision is what refuses. Its two halves are now covered
+separately and more precisely by
+`TestRecoveryEnrollRefusesACollidingNameBeforeThePaste` and
+`TestRecoveryEnrollLocalIdentityErrorIsMatchable`.
+
 ## Definition of done
 
 Every item green on all three CI platforms, `make lint` and `make test`

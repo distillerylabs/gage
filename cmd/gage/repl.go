@@ -305,7 +305,8 @@ func sessionUse(app *App, args []string) error {
 	err := app.Session.Use(args[0])
 	if errors.Is(err, gage.ErrNoLocalIdentity) {
 		return exitcode.Wrap(exitcode.CodeOf(err),
-			fmt.Errorf("%w; run `gage identity enroll` to publish a request to join %q", err, args[0]))
+			fmt.Errorf("%w; run `gage identity enroll` to publish a request to join %q, "+
+				"or `gage recovery enroll` if you hold its recovery key", err, args[0]))
 	}
 	return err
 }
