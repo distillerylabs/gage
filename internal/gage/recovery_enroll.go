@@ -238,9 +238,19 @@ func (v *Vault) recoveryIdentity(secret []byte, p Prompter) (Identity, error) {
 // recipientSwap is one atomic change to the recipient list: some labels
 // removed, some added, in a single commit.
 type recipientSwap struct {
-	add     []VaultRecipient
-	remove  []string // device labels
-	message string
+	add    []VaultRecipient
+	remove []string // device labels
+	// removeIfPresent are labels removed when the list has them and simply
+	// skipped when it does not, unlike remove, where naming nobody is an
+	// error. It exists for rotate, which retires a recovery recipient a
+	// vault made with --no-recovery-key never had.
+	removeIfPresent []string
+	message         string
+
+	// inspect, if set, is called with the current list under the lock,
+	// before the final list is computed. A non-nil error aborts the swap
+	// with nothing written.
+	inspect func(current []VaultRecipient) error
 }
 
 // swapRecipients applies a swap: remove, add, re-encrypt, commit, push —
@@ -291,6 +301,11 @@ func (v *Vault) swapRecipients(sw recipientSwap, ident *Identity) (reencrypted i
 		if err != nil {
 			return err
 		}
+		if sw.inspect != nil {
+			if err := sw.inspect(current); err != nil {
+				return err
+			}
+		}
 		updated, err := applySwap(current, sw)
 		if err != nil {
 			return err
@@ -331,9 +346,16 @@ func applySwap(current []VaultRecipient, sw recipientSwap) ([]VaultRecipient, er
 	for _, label := range sw.remove {
 		removed[label] = true
 	}
+	optional := map[string]bool{}
+	for _, label := range sw.removeIfPresent {
+		optional[label] = true
+	}
 	for _, r := range current {
 		if removed[r.Device] {
 			delete(removed, r.Device)
+			continue
+		}
+		if optional[r.Device] {
 			continue
 		}
 		updated = append(updated, r)
@@ -374,4 +396,69 @@ func applySwap(current []VaultRecipient, sw recipientSwap) ([]VaultRecipient, er
 				"rewrite every entry to a list no key opens", ErrLastRecipient))
 	}
 	return updated, nil
+}
+
+// RotateResult reports what a rotation did.
+type RotateResult struct {
+	// Retired is the public key of the recovery recipient that was
+	// replaced, or empty if the vault had none.
+	Retired string
+	// Created is true when there was no recovery recipient to replace, so
+	// this added the first one.
+	Created bool
+	// Pubkey is the new recovery key's public half.
+	Pubkey string
+
+	Commit      string
+	Reencrypted int
+}
+
+// RotateRecoveryKey replaces the vault's recovery recipient with newPubkey,
+// or adds the first one if there is none, in a single commit.
+//
+// It is RecoverDevice's swap driven by an ordinary unlocked identity rather
+// than by the recovery key, for the two situations that have no lost
+// identity to recover from: a recovery key that may have leaked, and a
+// vault made with --no-recovery-key that wants one after all. Doing it as
+// AddRecipient then RemoveRecipient does not work — the label is fixed, so
+// the new key cannot be added while the old one still holds it — and would
+// in any case be two commits with a window where both keys are live.
+//
+// newPubkey must not be the key being retired. The swap removes the old
+// label before it checks the additions, so without the explicit check the
+// retired key would sail straight back in under its own name and report a
+// rotation that changed nothing.
+func (v *Vault) RotateRecoveryKey(newPubkey string, ident *Identity) (RotateResult, error) {
+	if err := agekey.ValidateRecipient(newPubkey); err != nil {
+		return RotateResult{}, exitcode.Wrap(exitcode.Usage, err)
+	}
+
+	res := RotateResult{Pubkey: newPubkey}
+	n, hash, err := v.swapRecipients(recipientSwap{
+		add:             []VaultRecipient{{Device: RecoveryDeviceLabel, Pubkey: newPubkey}},
+		removeIfPresent: []string{RecoveryDeviceLabel},
+		message:         "gage: recovery rotate (reencrypt)",
+		// Read under the lock by swapRecipients, so what is reported as
+		// retired is what the swap actually retired and not a stale read.
+		inspect: func(current []VaultRecipient) error {
+			for _, r := range current {
+				if r.Device != RecoveryDeviceLabel {
+					continue
+				}
+				res.Retired = r.Pubkey
+				if r.Pubkey == newPubkey {
+					return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+						"%w: %s is the recovery key this rotation is retiring, so it cannot also be "+
+							"its own replacement — generate a new one", ErrRecipientExists, newPubkey))
+				}
+			}
+			res.Created = res.Retired == ""
+			return nil
+		},
+	}, ident)
+	if err != nil {
+		return RotateResult{}, err
+	}
+	res.Commit, res.Reencrypted = hash, n
+	return res, nil
 }

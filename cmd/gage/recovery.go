@@ -25,6 +25,7 @@ func newRecoveryCommand(app *App) *cobra.Command {
 	}
 	parent.AddCommand(newRecoveryVerifyCommand(app))
 	parent.AddCommand(newRecoveryEnrollCommand(app))
+	parent.AddCommand(newRecoveryRotateCommand(app))
 	return parent
 }
 
@@ -333,9 +334,7 @@ func warnNoRecoveryKey(app *App, vault string) {
 	writeOut(app.Err, []string{
 		fmt.Sprintf("gage: %q now has no recovery key. This device's identity file is the only", vault),
 		"gage: way in; if it or its passphrase is lost, the vault is unreadable forever.",
-		"gage: to add one: generate a keypair with `age-keygen`, then",
-		fmt.Sprintf("gage:   gage recipient add <its public key> --device %s", gage.RecoveryDeviceLabel),
-		"gage: and store the private half offline.",
+		"gage: `gage recovery rotate` adds one.",
 	})
 }
 
@@ -447,4 +446,91 @@ func checkDeviceNameFree(v *gage.Vault, device, replaces string) error {
 			gage.ErrRecipientExists, device, v.Name, device))
 	}
 	return nil
+}
+
+// newRecoveryRotateCommand builds `gage recovery rotate`: replace the
+// vault's recovery key from a device that can already read it, or add the
+// first one to a vault made without.
+//
+// It is the answer to two situations with no lost identity to recover
+// from: a recovery key that may have leaked, and a vault created with
+// --no-recovery-key that wants one after all. The instructions this
+// replaces — add a second key, then remove the first — could not work: the
+// label is fixed, so the add fails while the old key still holds it.
+func newRecoveryRotateCommand(app *App) *cobra.Command {
+	var (
+		useFlag        string
+		recoveryKeyOut string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "rotate",
+		Short: commandShort("recovery rotate"),
+		Long: commandShort("recovery rotate") + ".\n\n" +
+			"Generates a new recovery key, registers it as the vault's recovery-paper-key,\n" +
+			"and retires the old one, re-encrypting every entry in a single commit. The new\n" +
+			"key is shown once, exactly as `gage init` shows one; --recovery-key-out writes\n" +
+			"it to a file instead of the screen.\n\n" +
+			"Use it if a recovery key may have leaked. Retiring it stops it opening anything\n" +
+			"written from now on, but it still opens every version already in the vault's\n" +
+			"git history, so rotate the secrets themselves too.\n\n" +
+			"A vault made with --no-recovery-key has nothing to retire; this simply adds one.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRecoveryRotate(app, useFlag, recoveryKeyOut)
+		},
+	}
+
+	addUseFlag(cmd, &useFlag)
+	cmd.Flags().StringVar(&recoveryKeyOut, "recovery-key-out", "",
+		"write the new recovery key to this file (mode 0600) instead of showing it")
+	return cmd
+}
+
+func runRecoveryRotate(app *App, use, recoveryKeyOut string) error {
+	// Before the unlock, so a run with nowhere to show the key never asks
+	// for a passphrase. There is no opt-out to name: producing a key is the
+	// whole command.
+	mode, err := planRecoveryKey(app, "", false, recoveryKeyOut)
+	if err != nil {
+		return err
+	}
+
+	return withUnlockedVault(app, use, func(v *gage.Vault, ident *gage.Identity) error {
+		if mode == recoveryKeyFile {
+			if err := checkRecoveryKeyOutPath(recoveryKeyOut, v.Path); err != nil {
+				return err
+			}
+		}
+
+		key, err := gage.NewRecoveryKey()
+		if err != nil {
+			return err
+		}
+		defer zeroBytes(key.Secret)
+
+		res, err := v.RotateRecoveryKey(key.Pubkey, ident)
+		if err != nil {
+			return err
+		}
+
+		// Held, as init's and enroll's are: the vault has changed and been
+		// pushed, so the summary still has to say so.
+		deliveryErr := deliverRecoveryKey(app, mode, v.Name, recoveryKeyOut, key)
+		writeOut(app.Out, recoveryRotateLines(v.Name, res))
+		return deliveryErr
+	})
+}
+
+func recoveryRotateLines(vault string, res gage.RotateResult) []string {
+	lines := []string{}
+	if res.Created {
+		lines = append(lines, fmt.Sprintf("gage: added a recovery key to vault %q (it had none)", vault))
+	} else {
+		lines = append(lines, fmt.Sprintf("gage: replaced vault %q's recovery key; retired %s", vault, res.Retired))
+	}
+	lines = append(lines,
+		fmt.Sprintf("gage: new recovery key is %s", res.Pubkey),
+		fmt.Sprintf("gage: re-encrypted %d %s", res.Reencrypted, plural(res.Reencrypted, "entry", "entries")))
+	return lines
 }

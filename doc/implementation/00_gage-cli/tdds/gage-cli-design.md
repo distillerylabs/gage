@@ -771,14 +771,36 @@ only makes the second way in exist from the first commit.
 - **`gage recovery verify`** checks a pasted key against the recipient list.
   It needs no unlock, because a recovery key is what you reach for when the
   identity file is gone. It proves the copy is intact and belongs to this
-  vault; it does not decrypt anything.
-
-- **`gage` cannot unlock with it.** Only the passphrase method exists, and
-  the recovery key is a bare age key, so it decrypts entries through stock
-  `age -d -i` but does not drive `recipient add` or any other command. That
-  is a real limit on what "recoverable" means today: it recovers the
-  *secrets*, not a running gage. An `age-key` method (already named in the
-  method list above) would close it and is not built.
+  vault; it does not decrypt anything. It reports two claims separately,
+  because they differ: any recipient's key decrypts the vault, but only the
+  one under the fixed label can run `recovery enroll`.
+- **`gage recovery enroll` is the recovery key's one power inside gage.**
+  It is not an unlock method. It pastes the key, generates a fresh device
+  identity, admits it, retires the key just used, and mints a replacement —
+  in a single commit. The recovery identity is built only inside one
+  library function (`Identity`'s fields are unexported, so there is no way
+  to obtain one elsewhere), which is what makes "only this" structural
+  rather than a convention. A device's own key pasted there is refused even
+  though it would decrypt, since accepting it would quietly discard the
+  passphrase protection device keys carry. M10's recipient-change
+  confirmation still runs: being the recovery key is not a reason to bless
+  a list nobody reviewed.
+- **`gage recovery rotate`** replaces the recovery key, or adds the first
+  one to a vault made with `--no-recovery-key`, from a device that can
+  already read the vault. It exists because the alternative — add a second
+  key, then remove the first — cannot work: the label is fixed, so the add
+  fails while the old key still holds it, and two commits would leave a
+  window with both keys live.
+- **Both are one commit** built on `commitRecipientList`. Add-then-remove
+  would re-encrypt the whole vault twice and leave that window, and
+  `RemoveRecipient`'s self-removal warning would describe retirement as
+  losing access, which is what it means and not what the warning is for.
+- **Retirement is future-only.** A retired key still opens every version
+  already in git history, so leaking a key means rotating the secrets too.
+- **An `age-key` unlock method is deliberately not built.** Making raw keys
+  a normal way to use gage would discard the protection device keys carry;
+  the narrow enroll-then-retire path gets the same recoverability without
+  it.
 
 Known gap: the secret is never page-locked, unlike identity secrets. Showing
 it needs a Go string copy that can be neither locked nor zeroed, so locking

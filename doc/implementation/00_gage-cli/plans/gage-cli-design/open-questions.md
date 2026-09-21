@@ -808,10 +808,12 @@ so its security is physical custody and the output and docs say so.
 `gage` keeps no copy, which preserves "recovery problem, not a backup
 problem".
 
-**Known limit:** the recovery key decrypts entries with stock `age`, but
-`gage` cannot unlock with it — only the passphrase method exists. It
-recovers secrets, not a running gage. An `age-key` method would close it;
-not built.
+**Was a known limit, now closed by [Q-RECOVERY-ENROLL](#q-recovery-enroll):**
+the recovery key decrypts entries with stock `age` but gage could not
+unlock with it, so it recovered secrets and not a running gage. It now gets a
+device back through `gage recovery enroll` — deliberately *not* through an
+`age-key` unlock method, which would have made raw keys a normal way to use
+gage.
 
 ---
 

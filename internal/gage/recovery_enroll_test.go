@@ -811,3 +811,214 @@ func TestRecoverDeviceRefusesToReAddTheRetiredKey(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------
+// RotateRecoveryKey: the same swap, driven by an ordinary unlocked device
+// ---------------------------------------------------------------------
+
+// rotateAs runs RotateRecoveryKey as the fixture's owner.
+func rotateAs(t *testing.T, f recoverFixture, newPubkey string, p Prompter) (RotateResult, error) {
+	t.Helper()
+	var (
+		res RotateResult
+		err error
+	)
+	withXDGRoot(t, f.owner.root, func() {
+		id, uerr := f.v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
+		if uerr != nil {
+			t.Fatalf("unlocking as the owner: %v", uerr)
+		}
+		defer func() { _ = id.Close() }()
+		res, err = f.v.RotateRecoveryKey(newPubkey, &id)
+		_ = p
+	})
+	return res, err
+}
+
+func TestRotateRecoveryKeySwapsInOneCommit(t *testing.T) {
+	f := newRecoverFixture(t, "personal", "laptop-1")
+	insertAs(t, f.v, f.owner, "first")
+	insertAs(t, f.v, f.owner, "second")
+
+	next, err := NewRecoveryKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := append([]byte(nil), f.key.Secret...)
+	before := headHash(t, f.v)
+
+	res, err := rotateAs(t, f, next.Pubkey, &fakePrompter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"laptop-1=" + f.owner.pubkey, RecoveryDeviceLabel + "=" + next.Pubkey}
+	if got := labels(t, f.v); !equalStrings(got, want) {
+		t.Errorf("recipients = %v, want %v", got, want)
+	}
+	if res.Retired != f.key.Pubkey {
+		t.Errorf("Retired = %s, want %s", res.Retired, f.key.Pubkey)
+	}
+	if res.Created {
+		t.Error("Created = true, but the vault already had a recovery recipient")
+	}
+	if head := headHash(t, f.v); head == before || res.Commit != head {
+		t.Errorf("reported commit %s, HEAD %s (was %s)", res.Commit, head, before)
+	}
+	// Create's commit, two inserts, and this one.
+	if n, err := gitrepo.CommitCount(f.v.Path); err != nil || n != 4 {
+		t.Errorf("commit count = %d (err %v), want 4 — the swap must be a single commit", n, err)
+	}
+	if decryptsWith(t, f.v, old) {
+		t.Error("the retired recovery key still opens the vault's entries")
+	}
+	if !decryptsWith(t, f.v, next.Secret) {
+		t.Error("the new recovery key does not open the vault's entries")
+	}
+}
+
+// TestRotateRecoveryKeyCreatesOneWhenThereIsNone: rotate is also how a
+// vault made with --no-recovery-key gets one later.
+func TestRotateRecoveryKeyCreatesOneWhenThereIsNone(t *testing.T) {
+	d := newTestDevice(t, "personal", "laptop-1")
+	var v *Vault
+	withXDGRoot(t, d.root, func() {
+		var err error
+		v, err = Create(CreateSpec{
+			Name: "personal", ID: d.vaultID, Path: filepath.Join(t.TempDir(), "personal"),
+			Type: TypeGit, Method: MethodPassphrase, Device: "laptop-1",
+			Recipients: []string{d.pubkey},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	insertAs(t, v, d, "first")
+	f := recoverFixture{v: v, owner: d}
+
+	next, err := NewRecoveryKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := rotateAs(t, f, next.Pubkey, &fakePrompter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Created || res.Retired != "" {
+		t.Errorf("Created = %v, Retired = %q; want Created and nothing retired", res.Created, res.Retired)
+	}
+	want := []string{"laptop-1=" + d.pubkey, RecoveryDeviceLabel + "=" + next.Pubkey}
+	if got := labels(t, v); !equalStrings(got, want) {
+		t.Errorf("recipients = %v, want %v", got, want)
+	}
+	if !decryptsWith(t, v, next.Secret) {
+		t.Error("the new recovery key does not open the vault")
+	}
+}
+
+// TestRotateRecoveryKeyRefusesTheKeyItIsRetiring is R3's review finding
+// again, for the same reason: the swap removes the old label before it
+// checks the additions, so re-offering the retired key would sail through
+// and report a rotation that changed nothing.
+func TestRotateRecoveryKeyRefusesTheKeyItIsRetiring(t *testing.T) {
+	f := newRecoverFixture(t, "personal", "laptop-1")
+	insertAs(t, f.v, f.owner, "first")
+	before := headHash(t, f.v)
+
+	_, err := rotateAs(t, f, f.key.Pubkey, &fakePrompter{})
+	if !errors.Is(err, ErrRecipientExists) {
+		t.Fatalf("err = %v, want ErrRecipientExists", err)
+	}
+	if exitcode.CodeOf(err) != exitcode.Conflict {
+		t.Errorf("CodeOf = %v, want Conflict", exitcode.CodeOf(err))
+	}
+	if headHash(t, f.v) != before {
+		t.Error("a refused rotation moved HEAD")
+	}
+}
+
+func TestRotateRecoveryKeyRefusalsWriteNothing(t *testing.T) {
+	tests := []struct {
+		name   string
+		pubkey func(f recoverFixture) string
+		want   error
+		code   exitcode.Code
+	}{
+		{"a malformed key", func(recoverFixture) string { return "age1nope" }, nil, exitcode.Usage},
+		{"a key that is a device's", func(f recoverFixture) string { return f.owner.pubkey }, ErrRecipientExists, exitcode.Conflict},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRecoverFixture(t, "personal", "laptop-1")
+			insertAs(t, f.v, f.owner, "first")
+			before, list := headHash(t, f.v), labels(t, f.v)
+
+			_, err := rotateAs(t, f, tc.pubkey(f), &fakePrompter{})
+			if err == nil {
+				t.Fatal("expected a refusal")
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("errors.Is(err, %v) = false: %v", tc.want, err)
+			}
+			if got := exitcode.CodeOf(err); got != tc.code {
+				t.Errorf("CodeOf = %v, want %v", got, tc.code)
+			}
+			if headHash(t, f.v) != before || !equalStrings(labels(t, f.v), list) {
+				t.Error("a refused rotation changed the vault")
+			}
+		})
+	}
+}
+
+func TestInterruptedRotateRecoveryKeyLeavesHEADUntouched(t *testing.T) {
+	f := newRecoverFixture(t, "personal", "laptop-1")
+	insertAs(t, f.v, f.owner, "first")
+	insertAs(t, f.v, f.owner, "second")
+	insertAs(t, f.v, f.owner, "third")
+	before, list := headHash(t, f.v), labels(t, f.v)
+
+	f.v.onReencryptEntry = crashAfter(2)
+	crashed := runAndRecoverCrash(t, func() {
+		_, _ = rotateAs(t, f, freshPubkey(t), &fakePrompter{})
+	})
+	f.v.onReencryptEntry = nil
+	if !crashed {
+		t.Fatal("the injected failure never fired, so this asserts nothing")
+	}
+	if headHash(t, f.v) != before || !equalStrings(labels(t, f.v), list) {
+		t.Error("an interrupted rotation committed something")
+	}
+	// The recovery key is still the vault's recovery recipient, so a retry
+	// is the whole recovery. Checked against the committed list rather than
+	// by decrypting entries off disk: an interrupted write deliberately
+	// leaves entries/ holding ciphertext for the new list until the next
+	// write's reset discards it, and it is HEAD that carries the guarantee.
+	if label, err := f.v.VerifyRecoveryKey(f.key.Secret); err != nil || label != RecoveryDeviceLabel {
+		t.Errorf("recovery key: label = %q, err = %v; want it still the recovery recipient", label, err)
+	}
+}
+
+func TestRotateRecoveryKeyStillAsksM10sQuestion(t *testing.T) {
+	f := newRecoverFixture(t, "personal", "laptop-1")
+	insertAs(t, f.v, f.owner, "first")
+	commitRoutineRecipientChange(t, f.v, "phone-1", freshPubkey(t))
+	before := headHash(t, f.v)
+
+	p := &decliningRecipientPrompter{}
+	p.passphrases = []string{testPassphrase}
+	var err error
+	withXDGRoot(t, f.owner.root, func() {
+		id, uerr := f.v.Unlock(p)
+		if uerr != nil {
+			t.Fatal(uerr)
+		}
+		defer func() { _ = id.Close() }()
+		_, err = f.v.RotateRecoveryKey(freshPubkey(t), &id)
+	})
+	if err == nil || !p.asked {
+		t.Fatalf("err = %v, asked = %v; want a declined M10 question", err, p.asked)
+	}
+	if headHash(t, f.v) != before {
+		t.Error("a declined rotation still committed")
+	}
+}

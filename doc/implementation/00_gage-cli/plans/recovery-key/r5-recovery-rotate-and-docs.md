@@ -28,33 +28,56 @@ add one later and needs no separate command.
 
 ## Tasks
 
-- [ ] `(*Vault).RotateRecoveryKey(newPubkey, ident)`: the same swap driven
+- [x] `(*Vault).RotateRecoveryKey(newPubkey, ident)`: the same swap driven
       by a normal unlocked identity; adds the recovery recipient when the
       vault has none.
-- [ ] `gage recovery rotate [--recovery-key-out FILE] [--use NAME]`,
+- [x] `gage recovery rotate [--recovery-key-out FILE] [--use NAME]`,
       one-shot only: unlock, generate, swap, then deliver the new key under
       the R1 rules (terminal on both streams, held error, confirmation).
-- [ ] Rewrite the leak-response instructions in
+- [x] Rewrite the leak-response instructions in
       `doc/cli/identities-and-recipients.md` around `recovery rotate`; they
       currently tell the user to add a second `recovery-paper-key`, which
       collides on the fixed label.
-- [ ] Rewrite "Using it" around `recovery enroll`; keep the honest statement
+- [x] Rewrite "Using it" around `recovery enroll`; keep the honest statement
       of what the key still cannot do (it is not an unlock method).
-- [ ] Update `getting-started.md`, `vaults.md`, `command-reference.md`, and
+- [x] Update `getting-started.md`, `vaults.md`, `command-reference.md`, and
       the design doc's "Recovery key at `init`" section, including its
       "gage cannot unlock with it" bullet.
-- [ ] Reword `Q-RECOVERY-KEY`'s known limit in `open-questions.md` to what
+- [x] Reword `Q-RECOVERY-KEY`'s known limit in `open-questions.md` to what
       is now true, and update the status columns in [index.md](index.md).
 
 ## Tests (write first)
 
-- [ ] `rotate` swaps the recovery recipient in one commit; the old key
+- [x] `rotate` swaps the recovery recipient in one commit; the old key
       stops opening new ciphertext and the new one opens everything.
-- [ ] `rotate` on a vault with no recovery recipient creates one.
-- [ ] `rotate` needs an unlock and refuses without a terminal or
+- [x] `rotate` on a vault with no recovery recipient creates one.
+- [x] `rotate` needs an unlock and refuses without a terminal or
       `--recovery-key-out`, before any prompt.
-- [ ] The new key is never stored, and appears in the output exactly once.
-- [ ] Registry completeness and `gage help` list the command.
+- [x] The new key is never stored, and appears in the output exactly once.
+- [x] Registry completeness and `gage help` list the command.
+
+## Settled while implementing
+
+- **`swapRecipients` gained `removeIfPresent` and `inspect`.** Rotate
+  retires a recovery recipient a `--no-recovery-key` vault never had, which
+  `remove` (where naming nobody is an error, so a `--replaces` typo cannot
+  be a silent no-op) would refuse. `inspect` reads the list under the lock,
+  so what is reported as retired is what the swap actually retired, not a
+  stale read. Both are additive to R3's primitive.
+- **`RotateRecoveryKey` refuses the key it is retiring.** R3's review found
+  that the swap removes the old label before checking additions, so
+  re-offering the retired key would sail through and report a rotation that
+  changed nothing. `inspect` is where that check lives, since it needs the
+  list the lock protects.
+- **`planRecoveryKey` accepts an empty opt-out flag.** Rotate has none —
+  producing a key is the whole command — and a refusal must not tell the
+  user to pass a flag that does not exist.
+- **The R4 stopgap wording is gone.** `warnNoRecoveryKey` and the two
+  key-delivery failure messages named `age-keygen` plus `recipient add`
+  because `recovery rotate` did not exist yet; all three now name it.
+- **The docs' "cannot unlock with it" claim is retired**, replaced by what
+  is now true: the recovery key has exactly one power inside gage, and it is
+  not an unlock method. An `age-key` method stays deliberately unbuilt.
 
 ## Definition of done
 
