@@ -22,39 +22,49 @@ anything, and bring every document in line with the new default.
 
 ## Decisions to make first
 
-None open. `recipient verify` already exists and means something else
+None open on entry. `recipient verify` already exists and means something else
 (config vs `.age-recipients` agreement), which is why this is
 `recovery verify`.
 
+One thing surfaced while writing the docs and is recorded rather than
+buried: **`gage` cannot unlock a vault with the recovery key.** Only the
+passphrase method exists (`AllowedMethods`, `Unlock`), and the recovery key
+is a bare age key. It decrypts entries through stock `age -d -i`, so it
+recovers the *secrets*, not a running gage; `recipient add` and every other
+command still need an identity gage can unlock. The plan and the PR
+descriptions had implied more. The docs now say so plainly (see
+"Using it" in `identities-and-recipients.md`); an `age-key` method would
+close it and is out of scope for this feature.
+
 ## Tasks
 
-- [ ] `newRecoveryCommand(app)` in a new `cmd/gage/recovery.go`, with a
+- [x] `newRecoveryCommand(app)` in a new `cmd/gage/recovery.go`, with a
       `verify` subcommand: reads the pasted key through masked
       `Prompter.Value`, calls `VerifyRecoveryKey`, reports match or no
       match, and zeroes the input.
-- [ ] Registry entry (group: recipient, one-shot only) and
+- [x] Registry entry (group: recipient, one-shot only) and
       `root.AddCommand` in `app.go`.
-- [ ] `tdds/gage-cli-design.md`: `init` section, "Losing this file is a
+- [x] `tdds/gage-cli-design.md`: `init` section, "Losing this file is a
       recovery problem" paragraph, and the config example; state that
       init generates the recovery recipient by default and gage keeps no
       copy.
-- [ ] `doc/cli/`: `getting-started.md`, `vaults.md`,
+- [x] `doc/cli/`: `getting-started.md`, `vaults.md`,
       `identities-and-recipients.md` (with a "Storing your recovery key"
       section including the leak response: add a new recovery recipient,
       `gage recipient remove` the old one, re-encrypt, rotate the secrets
       themselves), and `command-reference.md`.
-- [ ] Update the status columns in [index.md](index.md) and mark
+- [x] Update the status columns in [index.md](index.md) and mark
       `Q-RECOVERY-KEY` resolved in `open-questions.md`.
 
 ## Tests (write first)
 
-- [ ] `recovery verify` with the right key reports a match and exits 0.
-- [ ] A valid key that is not a recipient reports no match with the
+- [x] `recovery verify` with the right key reports a match and exits 0.
+- [x] A valid key that is not a recipient reports no match with the
       pinned exit code.
-- [ ] A malformed key is rejected with the pinned exit code.
-- [ ] The pasted key is read through the prompter and never echoed to
+- [x] A malformed key is rejected with the pinned exit code.
+- [x] The pasted key is read through the prompter and never echoed to
       stdout or stderr.
-- [ ] `TestRegistryCompleteness` passes with the new command; `gage help`
+- [x] `TestRegistryCompleteness` passes with the new command; `gage help`
       lists it.
 
 ## Definition of done

@@ -53,9 +53,77 @@ identity and publish a request for it (or `gage identity add`, and have any
 other recipient add the printed key via `gage recipient add`). Note that
 neither verb will overwrite an identity file that's still there; recovery
 means registering a *new* key, never restoring the old one from a backup.
-This is why it's worth adding a recovery key as an extra recipient when you
-create a vault (`gage init --recipient ...`) — a vault that depends on
-exactly one identity file surviving forever has no real recovery story.
+This is why `gage init` generates a recovery key for you by default — a vault
+that depends on exactly one identity file surviving forever has no real
+recovery story. See [Storing your recovery key](#storing-your-recovery-key).
+
+## Storing your recovery key
+
+`gage init` registers a second recipient, `recovery-paper-key`, and shows its
+private key once. **That key is a bare age secret: it is not encrypted, and
+anyone who has it can read every secret in the vault.** Nothing protects it
+but where you keep it, and `gage` keeps no copy, so it can't be shown again.
+Confirm it works with `gage recovery verify`, and read
+[Using it](#using-it) for what it can and can't do.
+
+**Do**
+
+- Print it on a printer you trust, or write it out by hand, and keep the
+  paper somewhere you would keep a passport — a safe, a safe-deposit box, a
+  sealed envelope with someone you trust.
+- Or keep it on an offline encrypted drive.
+- Check it after storing it: `gage recovery verify` reads the key you paste
+  and confirms it is still one of the vault's recipients.
+
+**Don't**
+
+- Put it in cloud-synced notes, a password manager that syncs, email, chat,
+  or a photo or screenshot of the terminal.
+- Print it on a shared or networked printer that keeps copies.
+- Leave it in your terminal's scrollback. Clear it once you've stored it.
+
+If you ran `init` with `--recovery-key-out FILE`, that file is the key. Move
+it somewhere offline and delete it.
+
+### Using it
+
+**`gage` itself can't unlock a vault with the recovery key.** Today gage
+unlocks only through a passphrase-wrapped identity file, and the recovery key
+is a bare age key, not one of those. What it does is decrypt: every entry is
+an ordinary age file encrypted to all of the vault's recipients, so the stock
+`age` tool reads it:
+
+```
+age -d -i recovery.key entries/<uuid>.age
+```
+
+That gets your secrets back even when nothing else can. It does not get gage
+running again by itself — `gage recipient add` and every other command need
+an identity gage can unlock. If some *other* device still has a working
+identity, use that one: `gage identity add` on the affected machine, then
+`gage recipient add` from the working one. If none does, the recovery key is
+how you read everything out (the entries are YAML: `title`, `value`, ...) and
+move it into a new vault.
+
+Teaching gage to unlock with the recovery key directly is not built.
+
+### If it leaks
+
+Treat every secret in the vault as exposed to whoever holds the key, and act
+in this order:
+
+1. Generate a replacement key (`age-keygen`) and add it: `gage recipient add
+   <new-pubkey> --device recovery-paper-key-2`.
+2. Remove the old one: `gage recipient remove recovery-paper-key --reencrypt`.
+3. **Rotate the secrets themselves.** Removing the key stops it opening
+   anything new, but anyone who already read entries with it still has those
+   values, and re-encrypting can't take them back.
+
+### Skipping it
+
+`--no-recovery-key` leaves this device's identity file as the only way into
+the vault. If it, or its passphrase, is ever lost, the vault is unreadable
+forever. You can add a recovery recipient later with `gage recipient add`.
 
 ## Recipients: who can decrypt a vault
 

@@ -14,6 +14,7 @@ for the mechanism that moves secrets between vaults instead).
 gage init <name> [--dir PATH] [--remote URL] [--type git]
                   [--method passphrase] [--device NAME]
                   [--recipient PUBKEY ...]
+                  [--no-recovery-key | --recovery-key-out FILE]
 ```
 
 - Without `--dir`, the vault is created at `$GAGE_DATA/vaults/<name>`.
@@ -26,9 +27,22 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
   is the default and, today, the only option.
 - `--device` names this device as a recipient label; if omitted, it defaults
   to your normalized hostname. See [Identities and recipients](identities-and-recipients.md).
-- `--recipient` can be repeated to add extra public keys (e.g. a recovery
-  key) at creation time, so the vault isn't single-point-of-failure from the
-  start. This device's own key is always included; these are in addition.
+- By default `init` also generates an **offline recovery key**, registers it
+  as the `recovery-paper-key` recipient, and shows the private key once
+  (text and QR) on your terminal, asking you to type its last six characters
+  back so you know you have it. `gage` keeps no copy. See
+  [Storing your recovery key](identities-and-recipients.md#storing-your-recovery-key).
+  - `--recovery-key-out FILE` writes it to a `0600` file instead of showing
+    it — for a run with no terminal. The file must not already exist, and
+    must not be inside a vault or under `$GAGE_DATA`, both of which `gage`
+    deletes from.
+  - `--no-recovery-key` skips it. That leaves this device's identity file as
+    the only way into the vault.
+  - With no terminal and neither flag, `init` refuses before creating
+    anything, rather than write an unencrypted key into a log.
+  - `--device recovery-paper-key` is refused; that label is the key's.
+- `--recipient` can be repeated to add extra public keys you already hold,
+  in addition to this device's own key and the recovery key.
 
 `init` and `clone` are the only vault commands that don't work inside a
 session — they *create* a vault rather than operate on an existing one.

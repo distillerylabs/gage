@@ -730,14 +730,59 @@ doesn't try to make this file un-losable, and deliberately doesn't offer
 to sync or back it up itself — the fix for "this device's identity file
 is gone" is the same fix as "this device is gone": generate a fresh
 identity (`gage identity add`) and have any *other* recipient add it
-(`gage recipient add`). This is why `gage init --recipient` and the
-`config.toml` example both show room for a `recovery-paper-key` alongside
-a device's own key — a vault that depends on exactly one identity file
-surviving forever has no real recovery story, regardless of where that
-file lives. A user is free to back up a device's wrapped identity file
+(`gage recipient add`). This is why `gage init` now generates a
+`recovery-paper-key` recipient by default, alongside the device's own key
+(see "Recovery key at `init`" below) — a vault that depends on exactly one
+identity file surviving forever has no real recovery story, regardless of
+where that file lives. A user is free to back up a device's wrapped identity file
 themselves (it's already passphrase-protected ciphertext, so copying it
 isn't unsafe), but that's a manual, user-owned choice, not something
 `gage` automates.
+
+### Recovery key at `init`
+
+`gage init` generates a second X25519 keypair by default and registers its
+public key as the `recovery-paper-key` recipient, so that a new vault is
+never one lost identity file away from unreadable. The private key is
+shown **once**, after the vault exists, and `gage` keeps no copy — the
+"recovery problem, not a backup problem" stance above is unchanged, this
+only makes the second way in exist from the first commit.
+
+- **It is a bare age secret, not passphrase-wrapped.** Security rests on
+  physical custody, which is why the output and the user docs state the
+  storage rules plainly. A passphrase-wrapped variant would add a second
+  thing to forget at exactly the moment the backup is needed; a
+  `--wrap-recovery-key` flag could be added later without changing anything
+  here.
+- **Shown on stderr, behind a re-type.** The key is text plus a QR, then the
+  user types the last six characters back through the masked prompt. It is
+  an attention check, not authentication: the key is already a recipient by
+  then, so a refused confirmation fails the command but keeps the vault.
+- **It needs a terminal on both stdin and stderr.** The key goes to one and
+  the confirmation comes from the other, and `gage init foo 2>build.log`
+  satisfies only one — the run that would file an unencrypted private key
+  into a log. With no terminal, `init` fails before creating anything and
+  names `--recovery-key-out FILE` and `--no-recovery-key`.
+- **`--recovery-key-out` refuses places gage deletes from.** A key inside a
+  vault is removed by the reset that follows an interrupted write; a key
+  under `$GAGE_DATA` is in a tree `scripts/resetlocalstate` wipes.
+- **The label is fixed** (`recovery-paper-key`), so `init`, `recovery
+  verify` and the docs all name the same thing; a device may not use it.
+- **`gage recovery verify`** checks a pasted key against the recipient list.
+  It needs no unlock, because a recovery key is what you reach for when the
+  identity file is gone. It proves the copy is intact and belongs to this
+  vault; it does not decrypt anything.
+
+- **`gage` cannot unlock with it.** Only the passphrase method exists, and
+  the recovery key is a bare age key, so it decrypts entries through stock
+  `age -d -i` but does not drive `recipient add` or any other command. That
+  is a real limit on what "recoverable" means today: it recovers the
+  *secrets*, not a running gage. An `age-key` method (already named in the
+  method list above) would close it and is not built.
+
+Known gap: the secret is never page-locked, unlike identity secrets. Showing
+it needs a Go string copy that can be neither locked nor zeroed, so locking
+the `[]byte` beside it would look like protection it does not give.
 
 ---
 
@@ -1496,9 +1541,12 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
     default method, generates or registers the first identity using that
     same method for this device (writing its wrapped
     identity file for passphrase/age-key methods — see "Local identity
-    storage" above), and commits the initial (empty) structure. --recipient
-    can be repeated to add extra
-    recipients (e.g. a recovery key) at creation time. --method gets the
+    storage" above), and commits the initial (empty) structure. Also generates
+    a recovery key and registers it as the "recovery-paper-key" recipient
+    (see "Recovery key at `init`"); --no-recovery-key opts out and
+    --recovery-key-out FILE writes it to a file instead of the screen.
+    --recipient can be repeated to add extra recipients whose public keys
+    you already hold. --method gets the
     same treatment as --type: it defaults to (and, today, can only be)
     passphrase, validated against a single-value allowlist, so the
     additional methods named elsewhere in this document — age-key, ssh,
