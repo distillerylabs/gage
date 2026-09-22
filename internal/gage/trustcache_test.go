@@ -1265,3 +1265,246 @@ func TestConfirmingLetsTheAddThroughAndRegeneratesOnce(t *testing.T) {
 		t.Errorf("asked again after confirming: %d times", len(p2.changes))
 	}
 }
+
+// ---------------------------------------------------------------------
+// Coverage: the diff engine directly, and the confirmation/repair edges
+// the scenario tests above don't reach.
+// ---------------------------------------------------------------------
+
+// TestLongestCommonSubsequenceHandlesPureInsertionAndEmptyInput covers
+// the one diffOp longestCommonSubsequence's own scenario tests never
+// produce on their own: a pure insertion, where every line of b past
+// what a matches the common prefix of. splitDiffLines("") is checked
+// alongside it as the other endpoint diffing an empty file needs.
+func TestLongestCommonSubsequenceHandlesPureInsertionAndEmptyInput(t *testing.T) {
+	ops := longestCommonSubsequence([]string{"a"}, []string{"a", "b", "c"})
+	want := []diffOp{{' ', "a"}, {'+', "b"}, {'+', "c"}}
+	if len(ops) != len(want) {
+		t.Fatalf("ops = %+v, want %+v", ops, want)
+	}
+	for i, op := range ops {
+		if op != want[i] {
+			t.Errorf("ops[%d] = %+v, want %+v", i, op, want[i])
+		}
+	}
+
+	if got := splitDiffLines(nil); got != nil {
+		t.Errorf("splitDiffLines(nil) = %v, want nil", got)
+	}
+	if got := splitDiffLines([]byte("")); got != nil {
+		t.Errorf(`splitDiffLines("") = %v, want nil`, got)
+	}
+	if got := splitDiffLines([]byte("\n")); got != nil {
+		t.Errorf(`splitDiffLines("\n") = %v, want nil (a lone trailing newline is not a blank last line)`, got)
+	}
+}
+
+// TestRepairOnAnAlreadyInSyncVaultDoesNothing is `recipient verify
+// --repair` run against a vault with nothing to repair: a reasonable
+// thing to do, and one that must not ask a question nobody needs to
+// answer or produce a commit with nothing in it.
+func TestRepairOnAnAlreadyInSyncVaultDoesNothing(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	_ = id.Close()
+
+	commits := commitCount(t, v)
+	p := newTrustPrompter(true)
+	var repair RecipientRepair
+	withXDGRoot(t, laptop.root, func() {
+		var err error
+		repair, err = v.RepairRecipients(p)
+		if err != nil {
+			t.Fatalf("RepairRecipients on an in-sync vault: %v", err)
+		}
+	})
+
+	if repair.Commit != "" {
+		t.Errorf("repair.Commit = %q, want empty (nothing to commit)", repair.Commit)
+	}
+	if len(repair.Dropped) != 0 || len(repair.Added) != 0 {
+		t.Errorf("repair = %+v, want nothing dropped or added", repair)
+	}
+	if len(p.prompts) != 0 {
+		t.Errorf("repair asked %d confirmations on an in-sync vault, want none", len(p.prompts))
+	}
+	if got := commitCount(t, v); got != commits {
+		t.Errorf("commit count = %d, want %d; nothing to repair means nothing committed", got, commits)
+	}
+}
+
+// TestRepairWithNoPrompterRefuses is RepairRecipients' library-caller
+// case: nobody to confirm the drop with means the repair must not
+// proceed silently, the same posture confirmRecipientTrust takes below.
+func TestRepairWithNoPrompterRefuses(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	_ = id.Close()
+
+	tamperRecipientsFile(t, v, newTrustKey(t))
+	commits := commitCount(t, v)
+
+	withXDGRoot(t, laptop.root, func() {
+		if _, err := v.RepairRecipients(nil); !errors.Is(err, ErrRecipientsOutOfSync) {
+			t.Errorf("RepairRecipients(nil) = %v, want it to wrap ErrRecipientsOutOfSync", err)
+		}
+	})
+	if got := commitCount(t, v); got != commits {
+		t.Errorf("commit count = %d, want %d; a refusal must not write", got, commits)
+	}
+}
+
+// TestConfirmRecipientTrustWithNoPrompterRefuses is the same "nobody to
+// ask" refusal on the blocking pre-encrypt check itself. Every real
+// caller reaches this through Identity.frontend(), which today can never
+// actually be nil (every Identity-producing path requires a real
+// Prompter to succeed) — so this drives the unexported method directly,
+// proving the function's own contract rather than one specific caller's
+// current inability to trigger it.
+func TestConfirmRecipientTrustWithNoPrompterRefuses(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	_ = id.Close()
+
+	commitRoutineRecipientChange(t, v, "other-device", newTrustKey(t))
+
+	withXDGRoot(t, laptop.root, func() {
+		err := v.confirmRecipientTrust(nil)
+		if !errors.Is(err, ErrRecipientChangeDeclined) {
+			t.Errorf("confirmRecipientTrust(nil) = %v, want it to wrap ErrRecipientChangeDeclined", err)
+		}
+		if exitcode.CodeOf(err) != exitcode.Conflict {
+			t.Errorf("exit code = %v, want Conflict", exitcode.CodeOf(err))
+		}
+	})
+}
+
+// tamperConfigFile appends a recipient to .gage/config.toml alone,
+// mirroring tamperRecipientsFile's shape from the other direction: the
+// OnlyInConfig case, where a key is declared but nothing has encrypted
+// to it yet.
+func tamperConfigFile(t *testing.T, v *Vault, device, pubkey string) {
+	t.Helper()
+
+	configPath := filepath.Join(v.Path, ".gage", "config.toml")
+	vc, err := vaultconfig.Read(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vc.Recipients = append(vc.Recipients, vaultconfig.Recipient{Device: device, Pubkey: pubkey})
+	if err := vaultconfig.Write(configPath, vc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitrepo.CommitAll(v.Path, "gage: config-only recipient edit"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestVerifyAndRepairReportOnlyInConfig is the OnlyInConfig half of
+// RecipientVerification — a key declared in .gage/config.toml with
+// nothing yet encrypted to it in .age-recipients, the opposite direction
+// from every other tamper test in this file, which all tamper
+// .age-recipients instead.
+func TestVerifyAndRepairReportOnlyInConfig(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	_ = id.Close()
+
+	extra := newTrustKey(t)
+	tamperConfigFile(t, v, "phone-1", extra)
+
+	got, err := v.VerifyRecipients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InSync {
+		t.Fatal("VerifyRecipients reports in sync after a config-only edit")
+	}
+	if !listHas(got.OnlyInConfig, extra) {
+		t.Errorf("OnlyInConfig = %v, want it to include %s", got.OnlyInConfig, extra)
+	}
+	if len(got.OnlyInRecipientsFile) != 0 {
+		t.Errorf("OnlyInRecipientsFile = %v, want none", got.OnlyInRecipientsFile)
+	}
+
+	p := newTrustPrompter(true)
+	var repair RecipientRepair
+	withXDGRoot(t, laptop.root, func() {
+		var err error
+		repair, err = v.RepairRecipients(p)
+		if err != nil {
+			t.Fatalf("RepairRecipients: %v", err)
+		}
+	})
+	if !listHas(repair.Added, extra) {
+		t.Errorf("repair.Added = %v, want it to include %s", repair.Added, extra)
+	}
+	if !strings.Contains(p.prompts[0], "add") || !strings.Contains(p.prompts[0], extra) {
+		t.Errorf("the confirmation does not name the key it adds: %q", p.prompts[0])
+	}
+	if !listHas(readRecipientsFile(t, v), extra) {
+		t.Error("the config-only key never reached .age-recipients after repair")
+	}
+}
+
+// tamperConfigMethodOnly changes a byte of .gage/config.toml that isn't
+// a recipient — [method].plugin — and commits it, so the cache's
+// KnownConfig comparison sees a real diff while recipientDelta's
+// pubkey-only comparison sees nothing added or removed. This is the one
+// shape neither tamperRecipientsFile nor tamperConfigFile produces:
+// config.toml genuinely changed, with nothing to count from it.
+func tamperConfigMethodOnly(t *testing.T, v *Vault) {
+	t.Helper()
+
+	configPath := filepath.Join(v.Path, ".gage", "config.toml")
+	vc, err := vaultconfig.Read(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vc.Method.Plugin = "yubikey"
+	if err := vaultconfig.Write(configPath, vc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitrepo.CommitAll(v.Path, "gage: touch a non-recipient config field"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDeltaWithNoRecipientChangeSaysEditedAlone is
+// RecipientChangeWarning.delta()'s default case: a routine (in-sync)
+// change whose config.toml diff is real but adds and removes nothing —
+// the one summary line with the least to say, per its own comment. It
+// is also Summary()'s non-mismatched branch, which is what actually
+// calls delta() at all — TestRecipientsFileEditAloneStillWarns above
+// exercises the *mismatched* branch instead, which never reaches it.
+func TestDeltaWithNoRecipientChangeSaysEditedAlone(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	id := unlockAsWith(t, v, laptop, newTrustPrompter(true))
+	_ = id.Close()
+
+	tamperConfigMethodOnly(t, v)
+
+	p := newTrustPrompter(true)
+	id = unlockAsWith(t, v, laptop, p)
+	defer func() { _ = id.Close() }()
+	if _, err := v.Insert(sampleEntry(time.Now()), true, &id); err != nil {
+		t.Fatalf("Insert after an approved change: %v", err)
+	}
+
+	if len(p.changes) == 0 {
+		t.Fatal("a non-recipient config.toml edit produced no warning; the config-half comparison is not being consulted")
+	}
+	w := p.changes[0]
+	if w.Mismatched() {
+		t.Fatal("expected a routine (in-sync) change, not a mismatch")
+	}
+	if len(w.Added) != 0 || len(w.Removed) != 0 {
+		t.Errorf("Added=%v Removed=%v, want both empty — only a non-recipient field changed", w.Added, w.Removed)
+	}
+	if got := w.delta(); got != ".age-recipients was edited on its own" {
+		t.Errorf("delta() = %q, want the no-count fallback", got)
+	}
+	if got := w.Summary(); !strings.Contains(got, "recipient list changed") {
+		t.Errorf("Summary() = %q, want it to still report a change", got)
+	}
+}

@@ -669,3 +669,73 @@ func TestGeneratedCodeIsReturnedAndNowhereElse(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------
+// Coverage: sealEnrollment's and validateSealedPayload's validation
+// errors, called directly since sealEnrollment already is above.
+// ---------------------------------------------------------------------
+
+// TestSealEnrollmentRejectsInvalidInput covers sealEnrollment's own
+// checks, each pinned at its exit code as well as its message: an
+// invalid device name, an unparseable pubkey, an unknown method, and a
+// vault whose id isn't a valid one to name in a request.
+func TestSealEnrollmentRejectsInvalidInput(t *testing.T) {
+	v, _ := newRecipientTestVault(t, "personal", "laptop")
+	joining := testKeypair2(t)
+
+	t.Run("invalid device name", func(t *testing.T) {
+		_, _, err := v.sealEnrollment("not a valid name!", joining, MethodPassphrase, DefaultEnrollmentTTL)
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+		if !strings.Contains(err.Error(), "device name") {
+			t.Errorf("error = %v, want it to name the device", err)
+		}
+	})
+
+	t.Run("invalid pubkey", func(t *testing.T) {
+		_, _, err := v.sealEnrollment("phone", "not-an-age-key", MethodPassphrase, DefaultEnrollmentTTL)
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+	})
+
+	t.Run("unknown method", func(t *testing.T) {
+		_, _, err := v.sealEnrollment("phone", joining, "yubikey", DefaultEnrollmentTTL)
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+		if !strings.Contains(err.Error(), MethodPassphrase) {
+			t.Errorf("error = %v, want it to list the accepted method %q", err, MethodPassphrase)
+		}
+	})
+
+	t.Run("vault with no valid id", func(t *testing.T) {
+		broken := *v
+		broken.ID = "not-a-uuid"
+		_, _, err := broken.sealEnrollment("phone", joining, MethodPassphrase, DefaultEnrollmentTTL)
+		if exitcode.CodeOf(err) != exitcode.Internal {
+			t.Errorf("code = %v, want Internal", exitcode.CodeOf(err))
+		}
+	})
+}
+
+// TestValidateSealedPayloadRejectsNonTOML is the other malformed-request
+// case none of this file's round-trip tests reach: authenticated bytes
+// (the seal proves only that, not well-formedness) whose plaintext
+// simply isn't TOML at all, as opposed to TOML missing or misshaping a
+// particular field.
+func TestValidateSealedPayloadRejectsNonTOML(t *testing.T) {
+	v, _ := newRecipientTestVault(t, "personal", "laptop")
+
+	_, err := v.validateSealedPayload(PendingRequest{}, []byte("not { valid toml"), time.Now())
+	if !errors.Is(err, ErrEnrollmentMalformedRequest) {
+		t.Errorf("error = %v, want it to wrap ErrEnrollmentMalformedRequest", err)
+	}
+	if exitcode.CodeOf(err) != exitcode.Conflict {
+		t.Errorf("code = %v, want Conflict", exitcode.CodeOf(err))
+	}
+	if !strings.Contains(err.Error(), "not valid TOML") {
+		t.Errorf("error = %v, want it to say the contents aren't valid TOML", err)
+	}
+}

@@ -244,3 +244,14 @@ func TestAcquireZeroTimeoutFailsFastWhenContended(t *testing.T) {
 		t.Errorf("Acquire with timeout 0 took %s, want near-immediate", elapsed)
 	}
 }
+
+// TestReleaseOnANilLockIsANoOp is the documented "safe to call on a nil
+// *Lock" contract: a caller that never actually acquired one (or one
+// releasing a lock its own error path never set) can call Release
+// unconditionally without a nil-pointer panic.
+func TestReleaseOnANilLockIsANoOp(t *testing.T) {
+	var l *Lock
+	if err := l.Release(); err != nil {
+		t.Errorf("(*Lock)(nil).Release() = %v, want nil", err)
+	}
+}

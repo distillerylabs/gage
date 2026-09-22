@@ -172,3 +172,27 @@ func TestOfflineAndDivergedDoNotShareAnExitCode(t *testing.T) {
 		t.Errorf("diverged exit code = %v, want conflict", divergedCode)
 	}
 }
+
+// TestClassifyIsIdempotentOnAnAlreadyClassifiedUnreachable is
+// isUnreachable's first branch, distinct from every case above: an error
+// that already wraps ErrUnreachable, rather than a raw network error
+// isUnreachable's type-shape checks would recognize on their own.
+// Classifying it again has to stay Unreachable rather than falling
+// through to the divergence bucket by elimination — the same concern
+// TestClassifyPushCatchesGoGitsRealRejection's doc comment states for
+// the divergence side.
+func TestClassifyIsIdempotentOnAnAlreadyClassifiedUnreachable(t *testing.T) {
+	already := fmt.Errorf("gage: retrying: %w", ErrUnreachable)
+
+	for name, got := range map[string]error{
+		"push":  ClassifyPush(already),
+		"fetch": ClassifyFetch(already),
+	} {
+		if !errors.Is(got, ErrUnreachable) {
+			t.Errorf("Classify%s(already-unreachable) = %v, want it to still match ErrUnreachable", name, got)
+		}
+		if code := exitcode.CodeOf(got); code != exitcode.Unreachable {
+			t.Errorf("Classify%s(already-unreachable) exit code = %v, want Unreachable", name, code)
+		}
+	}
+}

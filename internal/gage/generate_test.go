@@ -234,3 +234,22 @@ func TestGenerateValueRejectsTooShortLength(t *testing.T) {
 		}
 	}
 }
+
+// TestRandomStringRejectsNonPositiveLengthAndEmptyAlphabet covers
+// randomString's own defensive checks. Neither is reachable through
+// GenerateValue with the current GenerateOptions — length() always
+// resolves to GenerateDefaultLength or a value already checked against
+// GenerateMinLength, and alphabet() always returns one of two non-empty
+// constants — so this drives the lower-level function directly, the
+// same way TestRandomStringPropagatesReaderFailure above already does.
+func TestRandomStringRejectsNonPositiveLengthAndEmptyAlphabet(t *testing.T) {
+	if _, err := randomString(bytes.NewReader(nil), 0, "abc"); err == nil {
+		t.Error("length 0 was accepted")
+	}
+	if _, err := randomString(bytes.NewReader(nil), -1, "abc"); err == nil {
+		t.Error("a negative length was accepted")
+	}
+	if _, err := randomString(bytes.NewReader(nil), 5, ""); err == nil {
+		t.Error("an empty alphabet was accepted")
+	}
+}

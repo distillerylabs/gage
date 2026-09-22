@@ -252,3 +252,17 @@ func TestFormatVersionCheckedBeforeTheID(t *testing.T) {
 		t.Errorf("Read also reports ErrInvalidVaultID; format_version should be checked and reported first: %v", err)
 	}
 }
+
+// TestWriteWrapsAnAtomicfileFailure is Write's own error path: whatever
+// atomicfile.WriteFile reports comes back named as a vaultconfig write,
+// not as a bare atomicfile error a caller can't attribute.
+func TestWriteWrapsAnAtomicfileFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does", "not", "exist", "config.toml")
+	err := Write(path, validFile())
+	if err == nil {
+		t.Fatal("expected an error writing into a nonexistent directory")
+	}
+	if !strings.Contains(err.Error(), "writing") {
+		t.Errorf("error = %v, want it to name the write that failed", err)
+	}
+}

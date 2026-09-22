@@ -1,9 +1,12 @@
 package recipients
 
 import (
+	"bufio"
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +65,42 @@ func TestReadSkipsBlankLines(t *testing.T) {
 func TestReadMissingFile(t *testing.T) {
 	if _, err := Read(filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Fatal("expected an error reading a nonexistent file")
+	}
+}
+
+// TestReadRejectsALineLongerThanTheScannerCanBuffer is Read's own
+// scanner.Err() branch, driven honestly rather than injected: a
+// bufio.Scanner using the default split function refuses any single
+// line past bufio.MaxScanTokenSize, and a stray or hostile
+// .age-recipients file is exactly the kind of input that could contain
+// one. This is a real failure mode of a real file, not a fault a test
+// double manufactures.
+func TestReadRejectsALineLongerThanTheScannerCanBuffer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".age-recipients")
+	huge := bytes.Repeat([]byte("a"), bufio.MaxScanTokenSize+1)
+	if err := os.WriteFile(path, huge, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Read(path)
+	if err == nil {
+		t.Fatal("expected an error reading a line longer than the scanner can buffer")
+	}
+	if !strings.Contains(err.Error(), "reading") {
+		t.Errorf("error = %v, want it to name the read that failed", err)
+	}
+}
+
+// TestWriteWrapsAnAtomicfileFailure is Write's own error path: whatever
+// atomicfile.WriteFile reports comes back named as a recipients-file
+// write, not as a bare atomicfile error a caller can't attribute.
+func TestWriteWrapsAnAtomicfileFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does", "not", "exist", ".age-recipients")
+	err := Write(path, []string{"age1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0savhh7m"})
+	if err == nil {
+		t.Fatal("expected an error writing into a nonexistent directory")
+	}
+	if !strings.Contains(err.Error(), "writing") {
+		t.Errorf("error = %v, want it to name the write that failed", err)
 	}
 }

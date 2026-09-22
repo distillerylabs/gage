@@ -1170,3 +1170,24 @@ func TestRotateWarnsThatRetirementIsFutureOnly(t *testing.T) {
 		t.Errorf("rotate never warned that the retired key still opens history: %v", p.warnings)
 	}
 }
+
+// TestApplySwapRefusesLeavingNothingToEncryptTo is applySwap's own last
+// line of defense: a swap that would leave the updated list empty. Every
+// current caller (RecoverDevice, RotateRecoveryKey) always adds at least
+// one recipient as part of what it's doing, so neither can reach this
+// through the exported API today — this drives the pure, unexported
+// function directly, which needs no vault at all, to prove the guard
+// itself rather than one specific caller's current inability to trigger
+// it (the same reasoning as trustcache_test.go's
+// TestConfirmRecipientTrustWithNoPrompterRefuses).
+func TestApplySwapRefusesLeavingNothingToEncryptTo(t *testing.T) {
+	current := []VaultRecipient{{Device: "laptop-1", Pubkey: "placeholder"}}
+
+	_, err := applySwap(current, recipientSwap{remove: []string{"laptop-1"}})
+	if !errors.Is(err, ErrLastRecipient) {
+		t.Errorf("error = %v, want it to wrap ErrLastRecipient", err)
+	}
+	if exitcode.CodeOf(err) != exitcode.Conflict {
+		t.Errorf("code = %v, want Conflict", exitcode.CodeOf(err))
+	}
+}

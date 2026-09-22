@@ -896,3 +896,70 @@ func TestConcurrentlyHeldIdentitiesDoNotSharePages(t *testing.T) {
 		t.Errorf("closing the second identity after the first: %v", err)
 	}
 }
+
+// TestSessionUseWithEmptyNameSaysSo is Use's own top-level guard — an
+// empty name argument, distinct from TestSessionWithNoCurrentVaultSaysSo's
+// "no current vault selected" case on Vault(""). No cmd/gage command
+// actually reaches this today (`use` with zero args is refused by its
+// own arg-count check before Session.Use is ever called), but it is the
+// library's own contract as an entry point a GUI could call directly.
+func TestSessionUseWithEmptyNameSaysSo(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	s, _ := newTestSession(t, open, SessionConfig{})
+
+	if err := s.Use(""); !errors.Is(err, ErrNoCurrentVault) {
+		t.Errorf("Use(\"\") error = %v, want ErrNoCurrentVault", err)
+	}
+}
+
+// TestResolveAmbiguousWithNoPrompterReturnsCandidates is Resolve's other
+// half of one-shot mode's behavior: with nobody to ask, an ambiguous
+// query comes back as the candidate list rather than a nil dereference
+// on s.prompter.Choose.
+//
+// A session with a nil Prompter can never unlock a vault through its own
+// normal path (every unlock needs one to ask for the passphrase), so
+// this seeds the held vault directly with an Identity obtained outside
+// the session — the same technique
+// TestConfirmRecipientTrustWithNoPrompterRefuses uses in trustcache_test.go
+// for the analogous library-level "nobody to ask" case.
+func TestResolveAmbiguousWithNoPrompterReturnsCandidates(t *testing.T) {
+	open := newSessionDevice(t, "laptop-1", "personal")
+	s := NewSession(SessionConfig{Open: open, Current: "personal"})
+	t.Cleanup(func() { _ = s.Close() })
+
+	v, err := open("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ident, err := v.Unlock(&fakePrompter{passphrases: []string{testPassphrase}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ident.Close() })
+
+	held, err := s.hold("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held.ident = &ident
+
+	now := time.Now()
+	for range 2 {
+		if _, err := v.Insert(Entry{
+			Title: "duplicate", Created: NewTimestamp(now), Updated: NewTimestamp(now),
+			UpdatedBy: "laptop-1", Value: "x",
+		}, true, &ident); err != nil {
+			t.Fatalf("seeding a duplicate title: %v", err)
+		}
+	}
+
+	_, _, err = s.Resolve("personal", "duplicate")
+	var amb *AmbiguousQueryError
+	if !errors.As(err, &amb) {
+		t.Fatalf("Resolve with an ambiguous query and no prompter = %v, want an AmbiguousQueryError", err)
+	}
+	if len(amb.List.Candidates) != 2 {
+		t.Errorf("candidates = %d, want 2", len(amb.List.Candidates))
+	}
+}

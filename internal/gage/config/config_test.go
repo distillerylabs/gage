@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -167,5 +168,23 @@ func TestWriteThenModifyLeavesOldValueUntouchedUntilRename(t *testing.T) {
 	}
 	if got.Current != "b" {
 		t.Errorf("Current = %q, want %q", got.Current, "b")
+	}
+}
+
+// TestReadRejectsMalformedTOML is Read's own parse-error path: a file
+// that exists and is readable but isn't valid TOML at all, distinct from
+// TestReadMissingFile's "the file isn't there".
+func TestReadRejectsMalformedTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("current = \"unterminated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Read(path)
+	if err == nil {
+		t.Fatal("expected an error reading malformed TOML")
+	}
+	if !strings.Contains(err.Error(), "parsing") {
+		t.Errorf("error = %v, want it to name the parse that failed", err)
 	}
 }

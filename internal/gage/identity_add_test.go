@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
 
 // identityFileFor is the path M9 promises each device's wrapped key
@@ -286,4 +288,48 @@ func TestRecoveringALostIdentityFileNeedsNoFileRestore(t *testing.T) {
 	if got.Title == "" {
 		t.Error("the recovered entry decrypted to nothing")
 	}
+}
+
+// TestAddIdentityRejectsAnInvalidDeviceName is AddIdentity's own
+// validation, ahead of everything that would otherwise write a file.
+func TestAddIdentityRejectsAnInvalidDeviceName(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+
+	withXDGRoot(t, laptop.root, func() {
+		_, err := v.AddIdentity("not a valid name!", &fakePrompter{passphrases: []string{testPassphrase}})
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+	})
+}
+
+// TestListIdentitiesSkipsSubdirectoriesAndInvalidlyNamedFiles is
+// ListIdentities' tolerance for anything in the identities directory
+// that isn't a wrapped identity gage itself wrote — the same posture
+// EntryIDs takes toward a stray file under entries/.
+func TestListIdentitiesSkipsSubdirectoriesAndInvalidlyNamedFiles(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+
+	withXDGRoot(t, laptop.root, func() {
+		dir, err := IdentitiesDir(v.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "not-an-identity"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// Uppercase letters are outside devicename's allowlist, so this
+		// has the right suffix but can't have been written by gage.
+		if err := os.WriteFile(filepath.Join(dir, "NOT-VALID.age"), []byte("garbage"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := v.ListIdentities()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Device != "laptop-1" {
+			t.Errorf("ListIdentities = %+v, want exactly laptop-1", got)
+		}
+	})
 }

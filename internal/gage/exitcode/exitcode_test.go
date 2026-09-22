@@ -82,3 +82,14 @@ func TestWrapNilIsNil(t *testing.T) {
 		t.Errorf("Wrap(_, nil) = %v, want nil", err)
 	}
 }
+
+// TestUnregisteredCodeStringsAsItsNumber is the one case
+// TestEveryDefinedCodeRoundTripsThroughConstructors can't reach, since it
+// only ever iterates All(): a Code value nothing registered still
+// renders as something, rather than an empty string a message would
+// silently swallow.
+func TestUnregisteredCodeStringsAsItsNumber(t *testing.T) {
+	if got, want := Code(99).String(), "code(99)"; got != want {
+		t.Errorf("Code(99).String() = %q, want %q", got, want)
+	}
+}
