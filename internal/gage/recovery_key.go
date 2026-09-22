@@ -47,9 +47,16 @@ func NewRecoveryKey() (RecoveryKey, error) {
 }
 
 // VerifyRecoveryKey reports whether secret is the private half of one of
-// this vault's recipients. It reads only the plaintext recipient list, so
-// it needs no unlock and decrypts nothing: it proves a stored copy of the
-// key is readable and matches, not that the vault's entries are intact.
+// this vault's recipients, and returns the label it is registered under.
+// It reads only the plaintext recipient list, so it needs no unlock and
+// decrypts nothing: it proves a stored copy of the key is readable and
+// matches, not that the vault's entries are intact.
+//
+// The label is returned rather than swallowed because being *a* recipient
+// and being the key RecoverDevice will accept are two different claims —
+// only the one labelled RecoveryDeviceLabel can enroll a device — and a
+// caller that could not tell them apart would report a key as fine and
+// then watch it be refused where it mattered.
 //
 // Surrounding whitespace is ignored, since the key usually arrives by
 // paste. secret is neither modified nor retained — deliberately unlike
@@ -57,24 +64,24 @@ func NewRecoveryKey() (RecoveryKey, error) {
 // long each holds the key: this returns immediately having only compared
 // a public key, while RecoverDevice keeps the secret live across a lock,
 // a full re-encryption and a push, and is the one worth erasing eagerly.
-func (v *Vault) VerifyRecoveryKey(secret []byte) error {
+func (v *Vault) VerifyRecoveryKey(secret []byte) (string, error) {
 	ident, err := age.ParseX25519Identity(string(bytes.TrimSpace(secret)))
 	if err != nil {
 		// err is deliberately not wrapped in: age's parse errors can quote
 		// the input.
-		return exitcode.Wrap(exitcode.Usage, ErrMalformedRecoveryKey)
+		return "", exitcode.Wrap(exitcode.Usage, ErrMalformedRecoveryKey)
 	}
 	want := ident.Recipient().String()
 
 	rs, err := v.Recipients()
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, r := range rs {
 		if r.Pubkey == want {
-			return nil
+			return r.Device, nil
 		}
 	}
-	return exitcode.Wrap(exitcode.LockedOrAuth,
+	return "", exitcode.Wrap(exitcode.LockedOrAuth,
 		fmt.Errorf("%w: its public key %s is not in vault %q's recipient list", ErrNotARecipient, want, v.Name))
 }

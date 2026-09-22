@@ -256,6 +256,12 @@ var registry = []CommandInfo{
 		Availability: AvailBoth,
 	},
 	{
+		Name:         "recovery enroll",
+		Short:        "Use a recovery key to enroll a fresh identity for this device",
+		Group:        GroupRecipient,
+		Availability: AvailOneShotOnly,
+	},
+	{
 		Name:         "recovery verify",
 		Short:        "Check a stored recovery key is still one of this vault's recipients",
 		Group:        GroupRecipient,

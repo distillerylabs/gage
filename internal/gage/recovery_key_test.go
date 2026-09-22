@@ -283,19 +283,23 @@ func TestVerifyRecoveryKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Run("right key passes", func(t *testing.T) {
-		if err := v.VerifyRecoveryKey(k.Secret); err != nil {
+	t.Run("right key passes and names its label", func(t *testing.T) {
+		label, err := v.VerifyRecoveryKey(k.Secret)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if label != RecoveryDeviceLabel {
+			t.Errorf("label = %q, want %q", label, RecoveryDeviceLabel)
 		}
 	})
 	t.Run("surrounding whitespace from a paste is ignored", func(t *testing.T) {
 		padded := append(append([]byte("  "), k.Secret...), '\n')
-		if err := v.VerifyRecoveryKey(padded); err != nil {
+		if _, err := v.VerifyRecoveryKey(padded); err != nil {
 			t.Fatal(err)
 		}
 	})
 	t.Run("valid key that is not a recipient", func(t *testing.T) {
-		err := v.VerifyRecoveryKey(stranger.Secret)
+		_, err := v.VerifyRecoveryKey(stranger.Secret)
 		if !errors.Is(err, ErrNotARecipient) {
 			t.Fatalf("err = %v, want ErrNotARecipient", err)
 		}
@@ -304,7 +308,7 @@ func TestVerifyRecoveryKey(t *testing.T) {
 		}
 	})
 	t.Run("malformed key", func(t *testing.T) {
-		err := v.VerifyRecoveryKey([]byte("not a key"))
+		_, err := v.VerifyRecoveryKey([]byte("not a key"))
 		if !errors.Is(err, ErrMalformedRecoveryKey) {
 			t.Fatalf("err = %v, want ErrMalformedRecoveryKey", err)
 		}
@@ -313,14 +317,14 @@ func TestVerifyRecoveryKey(t *testing.T) {
 		}
 	})
 	t.Run("error text never contains the secret", func(t *testing.T) {
-		err := v.VerifyRecoveryKey(append([]byte("x"), k.Secret...))
+		_, err := v.VerifyRecoveryKey(append([]byte("x"), k.Secret...))
 		if err == nil || strings.Contains(err.Error(), string(k.Secret)) {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("does not modify the input", func(t *testing.T) {
 		in := append([]byte(nil), k.Secret...)
-		_ = v.VerifyRecoveryKey(in)
+		_, _ = v.VerifyRecoveryKey(in)
 		if !bytes.Equal(in, k.Secret) {
 			t.Error("input mutated")
 		}

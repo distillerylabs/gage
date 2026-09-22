@@ -244,6 +244,8 @@ func accessLines(vaultID, name, device string) []string {
 		"gage: then give the code it prints to someone who can already read the vault.",
 		"gage: or, if this device cannot write to the remote: run `gage identity add` here and",
 		"gage: have someone with access add the printed key with `gage recipient add`.",
+		"gage: if you hold this vault's recovery key and there is nobody else to ask, run",
+		"gage: `gage recovery enroll` — it admits this device and retires the key it used.",
 	}
 }
 
