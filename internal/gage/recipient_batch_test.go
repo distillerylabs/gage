@@ -866,3 +866,44 @@ func TestAddRecipientIsTheOneRecipientCaller(t *testing.T) {
 		t.Errorf("RecipientChange.Commit = %s, want HEAD %s", change.Commit, headHash(t, v))
 	}
 }
+
+// ---------------------------------------------------------------------
+// Coverage: addRecipientsLocked's own per-item validation, re-checked
+// here rather than trusted from AddRecipient's caller (see its comment
+// on why: a device name in the written list becomes a filesystem path
+// component).
+// ---------------------------------------------------------------------
+
+// TestAddRecipientsLockedRevalidatesEveryBatchMember is the batch half
+// of AddRecipient's own top-level checks (recipient_test.go covers
+// those): a batch whose *second* member is invalid must be rejected
+// before anything is written, proving the re-validation runs per item
+// rather than only against the first.
+func TestAddRecipientsLockedRevalidatesEveryBatchMember(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	id := unlockAs(t, v, laptop)
+	defer func() { _ = id.Close() }()
+
+	valid := newTestDevice(t, "personal", "phone-1")
+	commits := commitCount(t, v)
+
+	t.Run("invalid device name", func(t *testing.T) {
+		bad := []VaultRecipient{{Device: valid.name, Pubkey: valid.pubkey}, {Device: "not valid!", Pubkey: valid.pubkey}}
+		_, _, err := addBatch(t, v, &id, bad, recipientWrite{message: "gage: recipient approve"})
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+	})
+
+	t.Run("invalid pubkey", func(t *testing.T) {
+		bad := []VaultRecipient{{Device: valid.name, Pubkey: valid.pubkey}, {Device: "tablet-1", Pubkey: "not-a-key"}}
+		_, _, err := addBatch(t, v, &id, bad, recipientWrite{message: "gage: recipient approve"})
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+	})
+
+	if got := commitCount(t, v); got != commits {
+		t.Errorf("commit count = %d, want %d; a rejected batch writes nothing", got, commits)
+	}
+}

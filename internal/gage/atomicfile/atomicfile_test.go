@@ -174,3 +174,33 @@ func TestWriteFileFailsForMissingDir(t *testing.T) {
 		t.Fatal("expected an error writing into a nonexistent directory")
 	}
 }
+
+// TestWriteFileFailedRenameLeavesNoTempFileBehind is the cleanup defer's
+// own contract: a failure that happens *after* the temp file exists —
+// unlike TestWriteFileFailsForMissingDir, where os.CreateTemp itself
+// never gets that far — must not leave it sitting in the target
+// directory. Renaming onto an existing directory is a portable way to
+// fail exactly at that late a step: CreateTemp/Write/Sync/Close/Chmod all
+// succeed against a perfectly ordinary writable directory, and only the
+// final os.Rename fails, on both Unix and Windows.
+func TestWriteFileFailedRenameLeavesNoTempFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.toml")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFile(target, []byte("x"), 0o600); err == nil {
+		t.Fatal("expected WriteFile to fail when the destination path is a directory")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "config.toml" {
+			t.Errorf("a temp file was left behind after a failed rename: %s", e.Name())
+		}
+	}
+}

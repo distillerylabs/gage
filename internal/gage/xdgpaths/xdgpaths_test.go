@@ -2,6 +2,7 @@ package xdgpaths
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -159,4 +160,40 @@ func TestRealAccessorsResolve(t *testing.T) {
 	if _, err := StateDir(); err != nil {
 		t.Errorf("StateDir: %v", err)
 	}
+}
+
+// assertPanics runs fn and requires it to panic with a message
+// containing want, restoring control flow via recover — the standard
+// shape for the three "unknown role" guards below, none of which
+// resolve ever reaches with a valid Role: xdgVar's own switch is the
+// first checkpoint every call goes through, so an invalid Role panics
+// there before unixDefault or windowsDefault could ever see one.
+func assertPanics(t *testing.T, want string, fn func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("did not panic, want one mentioning %q", want)
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, want) {
+			t.Errorf("panic = %v, want it to mention %q", r, want)
+		}
+	}()
+	fn()
+}
+
+// TestUnknownRoleValuePanicsInAllThreeSelectors covers the three
+// defensive "unknown role" panics directly — xdgVar, unixDefault, and
+// windowsDefault each end their role switch the same way, and each is
+// otherwise unreachable through resolve() with an invalid Role for the
+// reason assertPanics documents.
+func TestUnknownRoleValuePanicsInAllThreeSelectors(t *testing.T) {
+	const bogus = Role(99)
+
+	assertPanics(t, "unknown role", func() { xdgVar(bogus) })
+	assertPanics(t, "unknown role", func() { unixDefault("/home/testuser", bogus) })
+	assertPanics(t, "unknown role", func() {
+		_, _ = windowsDefault(env(nil), `C:\Users\testuser`, bogus)
+	})
 }

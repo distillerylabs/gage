@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 
 	"github.com/distillerylabs/gage/internal/gage/exitcode"
 	"github.com/distillerylabs/gage/internal/gage/recipients"
@@ -991,6 +992,252 @@ func TestReadEntryOnCorruptCiphertextFails(t *testing.T) {
 
 	if _, err := v.ReadEntry(entryID, &id); !errors.Is(err, ErrCorruptCiphertext) {
 		t.Errorf("error = %v, want it to wrap ErrCorruptCiphertext", err)
+	}
+}
+
+// TestTimestampMarshalYAMLEmitsUnderlyingTime covers Timestamp's own
+// MarshalYAML — the path a caller marshaling a Timestamp (or an Entry
+// via the library's own yaml.Marshal, rather than MarshalEntry's
+// hand-built node tree) goes through. It must hand back the plain
+// time.Time so the emitter picks its native !!timestamp path, matching
+// what timestampNode produces for MarshalEntry itself.
+func TestTimestampMarshalYAMLEmitsUnderlyingTime(t *testing.T) {
+	ts := NewTimestamp(time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC))
+
+	data, err := yaml.Marshal(struct {
+		Created Timestamp `yaml:"created"`
+	}{ts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "created: 2026-03-04T05:06:07Z\n"
+	if string(data) != want {
+		t.Errorf("yaml.Marshal via Timestamp.MarshalYAML = %q, want %q (unquoted, matching timestampNode)", data, want)
+	}
+
+	got, err := ts.MarshalYAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTime, ok := got.(time.Time); !ok || !gotTime.Equal(ts.Time) {
+		t.Errorf("MarshalYAML() = %v (%T), want the underlying time.Time %v", got, got, ts.Time)
+	}
+}
+
+// TestTimestampUnmarshalYAMLRejectsNonStringNode and
+// TestTimestampUnmarshalYAMLRejectsBadRFC3339 are UnmarshalYAML's two
+// distinct error paths — decoding the node at all, and parsing what it
+// decoded to — driven through UnmarshalEntry rather than a hand-built
+// *yaml.Node, per this milestone's "prefer a real round trip" decision.
+func TestTimestampUnmarshalYAMLRejectsNonStringNode(t *testing.T) {
+	src := "title: t\ncreated:\n  not: a-string\nupdated: 2026-01-01T00:00:00Z\nupdated_by: u\nvalue: v\n"
+	_, err := UnmarshalEntry([]byte(src))
+	if err == nil || !strings.Contains(err.Error(), "decoding timestamp") {
+		t.Fatalf("error = %v, want it to mention decoding timestamp", err)
+	}
+}
+
+func TestTimestampUnmarshalYAMLRejectsBadRFC3339(t *testing.T) {
+	src := "title: t\ncreated: \"not-a-date\"\nupdated: 2026-01-01T00:00:00Z\nupdated_by: u\nvalue: v\n"
+	_, err := UnmarshalEntry([]byte(src))
+	if err == nil || !strings.Contains(err.Error(), "parsing timestamp") {
+		t.Fatalf("error = %v, want it to mention parsing timestamp", err)
+	}
+	if !strings.Contains(err.Error(), "not-a-date") {
+		t.Errorf("error = %v, want it to name the offending value", err)
+	}
+}
+
+// TestUnknownValueNodeHandlesEveryClosedSetType is a direct unit test of
+// unknownValueNode's type switch: one case per Go type a generic YAML
+// decode actually produces (nil, bool, int, int64, uint64, float64,
+// []any, map[string]any — see TestExtraPreservesLargeAndNestedValues
+// below for the realistic decode-produced shapes of the large-integer
+// and nested-map cases), asserting the node it builds directly rather
+// than through a full marshal/unmarshal round trip, since the function
+// itself is the unit under test here.
+func TestUnknownValueNodeHandlesEveryClosedSetType(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        any
+		wantTag   string
+		wantValue string
+	}{
+		{"nil", nil, "!!null", "null"},
+		{"bool true", true, "!!bool", "true"},
+		{"bool false", false, "!!bool", "false"},
+		{"int64", int64(-42), "!!int", "-42"},
+		{"uint64", uint64(18446744073709551615), "!!int", "18446744073709551615"},
+		{"float64", 3.5, "!!float", "3.5"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			n := unknownValueNode(c.in, styleReadable)
+			if n.Kind != yaml.ScalarNode {
+				t.Fatalf("Kind = %v, want ScalarNode", n.Kind)
+			}
+			if n.Tag != c.wantTag {
+				t.Errorf("Tag = %q, want %q", n.Tag, c.wantTag)
+			}
+			if n.Value != c.wantValue {
+				t.Errorf("Value = %q, want %q", n.Value, c.wantValue)
+			}
+		})
+	}
+}
+
+// TestUnknownValueNodeMapAndSeqRecurse checks the two composite cases —
+// []any and map[string]any — build the matching yaml.v3 node kind and
+// recurse into their elements through unknownValueNode again, with map
+// keys in sorted order (sortedKeys is what makes the marshaled document
+// deterministic).
+func TestUnknownValueNodeMapAndSeqRecurse(t *testing.T) {
+	seq := unknownValueNode([]any{"a", int64(2)}, styleReadable)
+	if seq.Kind != yaml.SequenceNode || seq.Tag != "!!seq" {
+		t.Fatalf("seq node = %+v, want a !!seq SequenceNode", seq)
+	}
+	if len(seq.Content) != 2 || seq.Content[0].Value != "a" || seq.Content[1].Value != "2" {
+		t.Errorf("seq contents = %+v, want [a, 2]", seq.Content)
+	}
+
+	m := unknownValueNode(map[string]any{"z": int64(1), "a": "first"}, styleReadable)
+	if m.Kind != yaml.MappingNode || m.Tag != "!!map" {
+		t.Fatalf("map node = %+v, want a !!map MappingNode", m)
+	}
+	if len(m.Content) != 4 {
+		t.Fatalf("map has %d nodes, want 4 (2 keys x 2)", len(m.Content))
+	}
+	// sortedKeys puts "a" before "z".
+	if m.Content[0].Value != "a" || m.Content[2].Value != "z" {
+		t.Errorf("map keys in wire order = [%q, %q], want [a, z] (sorted)", m.Content[0].Value, m.Content[2].Value)
+	}
+}
+
+// TestUnknownValueNodeDefaultFallsBackToLibraryEncoding covers the
+// default arm for a type outside the closed set entirely (float32 is
+// never what a YAML decode into `any` produces — only float64 is), which
+// exists so a future gage's fields still marshal via the library's own
+// Node.Encode rather than being silently dropped.
+func TestUnknownValueNodeDefaultFallsBackToLibraryEncoding(t *testing.T) {
+	n := unknownValueNode(float32(1.5), styleReadable)
+	if n.Tag != "!!float" || n.Value != "1.5" {
+		t.Errorf("float32 via the default arm = Tag=%q Value=%q, want !!float 1.5", n.Tag, n.Value)
+	}
+}
+
+// TestExtraPreservesLargeAndNestedValues is the real-round-trip
+// counterpart to the two unit tests above: a uint64 beyond int64's range
+// and a nested mapping, exactly as a genuine YAML decode into `any`
+// produces them (see TestEntryPreservesUnknownFields for the []any
+// case), surviving Extra -> MarshalEntry -> UnmarshalEntry unchanged.
+func TestExtraPreservesLargeAndNestedValues(t *testing.T) {
+	src := "title: t\ncreated: 2026-01-01T00:00:00Z\nupdated: 2026-01-01T00:00:00Z\n" +
+		"updated_by: u\nvalue: v\n" +
+		"big: 18446744073709551615\n" +
+		"nested:\n  a: 1\n  b: two\n"
+	e, err := UnmarshalEntry([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if big, ok := e.Extra["big"].(uint64); !ok || big != 18446744073709551615 {
+		t.Errorf("Extra[big] = %v (%T), want uint64(18446744073709551615)", e.Extra["big"], e.Extra["big"])
+	}
+	nested, ok := e.Extra["nested"].(map[string]any)
+	if !ok || nested["a"] != 1 || nested["b"] != "two" {
+		t.Errorf("Extra[nested] = %v, want map[a:1 b:two]", e.Extra["nested"])
+	}
+
+	data, err := MarshalEntry(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := UnmarshalEntry(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Extra, e.Extra) {
+		t.Errorf("Extra after a re-marshal round trip = %v, want %v", back.Extra, e.Extra)
+	}
+}
+
+// TestVerifyFaithfulReportsEachMismatchedField drives verifyFaithful
+// directly against bytes that don't match what's claimed, covering each
+// of its distinct failure messages: the four named fields, a field-count
+// mismatch, and a per-field value mismatch — the check MarshalEntry
+// relies on to know when the readable style has to give way to the
+// quoted fallback.
+func TestVerifyFaithfulReportsEachMismatchedField(t *testing.T) {
+	base := Entry{Title: "t", Description: "d", UpdatedBy: "u", Value: "v", Fields: map[string]string{"k": "v"}}
+	data, err := marshalEntryNodes(base, styleReadable)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		want Entry
+		msg  string
+	}{
+		{"title", Entry{Title: "other", Description: "d", UpdatedBy: "u", Value: "v", Fields: map[string]string{"k": "v"}}, "title changed"},
+		{"description", Entry{Title: "t", Description: "other", UpdatedBy: "u", Value: "v", Fields: map[string]string{"k": "v"}}, "description changed"},
+		{"updated_by", Entry{Title: "t", Description: "d", UpdatedBy: "other", Value: "v", Fields: map[string]string{"k": "v"}}, "updated_by changed"},
+		{"value", Entry{Title: "t", Description: "d", UpdatedBy: "u", Value: "other", Fields: map[string]string{"k": "v"}}, "value changed"},
+		{"field count", Entry{Title: "t", Description: "d", UpdatedBy: "u", Value: "v", Fields: map[string]string{"k": "v", "k2": "v2"}}, "fields changed"},
+		{"field value", Entry{Title: "t", Description: "d", UpdatedBy: "u", Value: "v", Fields: map[string]string{"k": "other"}}, `field "k" changed`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := verifyFaithful(data, c.want)
+			if err == nil || !strings.Contains(err.Error(), c.msg) {
+				t.Errorf("verifyFaithful() = %v, want it to mention %q", err, c.msg)
+			}
+		})
+	}
+
+	t.Run("did not parse back", func(t *testing.T) {
+		err := verifyFaithful([]byte("not: [valid"), base)
+		if err == nil || !strings.Contains(err.Error(), "did not parse back") {
+			t.Errorf("verifyFaithful() = %v, want it to mention the entry did not parse back", err)
+		}
+	})
+
+	t.Run("matching bytes report no error", func(t *testing.T) {
+		if err := verifyFaithful(data, base); err != nil {
+			t.Errorf("verifyFaithful() = %v, want nil for genuinely matching bytes", err)
+		}
+	})
+}
+
+// TestEntryIDsSkipsSubdirectoriesAndStrayFiles is the M4/M7 listing
+// contract: a subdirectory under entries/ (never created by gage itself,
+// but not gage's to fail over either) and a stray non-.age file are both
+// skipped rather than aborting the whole listing — the same tolerance
+// TestEntryPreservesUnknownFields extends to an unrecognized YAML key.
+func TestEntryIDsSkipsSubdirectoriesAndStrayFiles(t *testing.T) {
+	v, id := newEntryTestVault(t, "personal", "laptop-1")
+	defer func() { _ = id.Close() }()
+
+	realID := NewEntryID()
+	if err := v.WriteEntry(realID, sampleEntry(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(v.entriesDir(), "not-an-entry-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v.entriesDir(), "README.txt"), []byte("not an entry"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v.entriesDir(), "not-a-uuid.age"), []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := v.EntryIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != realID {
+		t.Errorf("EntryIDs() = %v, want exactly [%v]", ids, realID)
 	}
 }
 

@@ -1174,3 +1174,27 @@ func TestVerifyReadsNeitherIdentityNorPrompter(t *testing.T) {
 		t.Errorf("verification = %+v, want in sync", got)
 	}
 }
+
+// TestAddRecipientRejectsInvalidDeviceNameOrPubkey is AddRecipient's own
+// top-level validation — the pre-flight before anything else runs,
+// including the lock. See TestAddRecipientsLockedRevalidatesEveryBatchMember
+// for the batch form's re-check of the same two properties.
+func TestAddRecipientRejectsInvalidDeviceNameOrPubkey(t *testing.T) {
+	v, laptop := newRecipientTestVault(t, "personal", "laptop-1")
+	id := unlockAs(t, v, laptop)
+	defer func() { _ = id.Close() }()
+
+	t.Run("invalid device name", func(t *testing.T) {
+		_, err := v.AddRecipient("not a valid name!", "age1yubikey1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0s9hkmc0", &id)
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+	})
+
+	t.Run("invalid pubkey", func(t *testing.T) {
+		_, err := v.AddRecipient("phone-1", "not-an-age-key", &id)
+		if exitcode.CodeOf(err) != exitcode.Usage {
+			t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+		}
+	})
+}

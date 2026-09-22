@@ -647,3 +647,37 @@ func TestDecryptWithAClosedIdentityFails(t *testing.T) {
 		t.Errorf("plaintext = %q, want nothing", got)
 	}
 }
+
+// TestRecipientStringRendersTheParsedSpelling is Recipient.String() for
+// a real parsed key: the "age1..." string a caller handed ParseRecipient
+// comes back unchanged, which is what makes it safe for error messages
+// to include.
+func TestRecipientStringRendersTheParsedSpelling(t *testing.T) {
+	ident, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spelling := ident.Recipient().String()
+
+	r, err := ParseRecipient(spelling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.String(); got != spelling {
+		t.Errorf("Recipient.String() = %q, want %q", got, spelling)
+	}
+}
+
+// TestEncryptRefusesAZeroValueRecipient is Encrypt's guard against a
+// Recipient a caller built by hand (a zero-value struct literal) rather
+// than through ParseRecipient/PassphraseRecipient — the only way to get
+// one without going through this package's own constructors.
+func TestEncryptRefusesAZeroValueRecipient(t *testing.T) {
+	_, err := Encrypt([]byte("secret"), Recipient{})
+	if !errors.Is(err, ErrInvalidRecipient) {
+		t.Errorf("error = %v, want it to wrap ErrInvalidRecipient", err)
+	}
+	if exitcode.CodeOf(err) != exitcode.Usage {
+		t.Errorf("code = %v, want Usage", exitcode.CodeOf(err))
+	}
+}

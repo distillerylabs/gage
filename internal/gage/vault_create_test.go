@@ -473,3 +473,62 @@ func TestCreateWithoutRemoteLeavesVaultRemoteless(t *testing.T) {
 		t.Errorf("RemoteURL = %q, want empty (no --remote given)", got)
 	}
 }
+
+// TestCreateRejectsEmptyName is Create's first check, ahead of every
+// other field.
+func TestCreateRejectsEmptyName(t *testing.T) {
+	spec := validSpec(t, "myvault")
+	spec.Name = ""
+	_, err := Create(spec)
+	if err == nil {
+		t.Fatal("expected an error for an empty name")
+	}
+	if exitcode.CodeOf(err) != exitcode.Usage {
+		t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
+	}
+	requireNothingCreated(t, spec.Path)
+}
+
+// TestCreateRejectsEmptyPath is checked after everything else that
+// doesn't depend on the filesystem, so it needs an otherwise-valid spec
+// to reach.
+func TestCreateRejectsEmptyPath(t *testing.T) {
+	spec := validSpec(t, "myvault")
+	spec.Path = ""
+	_, err := Create(spec)
+	if err == nil {
+		t.Fatal("expected an error for an empty path")
+	}
+	if exitcode.CodeOf(err) != exitcode.Usage {
+		t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
+	}
+}
+
+// TestCreateRejectsATargetThatIsARegularFile is requireEmptyOrAbsent's
+// other refusal, distinct from TestCreateIntoNonEmptyDirectoryFailsWithoutTouchingFiles's
+// "exists and isn't empty": here the target path itself isn't a
+// directory at all.
+func TestCreateRejectsATargetThatIsARegularFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(target, []byte("i am a file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := validSpec(t, "myvault")
+	spec.Path = target
+	_, err := Create(spec)
+	if err == nil {
+		t.Fatal("expected an error when the target path is a regular file")
+	}
+	if exitcode.CodeOf(err) != exitcode.Conflict {
+		t.Errorf("CodeOf(err) = %v, want Conflict", exitcode.CodeOf(err))
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "i am a file" {
+		t.Error("the existing file's content was modified")
+	}
+}

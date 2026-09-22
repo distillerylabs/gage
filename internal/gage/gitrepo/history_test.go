@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/go-git/go-git/v5"
+
 	"github.com/distillerylabs/gage/internal/gage/gittest"
 )
 
@@ -198,5 +200,34 @@ func TestLogOnAPathGitHasNeverSeenIsEmpty(t *testing.T) {
 	}
 	if len(revs) != 0 {
 		t.Errorf("Log on an unknown path = %v, want none", contentsOf(revs))
+	}
+}
+
+// TestLogAndHeadCommitterTimeOnARepoWithNoCommitsYet is the other empty
+// state Log and HeadCommitterTime both have to answer honestly: not an
+// unknown path in a repo with history (TestLogOnAPathGitHasNeverSeenIsEmpty
+// above), but a repository with no commits at all — HEAD itself doesn't
+// resolve. Both report their zero value rather than an error, the same
+// "nothing to report yet" posture ResetHard and DirtyPaths take.
+func TestLogAndHeadCommitterTimeOnARepoWithNoCommitsYet(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := git.PlainInit(dir, false); err != nil {
+		t.Fatal(err)
+	}
+
+	revs, err := Log(dir, "entries/whatever.age")
+	if err != nil {
+		t.Fatalf("Log on a commit-less repo: %v", err)
+	}
+	if revs != nil {
+		t.Errorf("Log on a commit-less repo = %v, want nil", revs)
+	}
+
+	when, err := HeadCommitterTime(dir)
+	if err != nil {
+		t.Fatalf("HeadCommitterTime on a commit-less repo: %v", err)
+	}
+	if !when.IsZero() {
+		t.Errorf("HeadCommitterTime on a commit-less repo = %v, want the zero value", when)
 	}
 }
