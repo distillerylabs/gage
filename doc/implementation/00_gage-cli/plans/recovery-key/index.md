@@ -66,7 +66,7 @@ stacked: `main` <- `7-recovery-key` (these docs) <- R0 <- R1 <- R2.
 
 | # | Milestone | Model | Depends on | Status |
 |---|---|---|---|---|
-| R0 | [Library](r0-library.md) | Sonnet | none | `[ ]` |
+| R0 | [Library](r0-library.md) | Sonnet | none | `[x]` |
 | R1 | [`init` integration](r1-init-integration.md) | Opus | R0 | `[ ]` |
 | R2 | [`recovery verify` and docs](r2-verify-and-docs.md) | Sonnet | R0 (lands after R1) | `[ ]` |
 
