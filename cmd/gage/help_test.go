@@ -2,6 +2,7 @@ package main
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -338,5 +339,73 @@ func TestLeafCommandHelpUnchangedByTheChildrenListing(t *testing.T) {
 	}
 	if strings.Contains(res.Stdout, "Available Commands:") {
 		t.Errorf("a leaf command grew an empty children section:\n%s", res.Stdout)
+	}
+}
+
+// TestCommandHelpListsAliasesSortedWithTheCanonicalName is the
+// per-command help page's alias line, which is a different renderer from
+// the top-level listing's (TestAliasesListedAlongsideCanonicalName covers
+// that one). `gage help search` has to say that `grep` reaches the same
+// command — someone who only knows `grep` needs to find it here.
+func TestCommandHelpListsAliasesSortedWithTheCanonicalName(t *testing.T) {
+	res := runCLI(t, []string{"help", "search"}, "")
+	if res.Code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "Aliases:") {
+		t.Fatalf("`help search` renders no alias line:\n%s", res.Stdout)
+	}
+	// Sorted, and including the canonical name: "grep, search".
+	if !strings.Contains(res.Stdout, "grep, search") {
+		t.Errorf("alias line isn't the sorted canonical-plus-aliases list:\n%s", res.Stdout)
+	}
+
+	// A command with no aliases gets no alias line at all, rather than an
+	// empty heading.
+	plain := runCLI(t, []string{"help", "insert"}, "")
+	if strings.Contains(plain.Stdout, "Aliases:") {
+		t.Errorf("`help insert` rendered an alias line for a command with no aliases:\n%s", plain.Stdout)
+	}
+}
+
+// TestGroupCommandsStillRendersAGroupMissingFromGroupOrder is the
+// fallback groupCommands' second loop exists for, stated in its own
+// comment: "a forgotten groupOrder update doesn't hide a command". Every
+// group in the real registry is in groupOrder, so this passes a
+// synthetic entry — the point is that adding a command under a new group
+// and forgetting the ordering list degrades to "listed last" rather than
+// to "silently absent from help".
+func TestGroupCommandsStillRendersAGroupMissingFromGroupOrder(t *testing.T) {
+	known := groupOrder[0]
+	const unknown = "zzz-not-in-group-order"
+
+	got := groupCommands([]CommandInfo{
+		{Name: "known-cmd", Short: "s", Group: known, Availability: AvailBoth},
+		{Name: "orphan-cmd", Short: "s", Group: unknown, Availability: AvailBoth},
+	})
+
+	var groups []string
+	for _, g := range got {
+		groups = append(groups, g.Group)
+	}
+	if !slices.Contains(groups, unknown) {
+		t.Fatalf("a group missing from groupOrder was dropped entirely; groups = %v", groups)
+	}
+	if !slices.Contains(groups, known) {
+		t.Fatalf("a known group went missing; groups = %v", groups)
+	}
+	// Known groups come first, in groupOrder; the stragglers follow.
+	if groups[0] != known {
+		t.Errorf("groups = %v, want the groupOrder-known one first", groups)
+	}
+	// Each group appears exactly once, however many commands it holds.
+	seen := map[string]int{}
+	for _, g := range groups {
+		seen[g]++
+	}
+	for g, n := range seen {
+		if n != 1 {
+			t.Errorf("group %q rendered %d times, want once", g, n)
+		}
 	}
 }

@@ -564,3 +564,173 @@ func TestScriptOnATerminalStillCreatesIdentitiesInteractively(t *testing.T) {
 		t.Errorf("the identity was not registered:\n%s", res.Stdout)
 	}
 }
+
+// recordingConflictPrompter is a Prompter that can also resolve
+// conflicts, and records that it was asked. It stands in for the real
+// terminal prompter in the --yes tests below, where the question is
+// which prompter ends up answering rather than what it answers.
+type recordingConflictPrompter struct {
+	fakePrompter
+	asked      int
+	resolution gage.Resolution
+}
+
+func (p *recordingConflictPrompter) ResolveConflict(c gage.EntryConflict) (gage.Resolution, error) {
+	p.asked++
+	return p.resolution, nil
+}
+
+// TestAssumeYesAnswersTheTrustQuestionAndNothingElse is what `--yes` is
+// allowed to be. It answers M10's recipient-change question without
+// asking, and it must not quietly acquire an answer to a *conflict*,
+// which is a question about which version of a secret to destroy.
+func TestAssumeYesAnswersTheTrustQuestionAndNothingElse(t *testing.T) {
+	inner := &recordingConflictPrompter{
+		fakePrompter: fakePrompter{passphrases: []string{testPassphrase}},
+		resolution:   gage.KeepRemote,
+	}
+
+	wrapped := withAssumeYes(inner)
+
+	// The trust question is answered by the wrapper, without reaching
+	// the prompter underneath.
+	ok, err := wrapped.ConfirmRecipientChange(gage.RecipientChangeWarning{Vault: "personal"})
+	if err != nil || !ok {
+		t.Fatalf("ConfirmRecipientChange through --yes = (%v, %v), want (true, nil)", ok, err)
+	}
+
+	// The conflict question still goes to the real asker.
+	asker, isAsker := wrapped.(gage.ConflictPrompter)
+	if !isAsker {
+		t.Fatal("--yes over a conflict-capable prompter stopped being conflict-capable; " +
+			"`gage sync --yes` on a terminal would refuse to resolve anything")
+	}
+	got, err := asker.ResolveConflict(gage.EntryConflict{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inner.asked != 1 {
+		t.Errorf("the wrapped prompter was asked %d times, want 1 — --yes must not answer a conflict itself", inner.asked)
+	}
+	if got != gage.KeepRemote {
+		t.Errorf("resolution = %v, want the inner prompter's answer (%v)", got, gage.KeepRemote)
+	}
+}
+
+// TestAssumeYesOverANonConflictPrompterStaysNonConflict is the other
+// half of that shape: wrapping must not make a frontend that cannot
+// resolve conflicts look like one that can, or every non-interactive run
+// would appear answerable the moment --yes was passed.
+func TestAssumeYesOverANonConflictPrompterStaysNonConflict(t *testing.T) {
+	wrapped := withAssumeYes(&fakePrompter{passphrases: []string{testPassphrase}})
+	if _, ok := wrapped.(gage.ConflictPrompter); ok {
+		t.Error("--yes over a prompter that cannot resolve conflicts made it look like it could")
+	}
+}
+
+// TestTerminalPrompterOfWalksDecoratorChains: unwrapping is a property
+// of the decorator interface, not a list of concrete types — so a
+// terminal prompter behind two wrappers is still found, which is what
+// lets `gage --yes` in a session hand its reads to the line editor.
+func TestTerminalPrompterOfWalksDecoratorChains(t *testing.T) {
+	var out bytes.Buffer
+	real := newTerminalPrompter(strings.NewReader(""), &out)
+
+	// Two decorators deep: --yes over the script layer over the terminal.
+	chain := withAssumeYes(noCreatePrompter{Prompter: real})
+
+	got, ok := terminalPrompterOf(chain)
+	if !ok {
+		t.Fatal("the terminal prompter was not found behind two decorators")
+	}
+	if got != real {
+		t.Error("terminalPrompterOf returned a different prompter than the one wrapped")
+	}
+
+	// And something that isn't a terminal prompter at all is reported as
+	// such rather than mis-identified.
+	if _, ok := terminalPrompterOf(&fakePrompter{}); ok {
+		t.Error("terminalPrompterOf claimed a fake prompter was a terminal one")
+	}
+}
+
+// TestNoCreatePrompterPassesOrdinaryUnlocksThrough: it refuses only
+// PurposeCreate. An ordinary unlock has a passphrase that can be checked
+// against something, so it goes to the prompter underneath — refusing
+// those too would break every scripted run.
+func TestNoCreatePrompterPassesOrdinaryUnlocksThrough(t *testing.T) {
+	inner := &fakePrompter{passphrases: []string{testPassphrase}}
+	p := noCreatePrompter{Prompter: inner}
+
+	resp, err := p.Unlock(gage.UnlockRequest{
+		Kind: gage.KindPassphrase, Purpose: gage.PurposeUnlock,
+		Vault: "personal", Device: "laptop-1", Attempt: 1,
+	})
+	if err != nil {
+		t.Fatalf("an ordinary unlock was refused: %v", err)
+	}
+	if resp.Passphrase != testPassphrase {
+		t.Errorf("passphrase = %q, want the inner prompter's answer", resp.Passphrase)
+	}
+
+	// And the one it does refuse, for contrast.
+	if _, err := p.Unlock(gage.UnlockRequest{
+		Kind: gage.KindPassphrase, Purpose: gage.PurposeCreate,
+		Vault: "personal", Device: "laptop-1", Attempt: 1,
+	}); err == nil {
+		t.Error("creating an identity was allowed with no human to type a passphrase")
+	}
+}
+
+// TestScriptFlagsAreRefusedInsideASession is checkScriptFlags' third
+// refusal: --script/--stdin *start* a session, so asking for one from
+// inside a session is a category error.
+//
+// It is driven directly rather than through the REPL because the session
+// dispatcher never gets far enough to ask. A line of nothing but flags
+// is refused earlier, as an unknown command ("--stdin"), and a line like
+// `--stdin ls` takes the `cmd != root` arm instead
+// (TestScriptFlagsRejectASubcommand covers that one). So this guard is
+// currently unreachable from the prompt — which is a reason to pin the
+// contract, not to leave it untested: the wrong answer here would be a
+// session quietly trying to take over its own command stream.
+func TestScriptFlagsAreRefusedInsideASession(t *testing.T) {
+	app := testApp()
+	root := NewRootCmd(app)
+	session := gage.NewSession(gage.SessionConfig{
+		Open:     func(name string) (*gage.Vault, error) { return nil, nil },
+		Prompter: &fakePrompter{},
+	})
+	t.Cleanup(func() { _ = session.Close() })
+	app.Session = session
+
+	for _, name := range []string{"--stdin", "--script"} {
+		t.Run(name, func(t *testing.T) {
+			app.ScriptFile, app.ScriptStdin = "", false
+			if name == "--stdin" {
+				app.ScriptStdin = true
+			} else {
+				app.ScriptFile = filepath.Join(t.TempDir(), "session.gage")
+			}
+
+			err := checkScriptFlags(app, root, root)
+			if err == nil {
+				t.Fatalf("%s was accepted inside a session", name)
+			}
+			if exitcode.CodeOf(err) != exitcode.Usage {
+				t.Errorf("CodeOf(err) = %v, want Usage", exitcode.CodeOf(err))
+			}
+			if !strings.Contains(err.Error(), "aren't available inside one") {
+				t.Errorf("error = %v, want it to explain that a session is already running", err)
+			}
+		})
+	}
+
+	// Outside a session the same flags are fine, so the guard above is
+	// about the session and not about the flags.
+	app.Session = nil
+	app.ScriptFile, app.ScriptStdin = "", true
+	if err := checkScriptFlags(app, root, root); err != nil {
+		t.Errorf("--stdin outside a session = %v, want it accepted", err)
+	}
+}

@@ -620,3 +620,74 @@ func TestSessionScheduledClearFailureReachesStderr(t *testing.T) {
 		t.Errorf("a failed scheduled clear said nothing to the human: %q", stderr.String())
 	}
 }
+
+// TestClipboardCopyReportsAWriteFailure: a clipboard that refuses the
+// write must fail the command rather than leaving the caller believing
+// the secret is on the clipboard — and the message has to say what was
+// being attempted, since the underlying library's own error typically
+// doesn't.
+func TestClipboardCopyReportsAWriteFailure(t *testing.T) {
+	cb := &fakeClipboard{writeErr: errors.New("no clipboard on this display")}
+	k := newClipboardKeeper(cb, (&fakeTimer{}).schedule)
+
+	err := k.copy("hunter2")
+	if err == nil {
+		t.Fatal("a failing clipboard write was reported as success")
+	}
+	if exitcode.CodeOf(err) != exitcode.Internal {
+		t.Errorf("CodeOf(err) = %v, want Internal", exitcode.CodeOf(err))
+	}
+	if !strings.Contains(err.Error(), "copying to the clipboard") {
+		t.Errorf("error = %v, want it to say what failed", err)
+	}
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("the failure message carries the secret: %v", err)
+	}
+
+	// Nothing is left pending, so a later clear has nothing to wipe —
+	// the copy never happened.
+	if err := k.clear(); err != nil {
+		t.Errorf("clear after a failed copy = %v, want nil", err)
+	}
+	if len(cb.writes) != 0 {
+		t.Errorf("the clipboard recorded %v, want no successful writes", cb.writes)
+	}
+}
+
+// TestClipboardClearWithNothingPendingIsANoOp: the session's exit path
+// calls clear unconditionally, so "nothing was ever copied" has to be
+// silent and successful rather than an error or a wipe of whatever the
+// human has on their clipboard.
+func TestClipboardClearWithNothingPendingIsANoOp(t *testing.T) {
+	cb := &fakeClipboard{content: "something the human copied themselves"}
+	k := newClipboardKeeper(cb, (&fakeTimer{}).schedule)
+
+	for i := range 2 {
+		if err := k.clear(); err != nil {
+			t.Fatalf("clear #%d with nothing pending = %v, want nil", i+1, err)
+		}
+	}
+	if cb.content != "something the human copied themselves" {
+		t.Errorf("clear wiped a clipboard gage never wrote to: %q", cb.content)
+	}
+	if len(cb.writes) != 0 {
+		t.Errorf("clear wrote to the clipboard: %v", cb.writes)
+	}
+}
+
+// TestClipboardScheduledClearWithNothingPendingSchedulesNothing is
+// scheduleClear's matching guard: with nothing copied there is nothing
+// to arrange a wipe for, and arming a timer anyway would mean a later
+// firing racing whatever the human copies next.
+func TestClipboardScheduledClearWithNothingPendingSchedulesNothing(t *testing.T) {
+	ft := &fakeTimer{}
+	k := newClipboardKeeper(&fakeClipboard{}, ft.schedule)
+
+	k.scheduleClear(time.Second)
+
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	if ft.set {
+		t.Error("a clear was scheduled with nothing on the clipboard")
+	}
+}

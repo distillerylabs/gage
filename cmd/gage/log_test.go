@@ -207,3 +207,153 @@ func nonEmptyLines(s string) []string {
 	}
 	return out
 }
+
+// unknownEntryUUID is a syntactically valid UUID that names no entry —
+// what a human pastes from an old `gage log` after the entry, and the
+// commit that held it, are long gone. It resolves (the UUID path
+// accepts it) and then has nothing to report, which is the case both
+// "no commit history" branches exist for.
+const unknownEntryUUID = "11111111-1111-4111-8111-111111111111"
+
+// TestLogAndHistoryOnAnEntryWithNoHistorySayNothingIsThere: a resolvable
+// id with no commits behind it reports that on stderr and exits 0.
+// Zero revisions is an ordinary answer, not a failure — an id gage can
+// parse but has never committed is exactly what a stale note or a typo'd
+// paste produces.
+func TestLogAndHistoryOnAnEntryWithNoHistorySayNothingIsThere(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	if res, _ := runCLIWithValue(t, []string{"insert", "GitHub"}, "hunter2"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+
+	for _, args := range [][]string{
+		{"log", unknownEntryUUID},
+		{"history", "--decrypt", unknownEntryUUID},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			res := runCLI(t, args, "")
+			if res.Code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+			}
+			if !strings.Contains(res.Stderr, "no commit history for that entry yet") {
+				t.Errorf("stderr doesn't say there's nothing to show:\n%s", res.Stderr)
+			}
+			if strings.TrimSpace(res.Stdout) != "" {
+				t.Errorf("stdout should be empty when there is nothing to report:\n%s", res.Stdout)
+			}
+		})
+	}
+}
+
+// TestLogOnAQueryThatIsNeitherATitleNorAUUID: the UUID fallback exists
+// for ids of entries that no longer resolve by title
+// (TestLogShowsADeletedEntrysEnd covers that). A query that is neither
+// must come back as the original not-found rather than being coerced
+// into something.
+func TestLogOnAQueryThatIsNeitherATitleNorAUUID(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	if res, _ := runCLIWithValue(t, []string{"insert", "GitHub"}, "hunter2"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+
+	res := runCLI(t, []string{"log", "no-such-entry"}, "")
+	if res.Code != int(exitcode.NotFound) {
+		t.Errorf("exit code = %d, want %d (NotFound); stderr=%s", res.Code, exitcode.NotFound, res.Stderr)
+	}
+}
+
+// TestHistoryDecryptShowsADeletedRevision: `history` walks the same
+// revisions `log` does, so a deletion has to render there too — as the
+// end of the entry rather than as a revision with empty fields.
+func TestHistoryDecryptShowsADeletedRevision(t *testing.T) {
+	isolateXDG(t)
+	path := initEntryTestVault(t, "personal")
+	if res, _ := runCLIWithValue(t, []string{"insert", "Temp"}, "gone-now"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+	// Captured before the rm, for the same reason
+	// TestLogShowsADeletedEntrysEnd captures it: afterwards the title
+	// resolves to nothing.
+	id := soleEntryID(t, path).String()
+	if res := runCLI(t, []string{"rm", "Temp"}, ""); res.Code != 0 {
+		t.Fatalf("rm failed: %s", res.Stderr)
+	}
+
+	res := runCLI(t, []string{"history", "--decrypt", id}, "")
+	if res.Code != 0 {
+		t.Fatalf("history failed: %s", res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "(entry deleted)") {
+		t.Errorf("history of a removed entry doesn't show its deletion:\n%s", res.Stdout)
+	}
+	// The revision before the deletion is still readable — the point of
+	// --decrypt is that the old value is recoverable from history.
+	if !strings.Contains(res.Stdout, "gone-now") {
+		t.Errorf("history didn't show the value the entry held before it was removed:\n%s", res.Stdout)
+	}
+}
+
+// TestHistoryDecryptMarksADescriptionChange: description is the one
+// field diffEntryLines renders conditionally — it is omitted entirely
+// when neither revision has one, so that an entry without a description
+// doesn't grow an empty line per commit. When one *is* present, a change
+// to it has to be marked like any other.
+func TestHistoryDecryptMarksADescriptionChange(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	if res, _ := runCLIWithValue(t, []string{"insert", "GitHub", "--description", "personal account"}, "hunter2"); res.Code != 0 {
+		t.Fatalf("insert failed: %s", res.Stderr)
+	}
+
+	setFakeEditor(t, "set-description-only", map[string]string{
+		"GAGE_TEST_FAKE_EDITOR_DESCRIPTION": "work account",
+	})
+	if res := runCLI(t, []string{"edit", "GitHub"}, ""); res.Code != 0 {
+		t.Fatalf("edit failed: %s", res.Stderr)
+	}
+
+	res := runCLI(t, []string{"history", "--decrypt", "GitHub"}, "")
+	if res.Code != 0 {
+		t.Fatalf("history failed: %s", res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "- description: personal account") {
+		t.Errorf("the old description isn't marked as replaced:\n%s", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "+ description: work account") {
+		t.Errorf("the new description isn't marked as added:\n%s", res.Stdout)
+	}
+}
+
+// TestHistoryDecryptShowsAFieldThatWasRemoved: the key set is the union
+// of both revisions', so a field that existed and then didn't still
+// appears — "it used to have a TOTP seed" is exactly the question
+// history answers, and collecting keys from the newer revision alone
+// would silently drop it.
+func TestHistoryDecryptShowsAFieldThatWasRemoved(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	insertEntryWithFields(t, "GitHub", "hunter2", map[string]string{"username": "octocat"})
+
+	// An edit that keeps the value and drops every field: an empty
+	// FIELDS list leaves set-value-and-fields with an empty map.
+	setFakeEditor(t, "set-value-and-fields", map[string]string{
+		"GAGE_TEST_FAKE_EDITOR_VALUE":  "hunter2",
+		"GAGE_TEST_FAKE_EDITOR_FIELDS": "",
+	})
+	if res := runCLI(t, []string{"edit", "GitHub"}, ""); res.Code != 0 {
+		t.Fatalf("edit failed: %s", res.Stderr)
+	}
+
+	res := runCLI(t, []string{"history", "--decrypt", "GitHub"}, "")
+	if res.Code != 0 {
+		t.Fatalf("history failed: %s", res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "fields.username") {
+		t.Errorf("a field removed in the newest revision vanished from the history:\n%s", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "octocat") {
+		t.Errorf("the removed field's old value isn't recoverable from the history:\n%s", res.Stdout)
+	}
+}

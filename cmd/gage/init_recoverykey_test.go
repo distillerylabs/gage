@@ -716,3 +716,96 @@ func TestRecoveryKeyOutRejectsARelativePathInsideAVault(t *testing.T) {
 		})
 	}
 }
+
+// TestRecoveryKeyOutRejectsAParentThatDoesNotExist is the destination
+// refusal that is about the *parent* rather than about gage's own
+// directories, and it is knowable before the vault is created — which is
+// the whole point of checking the destination up front.
+// TestInitChecksTheRecoveryKeyDestinationIsWritableBeforeCreating covers
+// the neighbouring shape, a parent that exists but refuses writes.
+func TestRecoveryKeyOutRejectsAParentThatDoesNotExist(t *testing.T) {
+	isolateXDG(t)
+
+	out := filepath.Join(t.TempDir(), "no", "such", "dir", "recovery.key")
+	res := runCLI(t, []string{"init", "personal",
+		"--dir", filepath.Join(t.TempDir(), "personal"),
+		"--recovery-key-out", out}, "")
+
+	if res.Code != int(exitcode.Usage) {
+		t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "cannot write") {
+		t.Errorf("the refusal doesn't say what went wrong:\n%s", res.Stderr)
+	}
+	// Refused before anything is created, like every other knowable
+	// failure init has.
+	if _, ok := readGlobalConfigForTest(t).Vaults["personal"]; ok {
+		t.Error("a refused init registered the vault anyway")
+	}
+}
+
+// TestRecoveryKeyOutRejectsAParentThatIsARegularFile pins what actually
+// happens today, which is *not* what checkRecoveryKeyOutPath's own
+// "%s is not a directory" branch intends.
+//
+// On Unix, os.Stat("<regular-file>/recovery.key") fails with ENOTDIR, and
+// os.IsNotExist is false for it — so the earlier "does this already
+// exist?" check takes its !os.IsNotExist arm and returns Internal wrapping
+// a bare `stat ...: not a directory`, never reaching the parent stat below
+// it that would have produced Usage and the readable message. Windows maps
+// the same situation to ERROR_PATH_NOT_FOUND, which os.IsNotExist *does*
+// recognize, so the intended branch is presumably reachable there — this
+// test does not assume either way.
+//
+// So it asserts the property that holds everywhere and matters most: the
+// destination is refused, and nothing is created. The exit code is left
+// unpinned deliberately, because pinning today's Internal would pin the
+// inconsistency. See the R1 plan doc's "Findings" for the fix this wants;
+// tighten this test to Usage + "is not a directory" when that lands.
+func TestRecoveryKeyOutRejectsAParentThatIsARegularFile(t *testing.T) {
+	isolateXDG(t)
+
+	notADir := filepath.Join(t.TempDir(), "iam-a-file")
+	if err := os.WriteFile(notADir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"init", "personal",
+		"--dir", filepath.Join(t.TempDir(), "personal"),
+		"--recovery-key-out", filepath.Join(notADir, "recovery.key")}, "")
+
+	if res.Code == 0 {
+		t.Fatalf("init accepted a destination underneath a regular file; stdout=%s", res.Stdout)
+	}
+	if !strings.Contains(res.Stderr, "not a directory") {
+		t.Errorf("the refusal doesn't mention the reason:\n%s", res.Stderr)
+	}
+	if _, ok := readGlobalConfigForTest(t).Vaults["personal"]; ok {
+		t.Error("a refused init registered the vault anyway")
+	}
+	// Nothing was written through the path. (Checking the child for
+	// non-existence would not work: stat through a non-directory reports
+	// ENOTDIR, not ENOENT, which is the very quirk this test is about.)
+	got, err := os.ReadFile(notADir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "not a directory" {
+		t.Errorf("the file standing in for the parent was modified: %q", got)
+	}
+}
+
+// TestPathIsInsideWithNoRootIsNotInside is pathIsInside's own empty-root
+// guard. Neither caller can currently pass one — init passes the vault
+// being created and `recovery rotate` an existing vault's path — so this
+// drives the helper directly to pin the answer it gives rather than one
+// caller's current inability to ask the question.
+func TestPathIsInsideWithNoRootIsNotInside(t *testing.T) {
+	inside, err := pathIsInside(filepath.Join(t.TempDir(), "recovery.key"), "")
+	if err != nil {
+		t.Fatalf("pathIsInside with an empty root: %v", err)
+	}
+	if inside {
+		t.Error("pathIsInside reported a path as inside an empty root")
+	}
+}

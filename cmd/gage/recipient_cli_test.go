@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/distillerylabs/gage/internal/gage/exitcode"
 	"github.com/distillerylabs/gage/internal/gage/gitrepo"
 	"github.com/distillerylabs/gage/internal/gage/recipients"
+	"github.com/distillerylabs/gage/internal/gage/vaultconfig"
 )
 
 // newRecipientKey returns a fresh, real age public key — what someone
@@ -509,5 +511,132 @@ func TestRecipientCommandsAreAvailableInBothModes(t *testing.T) {
 		if ci.Short == "" {
 			t.Errorf("%q has no Short description", name)
 		}
+	}
+}
+
+// declareRecipientInConfigOnly appends a recipient to .gage/config.toml
+// and commits it, leaving .age-recipients untouched — the opposite
+// direction from tamperRecipientsFileCLI's stray key.
+//
+// It commits rather than leaving the edit in the working tree because
+// every write path takes the vault lock, and that lock resets an
+// unexpectedly dirty tree before doing anything: an uncommitted edit
+// would simply be discarded before `--repair` ever saw it.
+func declareRecipientInConfigOnly(t *testing.T, vaultPath, device, pubkey string) {
+	t.Helper()
+
+	configPath := filepath.Join(vaultPath, ".gage", "config.toml")
+	vc, err := vaultconfig.Read(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vc.Recipients = append(vc.Recipients, vaultconfig.Recipient{Device: device, Pubkey: pubkey})
+	if err := vaultconfig.Write(configPath, vc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitrepo.CommitAll(vaultPath, "gage: declare "+device); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestShortHashLeavesShortStringsAlone: shortHash abbreviates a commit
+// for human output. Anything that isn't a full hash — an empty string
+// from a repair that committed nothing, say — comes back whole rather
+// than sliced.
+func TestShortHashLeavesShortStringsAlone(t *testing.T) {
+	for _, in := range []string{"", "abc", "0123456789ab"} {
+		if got := shortHash(in); got != in {
+			t.Errorf("shortHash(%q) = %q, want it unchanged", in, got)
+		}
+	}
+	full := "0123456789abcdef0123456789abcdef01234567"
+	if got := shortHash(full); got != full[:12] {
+		t.Errorf("shortHash(%q) = %q, want the first 12 characters", full, got)
+	}
+}
+
+// TestRecipientVerifyNamesAKeyMissingFromTheRecipientsFile is the other
+// direction of a divergence from TestRecipientVerifyExitCodesAndDifferences:
+// a key declared in .gage/config.toml that nothing has encrypted to yet.
+// Which way the difference points is the part that says what happened,
+// so both directions have to be rendered.
+func TestRecipientVerifyNamesAKeyMissingFromTheRecipientsFile(t *testing.T) {
+	isolateXDG(t)
+	vaultPath := initVaultForTest(t, "personal", "--device", "laptop-1")
+
+	// Declared in config.toml and nowhere else — the opposite of the
+	// stray-key case, which appends to .age-recipients alone.
+	declared := newRecipientKey(t)
+	declareRecipientInConfigOnly(t, vaultPath, "phone-1", declared)
+
+	res := runCLI(t, []string{"recipient", "verify"}, "")
+	if res.Code != int(exitcode.Conflict) {
+		t.Fatalf("verify exit code = %d, want %d (Conflict); stderr=%s", res.Code, exitcode.Conflict, res.Stderr)
+	}
+	out := res.Stdout + res.Stderr
+	if !strings.Contains(out, declared) {
+		t.Errorf("output = %q, want it to name the key that differs (%s)", out, declared)
+	}
+	if !strings.Contains(out, "is in .gage/config.toml but not in .age-recipients") {
+		t.Errorf("output = %q, want it to say which direction the difference points", out)
+	}
+}
+
+// TestRecipientVerifyRepairOnAVaultInSyncSaysThereIsNothingToDo:
+// `--repair` on a healthy vault is a reasonable thing to run, so it
+// reports that plainly and commits nothing, rather than erroring or
+// producing an empty commit.
+func TestRecipientVerifyRepairOnAVaultInSyncSaysThereIsNothingToDo(t *testing.T) {
+	isolateXDG(t)
+	vaultPath := initVaultForTest(t, "personal", "--device", "laptop-1")
+
+	before, err := gitrepo.HeadHash(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"recipient", "verify", "--repair"}, "")
+	if res.Code != 0 {
+		t.Fatalf("repair on an in-sync vault exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "already in sync") || !strings.Contains(res.Stdout, "nothing to repair") {
+		t.Errorf("stdout = %q, want it to say there was nothing to repair", res.Stdout)
+	}
+
+	after, err := gitrepo.HeadHash(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Error("a repair with nothing to do still made a commit")
+	}
+}
+
+// TestRecipientVerifyRepairReportsWhatItAdded: repair rewrites
+// .age-recipients from config.toml, and a key that only config.toml knew
+// about is *added* by that rewrite. Saying so matters as much as saying
+// what was dropped — the added key can read everything written from here
+// on.
+func TestRecipientVerifyRepairReportsWhatItAdded(t *testing.T) {
+	isolateXDG(t)
+	vaultPath := initVaultForTest(t, "personal", "--device", "laptop-1")
+
+	declared := newRecipientKey(t)
+	declareRecipientInConfigOnly(t, vaultPath, "phone-1", declared)
+
+	res := runCLI(t, []string{"recipient", "verify", "--repair"}, "")
+	if res.Code != 0 {
+		t.Fatalf("repair exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "added "+declared) {
+		t.Errorf("stdout = %q, want it to report adding %s", res.Stdout, declared)
+	}
+	if !strings.Contains(res.Stdout, "committed locally as") {
+		t.Errorf("stdout = %q, want it to name the commit it made", res.Stdout)
+	}
+
+	// And the file really was rewritten, not just described.
+	if !slices.Contains(ageRecipientsFile(t, vaultPath), declared) {
+		t.Error("the repair reported adding a key that never reached .age-recipients")
 	}
 }

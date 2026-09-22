@@ -36,10 +36,12 @@ comment:
   behavior: default
   require_changes: false
 
-# Keep in sync with .testcoverage.yml's `exclude.paths` (also ^scripts/) —
-# scripts/ holds standalone dev-only tools never shipped in the gage
-# binary. Codecov and go-test-coverage are separate tools with no shared
-# config format, so this is a deliberate small duplication, not an
-# oversight.
+# Keep in sync with .testcoverage.yml's `exclude.paths`, which carries
+# the same two entries and the reasoning for them: scripts/ holds
+# standalone dev-only tools, and internal/gage/gittest is test
+# scaffolding — neither ships in the gage binary. Codecov and
+# go-test-coverage are separate tools with no shared config format, so
+# this is a deliberate small duplication, not an oversight.
 ignore:
   - ^scripts/
+  - ^internal/gage/gittest/

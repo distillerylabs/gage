@@ -223,3 +223,99 @@ func findCommandsUnder(t *testing.T, parent string) []*cobra.Command {
 	t.Fatalf("no %q command", parent)
 	return nil
 }
+
+// TestAuthStatusWithNoTokensAndNoVaultSaysSo: the blank case. With
+// nothing stored and no vault to infer a host from, `auth status` has to
+// say that plainly rather than printing an empty list.
+func TestAuthStatusWithNoTokensAndNoVaultSaysSo(t *testing.T) {
+	isolateXDG(t)
+
+	res := runAuthCLI(t, []string{"auth", "status"})
+	if res.Code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "no tokens are stored on this machine") {
+		t.Errorf("stdout = %q, want it to say nothing is stored", res.Stdout)
+	}
+}
+
+// TestAuthStatusWithNoTokensFallsBackToTheCurrentVaultsHost: with no
+// tokens but a vault that has a remote, the answer worth giving is about
+// *that* host — "no token, here is the command" is actionable, where a
+// bare "nothing stored" leaves the user to work out which host they
+// needed.
+func TestAuthStatusWithNoTokensFallsBackToTheCurrentVaultsHost(t *testing.T) {
+	isolateXDG(t)
+
+	if res := runCLI(t, []string{"init", "personal",
+		"--remote", "https://git.example.com/me/vault.git", "--no-recovery-key"}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	res := runAuthCLI(t, []string{"auth", "status"})
+	if res.Code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "git.example.com") {
+		t.Errorf("stdout = %q, want it to name the current vault's host", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "no token") {
+		t.Errorf("stdout = %q, want it to report that host as having no token", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "gage auth login") {
+		t.Errorf("stdout = %q, want it to name the command that fixes this", res.Stdout)
+	}
+}
+
+// TestAuthLoginReadsTheOriginFromTheRepositoryWhenConfigLags: global
+// config records a vault's origin, but a `git remote set-url` run
+// outside gage moves the real one without touching it. The repository is
+// the authority, so a stale (here: absent) recorded origin must not make
+// gage ask for a host the user already configured.
+func TestAuthLoginReadsTheOriginFromTheRepositoryWhenConfigLags(t *testing.T) {
+	isolateXDG(t)
+
+	if res := runCLI(t, []string{"init", "personal",
+		"--remote", "https://git.example.com/me/vault.git", "--no-recovery-key"}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	// Exactly what a remote configured outside gage looks like from
+	// here: the repository knows, global config doesn't.
+	g := readGlobalConfigForTest(t)
+	entry := g.Vaults["personal"]
+	entry.Git.Origin = ""
+	g.Vaults["personal"] = entry
+	if err := writeGlobalConfig(g); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runAuthCLI(t, []string{"auth", "login"})
+	if res.Code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "git.example.com") {
+		t.Errorf("stdout = %q, want the host read off the repository", res.Stdout)
+	}
+}
+
+// TestAuthLoginOnAVaultWithNoRemoteNamesTheVault: a vault that was never
+// given a remote has no host to authenticate to, and the refusal has to
+// say which vault it means — a session can hold several.
+func TestAuthLoginOnAVaultWithNoRemoteNamesTheVault(t *testing.T) {
+	isolateXDG(t)
+
+	if res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	res := runAuthCLI(t, []string{"auth", "login"})
+	if res.Code == 0 {
+		t.Fatal("auth login against a remoteless vault succeeded, want a usage error")
+	}
+	for _, want := range []string{"personal", "no remote", "--host"} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr = %q, want it to mention %q", res.Stderr, want)
+		}
+	}
+}
