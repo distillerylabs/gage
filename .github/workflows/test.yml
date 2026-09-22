@@ -21,7 +21,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            codecov-flag: linux
+          - os: macos-latest
+            codecov-flag: macos
+          - os: windows-latest
+            codecov-flag: windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,6 +97,23 @@ jobs:
           path: |
             coverage.out
             coverage.html
+
+      # Uploads this OS's coverage.out to Codecov for reporting only (PR
+      # diff-coverage comments, trend graphs, browsable line-by-line UI —
+      # see codecov.yml). Does not gate the job; make cover-check below is
+      # still what enforces the threshold.
+      #
+      # fail_ci_if_error is false: a Codecov outage/hiccup shouldn't redden
+      # CI for a contributor whose code is fine, and secrets.CODECOV_TOKEN
+      # is unavailable on fork PR runs (GitHub withholds repo secrets from
+      # them) — this keeps external contributors' CI green either way.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          flags: ${{ matrix.codecov-flag }}
+          fail_ci_if_error: false
 
       # Fails the job if total coverage is below the threshold in
       # .testcoverage.yml.
