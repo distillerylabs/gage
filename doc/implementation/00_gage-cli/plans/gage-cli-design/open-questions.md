@@ -815,6 +815,22 @@ not built.
 
 ---
 
+### `[x]` Q-RECOVERY-ENROLL — How does the recovery key get a device back into a vault? {#q-recovery-enroll}
+
+**Blocks:** nothing; tracked by [#7](https://github.com/distillerylabs/gage/issues/7),
+planned as R3-R5 in [plans/recovery-key](../recovery-key/index.md).
+
+[Q-RECOVERY-KEY](#q-recovery-key) recorded that gage cannot unlock with the
+recovery key. Resolved: it gets one narrow power, enrolling a fresh device
+identity and then being retired (`gage recovery enroll`), plus
+`gage recovery rotate` from an unlocked device. Decisions D8-D12 live in the
+[plan index](../recovery-key/index.md#decisions); the one to remember is
+that this is deliberately **not** a general unlock method. The recovery
+identity exists only inside one library function, so nothing else can reach
+it.
+
+---
+
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}
 
 **Blocks:** nothing; needed before a first public release.
