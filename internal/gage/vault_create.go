@@ -129,6 +129,13 @@ func Create(spec CreateSpec) (*Vault, error) {
 	if !devicename.Valid(spec.Device) {
 		return nil, exitcode.Newf(exitcode.Usage, "gage: device name %q is invalid", spec.Device)
 	}
+	// Unconditionally, not only when a recovery key is being generated: a
+	// vault made with --no-recovery-key can still grow one later through
+	// `recovery rotate`, and a device sitting under the label would be
+	// evicted by it. See checkDeviceLabelFree.
+	if err := checkDeviceLabelFree(spec.Device); err != nil {
+		return nil, err
+	}
 	if len(spec.Recipients) == 0 {
 		return nil, exitcode.New(exitcode.Usage, "gage: a vault needs at least one recipient; the first must be this device's own public key")
 	}

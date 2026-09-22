@@ -23,6 +23,33 @@ import (
 // decrypt everything perfectly well.
 var ErrNotRecoveryKey = errors.New("gage: that key is not this vault's recovery key")
 
+// ErrReservedDeviceLabel is a device trying to name itself
+// RecoveryDeviceLabel.
+//
+// The label is reserved because `recovery rotate` evicts whatever holds it,
+// and rotate has no way to tell a recovery key from any other X25519 key —
+// the label *is* the distinction. A device sitting under it would be
+// dropped from the recipient list and the vault re-encrypted to the new
+// paper key alone, locking out the machine that ran the command. Keeping
+// the label unavailable is what makes rotate's eviction safe, so the check
+// belongs at every point a device names itself rather than in rotate.
+var ErrReservedDeviceLabel = errors.New("gage: that device name is reserved for this vault's recovery key")
+
+// checkDeviceLabelFree rejects a device claiming the recovery key's fixed
+// label. It is deliberately *not* part of devicename.Valid: the label is a
+// perfectly valid device name, and the recovery recipient itself has to be
+// written under it — by Create's ExtraRecipients and by the swap in this
+// file, neither of which goes through the paths that call this.
+func checkDeviceLabelFree(device string) error {
+	if device != RecoveryDeviceLabel {
+		return nil
+	}
+	return exitcode.Wrap(exitcode.Usage, fmt.Errorf(
+		"%w: %q names the key gage generates for this vault, and `gage recovery rotate` "+
+			"replaces whatever holds it — a device there would be locked out by its own rotation",
+		ErrReservedDeviceLabel, RecoveryDeviceLabel))
+}
+
 // RecoverSpec is the change RecoverDevice makes to a vault's recipient
 // list, in one commit.
 type RecoverSpec struct {
@@ -238,9 +265,19 @@ func (v *Vault) recoveryIdentity(secret []byte, p Prompter) (Identity, error) {
 // recipientSwap is one atomic change to the recipient list: some labels
 // removed, some added, in a single commit.
 type recipientSwap struct {
-	add     []VaultRecipient
-	remove  []string // device labels
-	message string
+	add    []VaultRecipient
+	remove []string // device labels
+	// removeIfPresent are labels removed when the list has them and simply
+	// skipped when it does not, unlike remove, where naming nobody is an
+	// error. It exists for rotate, which retires a recovery recipient a
+	// vault made with --no-recovery-key never had.
+	removeIfPresent []string
+	message         string
+
+	// inspect, if set, is called with the current list under the lock,
+	// before the final list is computed. A non-nil error aborts the swap
+	// with nothing written.
+	inspect func(current []VaultRecipient) error
 }
 
 // swapRecipients applies a swap: remove, add, re-encrypt, commit, push —
@@ -291,6 +328,11 @@ func (v *Vault) swapRecipients(sw recipientSwap, ident *Identity) (reencrypted i
 		if err != nil {
 			return err
 		}
+		if sw.inspect != nil {
+			if err := sw.inspect(current); err != nil {
+				return err
+			}
+		}
 		updated, err := applySwap(current, sw)
 		if err != nil {
 			return err
@@ -299,7 +341,14 @@ func (v *Vault) swapRecipients(sw recipientSwap, ident *Identity) (reencrypted i
 		// Said before the work rather than after: by the time the commit
 		// lands there is nothing left to reconsider, and what the warning
 		// is for is that revocation is narrower than it sounds.
-		for _, label := range sw.remove {
+		// Both kinds of removal, not just sw.remove: rotate retires through
+		// removeIfPresent, and the leak-response user running it is exactly
+		// the one who needs to hear that the retired key still opens
+		// history. Only labels the list actually had are named.
+		for _, label := range append(append([]string{}, sw.remove...), sw.removeIfPresent...) {
+			if !heldBy(current, label) {
+				continue
+			}
 			warn(ident.warnTo(),
 				"gage: removing %q revokes future access only — it still opens every version of "+
 					"every entry already in this vault's git history.", label)
@@ -322,6 +371,16 @@ func (v *Vault) swapRecipients(sw recipientSwap, ident *Identity) (reencrypted i
 	return reencrypted, commit, nil
 }
 
+// heldBy reports whether any recipient carries label.
+func heldBy(list []VaultRecipient, label string) bool {
+	for _, r := range list {
+		if r.Device == label {
+			return true
+		}
+	}
+	return false
+}
+
 // applySwap computes the final recipient list, refusing anything the list
 // could not legally become. It is pure, so every refusal below happens
 // before a single byte is written.
@@ -331,9 +390,16 @@ func applySwap(current []VaultRecipient, sw recipientSwap) ([]VaultRecipient, er
 	for _, label := range sw.remove {
 		removed[label] = true
 	}
+	optional := map[string]bool{}
+	for _, label := range sw.removeIfPresent {
+		optional[label] = true
+	}
 	for _, r := range current {
 		if removed[r.Device] {
 			delete(removed, r.Device)
+			continue
+		}
+		if optional[r.Device] {
 			continue
 		}
 		updated = append(updated, r)
@@ -374,4 +440,79 @@ func applySwap(current []VaultRecipient, sw recipientSwap) ([]VaultRecipient, er
 				"rewrite every entry to a list no key opens", ErrLastRecipient))
 	}
 	return updated, nil
+}
+
+// RotateResult reports what a rotation did.
+type RotateResult struct {
+	// Retired is the public key of the recovery recipient that was
+	// replaced, or empty if the vault had none.
+	Retired string
+	// Created is true when there was no recovery recipient to replace, so
+	// this added the first one.
+	Created bool
+	// Pubkey is the new recovery key's public half.
+	Pubkey string
+
+	Commit      string
+	Reencrypted int
+}
+
+// RotateRecoveryKey replaces the vault's recovery recipient with newPubkey,
+// or adds the first one if there is none, in a single commit.
+//
+// It is RecoverDevice's swap driven by an ordinary unlocked identity rather
+// than by the recovery key, for the two situations that have no lost
+// identity to recover from: a recovery key that may have leaked, and a
+// vault made with --no-recovery-key that wants one after all. Doing it as
+// AddRecipient then RemoveRecipient does not work — the label is fixed, so
+// the new key cannot be added while the old one still holds it — and would
+// in any case be two commits with a window where both keys are live.
+//
+// newPubkey must not be the key being retired. The swap removes the old
+// label before it checks the additions, so without the explicit check the
+// retired key would sail straight back in under its own name and report a
+// rotation that changed nothing.
+func (v *Vault) RotateRecoveryKey(newPubkey string, ident *Identity) (RotateResult, error) {
+	if err := agekey.ValidateRecipient(newPubkey); err != nil {
+		return RotateResult{}, exitcode.Wrap(exitcode.Usage, err)
+	}
+
+	res := RotateResult{Pubkey: newPubkey}
+	n, hash, err := v.swapRecipients(recipientSwap{
+		add:             []VaultRecipient{{Device: RecoveryDeviceLabel, Pubkey: newPubkey}},
+		removeIfPresent: []string{RecoveryDeviceLabel},
+		message:         "gage: recovery rotate (reencrypt)",
+		// Read under the lock by swapRecipients, so what is reported as
+		// retired is what the swap actually retired and not a stale read.
+		inspect: func(current []VaultRecipient) error {
+			for _, r := range current {
+				if r.Device != RecoveryDeviceLabel {
+					continue
+				}
+				res.Retired = r.Pubkey
+				if r.Pubkey == newPubkey {
+					return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+						"%w: %s is the recovery key this rotation is retiring, so it cannot also be "+
+							"its own replacement — generate a new one", ErrRecipientExists, newPubkey))
+				}
+				// The backstop under checkDeviceLabelFree. Rotate cannot
+				// tell a recovery key from any other key, so if something
+				// ever does slip under the label, the one outcome it must
+				// not produce is locking out the device running it.
+				if r.Pubkey == ident.Recipient() {
+					return exitcode.Wrap(exitcode.Conflict, fmt.Errorf(
+						"%w: the key this vault was unlocked with is the one registered as %q, so "+
+							"rotating would remove this device's own access. Re-register this device "+
+							"under its own name first", ErrRecipientExists, RecoveryDeviceLabel))
+				}
+			}
+			res.Created = res.Retired == ""
+			return nil
+		},
+	}, ident)
+	if err != nil {
+		return RotateResult{}, err
+	}
+	res.Commit, res.Reencrypted = hash, n
+	return res, nil
 }

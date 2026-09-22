@@ -139,7 +139,7 @@ page-locked. The buffers gage owns are zeroed.
 |---|---|---|---|---|
 | R3 | [Recovery identity, library](r3-recovery-identity-library.md) | Opus | R2 | `[x]` |
 | R4 | [`gage recovery enroll`](r4-recovery-enroll-cli.md) | Opus | R3 | `[x]` |
-| R5 | [`gage recovery rotate` and docs](r5-recovery-rotate-and-docs.md) | Sonnet | R3 (lands after R4) | `[ ]` |
+| R5 | [`gage recovery rotate` and docs](r5-recovery-rotate-and-docs.md) | Sonnet | R3 (lands after R4) | `[x]` |
 
 Branches continue the stack: `main` <- `7-recovery-key` <- R0 <- R1 <- R2 <-
 `7-recovery-enroll-plan` (these docs) <- R3 <- R4 <- R5. After R4, run a

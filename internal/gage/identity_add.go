@@ -57,6 +57,9 @@ type LocalIdentity struct {
 // recovery story work at all: the device with the lost key has no way to
 // authorize itself. See "`identity` vs `recipient` stay separate".
 func (v *Vault) AddIdentity(device string, p Prompter) (string, error) {
+	if err := checkDeviceLabelFree(device); err != nil {
+		return "", err
+	}
 	if !devicename.Valid(device) {
 		return "", exitcode.Newf(exitcode.Usage, "gage: device name %q is invalid", device)
 	}

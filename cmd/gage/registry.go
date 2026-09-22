@@ -262,6 +262,12 @@ var registry = []CommandInfo{
 		Availability: AvailOneShotOnly,
 	},
 	{
+		Name:         "recovery rotate",
+		Short:        "Replace this vault's recovery key, or add one if it has none",
+		Group:        GroupRecipient,
+		Availability: AvailOneShotOnly,
+	},
+	{
 		Name:         "recovery verify",
 		Short:        "Check a stored recovery key is still one of this vault's recipients",
 		Group:        GroupRecipient,

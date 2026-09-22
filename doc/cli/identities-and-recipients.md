@@ -87,43 +87,71 @@ it somewhere offline and delete it.
 
 ### Using it
 
-**`gage` itself can't unlock a vault with the recovery key.** Today gage
-unlocks only through a passphrase-wrapped identity file, and the recovery key
-is a bare age key, not one of those. What it does is decrypt: every entry is
-an ordinary age file encrypted to all of the vault's recipients, so the stock
-`age` tool reads it:
+If this machine's identity file is gone, or you have forgotten its
+passphrase, the recovery key gets you back in with one command:
+
+```
+gage recovery enroll [--device NAME] [--replaces DEVICE]
+```
+
+It asks you to paste the key (without echo), generates a fresh identity for
+this device and asks for a new passphrase, admits that identity to the vault,
+and **retires the key you just used** — all in a single commit. A replacement
+recovery key is generated and shown once, so the vault is never left without
+a way back. `--no-new-recovery-key` skips the replacement, and
+`--recovery-key-out FILE` writes it to a file instead of the screen.
+
+- **`--replaces DEVICE`** names the machine that was lost, removing its key in
+  the same commit so a stolen identity file stops opening anything new.
+- **Rebuilding a machine under the name it already had** —
+  `--device laptop-1 --replaces laptop-1` — is the one case where an existing
+  local identity file is replaced rather than refused, which is what makes
+  the forgotten-passphrase case work: the file is still on disk, just
+  unopenable.
+- It works straight after `gage clone` on a machine that has never held an
+  identity for the vault.
+- The key must be the one registered as `recovery-paper-key`. Run
+  `gage recovery verify` first if you are not sure: it says whether the key
+  decrypts the vault and, separately, whether `recovery enroll` will accept
+  it.
+
+The recovery key is retired because it has just been typed into a terminal,
+and it reads everything. Retiring it stops it opening anything written from
+now on; it still opens every version already in the vault's git history.
+
+**This is all the recovery key can do inside gage.** It is not an unlock
+method: it never runs any other command, and there is no way to use it as a
+day-to-day identity. Outside gage it still decrypts, because every entry is
+an ordinary age file encrypted to all of the vault's recipients:
 
 ```
 age -d -i recovery.key entries/<uuid>.age
 ```
 
-That gets your secrets back even when nothing else can. It does not get gage
-running again by itself — `gage recipient add` and every other command need
-an identity gage can unlock. If some *other* device still has a working
-identity, use that one: `gage identity add` on the affected machine, then
-`gage recipient add` from the working one. If none does, the recovery key is
-how you read everything out (the entries are YAML: `title`, `value`, ...) and
-move it into a new vault.
-
-Teaching gage to unlock with the recovery key directly is not built.
+That remains the way to read your secrets out if `gage` itself is
+unavailable.
 
 ### If it leaks
 
 Treat every secret in the vault as exposed to whoever holds the key, and act
-in this order:
+in this order, from a device that can still read the vault:
 
-1. Generate a replacement key (`age-keygen`) and add it: `gage recipient add
-   <new-pubkey> --device recovery-paper-key-2`.
-2. Remove the old one: `gage recipient remove recovery-paper-key --reencrypt`.
-3. **Rotate the secrets themselves.** Removing the key stops it opening
-   anything new, but anyone who already read entries with it still has those
-   values, and re-encrypting can't take them back.
+1. **Replace the key:** `gage recovery rotate`. It generates a new recovery
+   key, registers it as `recovery-paper-key`, and retires the old one in a
+   single commit, showing you the new one once.
+2. **Rotate the secrets themselves.** Retiring the key stops it opening
+   anything written from now on, but anyone who already read entries with it
+   still has those values, and it still opens every version already in the
+   vault's git history. Re-encrypting can't take that back.
+
+If you have lost the only device that can read the vault, use
+`gage recovery enroll` first, then rotate.
 
 ### Skipping it
 
 `--no-recovery-key` leaves this device's identity file as the only way into
 the vault. If it, or its passphrase, is ever lost, the vault is unreadable
-forever. You can add a recovery recipient later with `gage recipient add`.
+forever. `gage recovery rotate` adds a recovery key to a vault that has none.
 
 ## Recipients: who can decrypt a vault
 

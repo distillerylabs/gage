@@ -765,3 +765,302 @@ func TestCloneAndSessionPointAtRecoveryEnroll(t *testing.T) {
 		t.Errorf("clone's no-identity advice never mentions the recovery key:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------
+// gage recovery rotate
+// ---------------------------------------------------------------------
+
+// rotatePrompter answers rotate's two questions: the owner's passphrase
+// (through the embedded fakePrompter) and the re-type confirmation, read
+// off the screen the way recoveryPrompter does for init.
+type rotatePrompter struct {
+	fakePrompter
+	screen *bytes.Buffer
+}
+
+func (p *rotatePrompter) Value(prompt string) (string, error) {
+	p.valuePrompts = append(p.valuePrompts, prompt)
+	p.valueCalls++
+	keys := ageSecretKeyPattern.FindAllString(p.screen.String(), -1)
+	if len(keys) == 0 {
+		return "", nil
+	}
+	key := keys[len(keys)-1]
+	return key[len(key)-recoveryConfirmChars:], nil
+}
+
+func runRotate(t *testing.T, args ...string) (cliResult, string, *rotatePrompter) {
+	t.Helper()
+	p := &rotatePrompter{fakePrompter: fakePrompter{passphrases: []string{testPassphrase}}}
+	res, _ := runCLIWithApp(t, append([]string{"recovery", "rotate"}, args...),
+		strings.NewReader(""), true, p, func(app *App) {
+			buf, ok := app.Err.(*bytes.Buffer)
+			if !ok {
+				t.Fatalf("app.Err is %T, want *bytes.Buffer", app.Err)
+			}
+			p.screen = buf
+		})
+	var shown string
+	if keys := ageSecretKeyPattern.FindAllString(res.Stderr, -1); len(keys) > 0 {
+		shown = keys[len(keys)-1]
+	}
+	return res, shown, p
+}
+
+func TestRecoveryRotateReplacesTheKey(t *testing.T) {
+	isolateXDG(t)
+	old := initVaultWithRecoveryKeyFile(t, "personal")
+	if res := runCLI(t, []string{"insert", "api-token", "--value-stdin"}, "s3cr3t\n"); res.Code != 0 {
+		t.Fatalf("seeding: %s", res.Stderr)
+	}
+
+	res, shown, p := runRotate(t)
+	if res.Code != 0 {
+		t.Fatalf("rotate failed: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+	if shown == "" || shown == old {
+		t.Fatalf("shown key = %q; want a new key distinct from the old one", shown)
+	}
+	// It needed an unlock, and asked for the owner's passphrase once.
+	if len(p.requests) != 1 || p.requests[0].Purpose != gage.PurposeUnlock {
+		t.Errorf("unlock requests = %+v, want exactly one PurposeUnlock", p.requests)
+	}
+
+	assertVerifies(t, shown, true)
+	assertVerifies(t, old, false)
+	// The vault still reads for the owner, and holds the same two recipients.
+	if show := runCLI(t, []string{"show", "api-token"}, ""); show.Code != 0 {
+		t.Fatalf("the vault is unreadable after rotate: %s", show.Stderr)
+	}
+	vf := readVaultConfigForTest(t, "personal")
+	if len(vf.Recipients) != 2 || vf.Recipients[1].Device != gage.RecoveryDeviceLabel {
+		t.Errorf("recipients = %+v", vf.Recipients)
+	}
+	if !strings.Contains(res.Stdout, vf.Recipients[1].Pubkey) {
+		t.Errorf("the summary doesn't name the new recovery key:\n%s", res.Stdout)
+	}
+}
+
+// TestRecoveryRotateAddsOneToAVaultWithout: the natural way to recover from
+// having said --no-recovery-key.
+func TestRecoveryRotateAddsOneToAVaultWithout(t *testing.T) {
+	isolateXDG(t)
+	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--no-recovery-key"}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+	if res := runCLI(t, []string{"insert", "api-token", "--value-stdin"}, "s3cr3t\n"); res.Code != 0 {
+		t.Fatalf("seeding: %s", res.Stderr)
+	}
+
+	res, shown, _ := runRotate(t)
+	if res.Code != 0 {
+		t.Fatalf("rotate failed: exit %d, stderr=%s", res.Code, res.Stderr)
+	}
+	assertVerifies(t, shown, true)
+	if vf := readVaultConfigForTest(t, "personal"); len(vf.Recipients) != 2 {
+		t.Errorf("recipients = %+v, want the device and a new recovery recipient", vf.Recipients)
+	}
+}
+
+// TestRecoveryRotateWithoutATerminalRefusesBeforeAnyPrompt: the new key is
+// shown once, so a run with nowhere to show it must not even ask for the
+// passphrase — and unlike init and enroll there is no opt-out to name,
+// since rotate exists to produce a key.
+func TestRecoveryRotateWithoutATerminalRefusesBeforeAnyPrompt(t *testing.T) {
+	isolateXDG(t)
+	initVaultWithRecoveryKeyFile(t, "personal")
+
+	p := &fakePrompter{passphrases: []string{testPassphrase}}
+	res, _ := runCLIWithPrompter(t, []string{"recovery", "rotate"}, "", false, p)
+	if res.Code != int(exitcode.Usage) {
+		t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "--recovery-key-out") {
+		t.Errorf("the refusal doesn't name --recovery-key-out:\n%s", res.Stderr)
+	}
+	if strings.Contains(res.Stderr, "--no-") {
+		t.Errorf("the refusal names an opt-out flag rotate does not have:\n%s", res.Stderr)
+	}
+	if len(p.requests) != 0 {
+		t.Error("it asked for a passphrase before refusing")
+	}
+	if ageSecretKeyPattern.MatchString(res.Stdout + res.Stderr) {
+		t.Error("a refusal still printed a key")
+	}
+}
+
+func TestRecoveryRotateKeyOutWritesAPrivateFile(t *testing.T) {
+	isolateXDG(t)
+	old := initVaultWithRecoveryKeyFile(t, "personal")
+
+	out := filepath.Join(t.TempDir(), "next.key")
+	p := &fakePrompter{passphrases: []string{testPassphrase}}
+	res, _ := runCLIWithPrompter(t, []string{"recovery", "rotate", "--recovery-key-out", out}, "", false, p)
+	if res.Code != 0 {
+		t.Fatalf("rotate failed: %s", res.Stderr)
+	}
+	data, err := os.ReadFile(out) // #nosec G304 -- test fixture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := strings.TrimSpace(string(data))
+	if strings.Contains(res.Stdout+res.Stderr, written) {
+		t.Error("--recovery-key-out also printed the key")
+	}
+	assertVerifies(t, written, true)
+	assertVerifies(t, old, false)
+}
+
+// TestRecoveryRotateKeepsNoCopyOfEitherKey: neither the retired key nor the
+// new one may be written anywhere gage owns, and the new one is shown
+// exactly once.
+func TestRecoveryRotateKeepsNoCopyOfEitherKey(t *testing.T) {
+	isolateXDG(t)
+	old := initVaultWithRecoveryKeyFile(t, "personal")
+	if res := runCLI(t, []string{"insert", "api-token", "--value-stdin"}, "s3cr3t\n"); res.Code != 0 {
+		t.Fatalf("seeding: %s", res.Stderr)
+	}
+
+	res, shown, _ := runRotate(t)
+	if res.Code != 0 {
+		t.Fatalf("rotate failed: %s", res.Stderr)
+	}
+	for _, root := range []string{os.Getenv("XDG_DATA_HOME"), os.Getenv("XDG_CONFIG_HOME"), os.Getenv("XDG_STATE_HOME")} {
+		if _, err := os.Stat(root); err != nil {
+			continue
+		}
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, rerr := os.ReadFile(path) // #nosec G304 -- test walks its own temp dir
+			if rerr != nil {
+				return rerr
+			}
+			for name, key := range map[string]string{"retired": old, "new": shown} {
+				if bytes.Contains(b, []byte(key)) {
+					t.Errorf("the %s recovery key was written to %s", name, path)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(res.Stdout+res.Stderr, shown); n != 1 {
+		t.Errorf("the new key appears %d times in the output, want exactly 1", n)
+	}
+}
+
+// TestRecoveryRotateStillPublishesWhenTheConfirmationFails mirrors init and
+// enroll: the confirmation is the last gate, not an early exit.
+func TestRecoveryRotateStillPublishesWhenTheConfirmationFails(t *testing.T) {
+	isolateXDG(t)
+	remote := gittest.NewBareRemote(t)
+	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--remote", remote,
+		"--recovery-key-out", filepath.Join(t.TempDir(), "rk")}, ""); res.Code != 0 {
+		t.Fatalf("init failed: %s", res.Stderr)
+	}
+
+	p := &enrollPrompter{fakePrompter: fakePrompter{passphrases: []string{testPassphrase}},
+		pasted: "unused", confirmWith: "NOTTHEKEY"}
+	// enrollPrompter answers its first Value call as the paste; rotate has
+	// no paste, so burn that answer on the first (confirmation) call.
+	p.valueCalls = 1
+	res, _ := runCLIWithApp(t, []string{"recovery", "rotate"}, strings.NewReader(""), true, p, p.watchEnroll(t))
+	if res.Code != int(exitcode.Conflict) {
+		t.Fatalf("exit code = %d, want %d (Conflict); stderr=%s", res.Code, exitcode.Conflict, res.Stderr)
+	}
+	other := gittest.NewDevice(t, remote)
+	if !other.Exists(t, ".age-recipients") {
+		t.Error("the vault never reached the remote")
+	}
+	if keys := ageSecretKeyPattern.FindAllString(res.Stderr, -1); len(keys) != 1 {
+		t.Errorf("the key was shown %d times, want 1", len(keys))
+	}
+}
+
+func TestRecoveryRotateIsListedInHelp(t *testing.T) {
+	isolateXDG(t)
+	res := runCLI(t, []string{"help"}, "")
+	if res.Code != 0 || !strings.Contains(res.Stdout, "recovery rotate") {
+		t.Errorf("`gage help` doesn't list recovery rotate (exit %d):\n%s", res.Code, res.Stdout)
+	}
+}
+
+// TestRecoveryRotateChecksTheKeyDestinationBeforeTheUnlock: init and
+// recovery enroll both reject an unusable --recovery-key-out before any
+// prompt, and rotate's own comment claims the same. A bad path found after
+// the passphrase and a remote sync is a knowable failure charged to the
+// user twice.
+func TestRecoveryRotateChecksTheKeyDestinationBeforeTheUnlock(t *testing.T) {
+	isolateXDG(t)
+	initVaultWithRecoveryKeyFile(t, "personal")
+
+	// Inside the vault, which the destination rules refuse: gage resets a
+	// vault's working tree and would delete the key.
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+	p := &fakePrompter{passphrases: []string{testPassphrase}}
+	res, _ := runCLIWithPrompter(t, []string{"recovery", "rotate",
+		"--recovery-key-out", filepath.Join(entry.Path, "rk")}, "", false, p)
+
+	if res.Code != int(exitcode.Usage) {
+		t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+	}
+	if len(p.requests) != 0 {
+		t.Errorf("rotate asked for a passphrase before rejecting the destination: %+v", p.requests)
+	}
+}
+
+// TestNoCommandLetsADeviceTakeTheRecoveryLabel walks the CLI surface that
+// names a device. The label has to be unavailable on every one of them,
+// because `recovery rotate` evicts whatever holds it.
+func TestNoCommandLetsADeviceTakeTheRecoveryLabel(t *testing.T) {
+	label := gage.RecoveryDeviceLabel
+
+	t.Run("init, even with --no-recovery-key", func(t *testing.T) {
+		isolateXDG(t)
+		dir := filepath.Join(t.TempDir(), "personal")
+		res := runCLI(t, []string{"init", "personal", "--dir", dir,
+			"--device", label, "--no-recovery-key"}, "")
+		if res.Code != int(exitcode.Usage) {
+			t.Fatalf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".gage")); !os.IsNotExist(err) {
+			t.Error("a refused init created the vault")
+		}
+	})
+
+	t.Run("identity add", func(t *testing.T) {
+		isolateXDG(t)
+		initVaultWithRecoveryKeyFile(t, "personal")
+		res := runCLI(t, []string{"identity", "add", "--device", label}, "")
+		if res.Code != int(exitcode.Usage) {
+			t.Errorf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+		}
+	})
+
+	t.Run("recipient add", func(t *testing.T) {
+		isolateXDG(t)
+		initVaultWithRecoveryKeyFile(t, "personal")
+		spare, err := gage.NewRecoveryKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := runCLI(t, []string{"recipient", "add", spare.Pubkey, "--device", label}, "")
+		if res.Code == 0 {
+			t.Error("recipient add let a key take the recovery label")
+		}
+	})
+
+	t.Run("recovery enroll", func(t *testing.T) {
+		isolateXDG(t)
+		pasted := initVaultWithRecoveryKeyFile(t, "personal")
+		loseTheIdentityFile(t)
+		res, _, _ := runEnroll(t, pasted, "--device", label)
+		if res.Code != int(exitcode.Usage) {
+			t.Errorf("exit code = %d, want %d (Usage); stderr=%s", res.Code, exitcode.Usage, res.Stderr)
+		}
+	})
+}

@@ -37,10 +37,14 @@ gage init <name> [--dir PATH] [--remote URL] [--type git]
     must not be inside a vault or under `$GAGE_DATA`, both of which `gage`
     deletes from.
   - `--no-recovery-key` skips it. That leaves this device's identity file as
-    the only way into the vault.
+    the only way into the vault; `gage recovery rotate` adds one later.
   - With no terminal and neither flag, `init` refuses before creating
     anything, rather than write an unencrypted key into a log.
-  - `--device recovery-paper-key` is refused; that label is the key's.
+  - `--device recovery-paper-key` is refused, with or without a recovery
+    key, and so is `identity add`, `recipient add` or `recovery enroll`
+    under that name. The label belongs to the recovery key:
+    `gage recovery rotate` replaces whatever holds it, so a device there
+    would be locked out by its own rotation.
 - `--recipient` can be repeated to add extra public keys you already hold,
   in addition to this device's own key and the recovery key.
 

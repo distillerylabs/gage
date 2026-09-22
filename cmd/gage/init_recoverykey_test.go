@@ -451,9 +451,14 @@ func TestInitRejectsADeviceNamedLikeTheRecoveryLabel(t *testing.T) {
 		t.Error("a rejected device name still created something under identities/")
 	}
 
-	// With no recovery key there is no collision, so the name is allowed.
-	if res := runCLI(t, []string{"init", "personal", "--device", gage.RecoveryDeviceLabel, "--no-recovery-key"}, ""); res.Code != 0 {
-		t.Errorf("--no-recovery-key should leave the label free: %s", res.Stderr)
+	// --no-recovery-key does NOT free the label, and that is a deliberate
+	// change from how this milestone first shipped. A vault made without a
+	// recovery key can still grow one through `gage recovery rotate`, which
+	// replaces whatever holds the label — so a device there would be
+	// evicted by its own rotation, and the vault re-encrypted to a paper
+	// key alone. See TestNoCommandLetsADeviceTakeTheRecoveryLabel.
+	if res := runCLI(t, []string{"init", "personal", "--device", gage.RecoveryDeviceLabel, "--no-recovery-key"}, ""); res.Code != int(exitcode.Usage) {
+		t.Errorf("the label must stay reserved even with --no-recovery-key: exit %d, %s", res.Code, res.Stderr)
 	}
 }
 

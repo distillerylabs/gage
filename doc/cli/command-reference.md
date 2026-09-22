@@ -51,7 +51,9 @@ Details: [Identities and recipients](identities-and-recipients.md), [Adding a de
 | `recipient remove <pubkey-or-name> --reencrypt [--use NAME]` | Revoke a recipient and re-encrypt the vault without its key. |
 | `recipient list [--use NAME]` | List every device this vault is encrypted to. |
 | `recipient verify [--use NAME] [--repair]` | Check `.age-recipients` and `config.toml` still agree; `--repair` rewrites the former from the latter and commits it. |
-| `recovery verify [--use NAME]` | Check a pasted recovery key is still one of the vault's recipients. Needs no passphrase. **One-shot only.** |
+| `recovery enroll [--device NAME] [--replaces DEVICE] [--no-new-recovery-key \| --recovery-key-out FILE] [--use NAME]` | Use a pasted recovery key to enroll a fresh identity for this device, retiring the key in the same commit and minting a replacement. For a lost identity file or a forgotten passphrase. **One-shot only.** |
+| `recovery rotate [--recovery-key-out FILE] [--use NAME]` | Replace this vault's recovery key with a new one shown once, or add one if the vault has none. Needs an unlock. **One-shot only.** |
+| `recovery verify [--use NAME]` | Check a pasted recovery key is still one of the vault's recipients, and whether `recovery enroll` will accept it. Needs no passphrase. **One-shot only.** |
 | `recipient pending [--use NAME]` | List enrollment requests waiting to be approved. |
 | `recipient approve [ID...] [--code CODE ...] [--use NAME] [--device NAME]` | Admit an enrolling device and re-encrypt the vault to include it. |
 | `recipient deny <ID> [--use NAME]` | Remove an enrollment request without granting anything. |

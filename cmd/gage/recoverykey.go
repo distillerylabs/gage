@@ -88,6 +88,14 @@ func planRecoveryKey(app *App, skipFlag string, noRecoveryKey bool, outPath stri
 	// and is exactly the run that would file an unencrypted private key
 	// into a build log.
 	if !app.IsTerminal() || !app.errIsTerminal() {
+		// A command with no opt-out (rotate exists to produce a key) passes
+		// an empty skipFlag, and must not be told to pass a flag it does not
+		// have.
+		if skipFlag == "" {
+			return recoveryKeyNone, exitcode.New(exitcode.Usage,
+				"gage: this generates a recovery key and shows it once, which needs a terminal.\n"+
+					"gage: pass --recovery-key-out FILE to write it to a file instead.")
+		}
 		return recoveryKeyNone, exitcode.Newf(exitcode.Usage,
 			"gage: this generates a recovery key and shows it once, which needs a terminal.\n"+
 				"gage: pass --recovery-key-out FILE to write it to a file instead, or %s to\n"+
@@ -357,8 +365,7 @@ func confirmRecoveryKeySaved(app *App, secret string) error {
 		"gage: the recovery key was not confirmed.\n"+
 			"gage: the change is committed and that key is one of this vault's recipients, so it\n"+
 			"gage: is worth saving from the screen above — gage kept no copy and it cannot be shown\n"+
-			"gage: again. If it is already gone, generate a keypair with `age-keygen`, add it with\n"+
-			"gage: `gage recipient add`, and remove this one with `gage recipient remove`.")
+			"gage: again. If it is already gone, `gage recovery rotate` replaces it with a new one.")
 }
 
 // writeRecoveryKeyFile is --recovery-key-out: the key goes to a file
@@ -387,9 +394,8 @@ func writeRecoveryKeyFile(app *App, vaultName, path string, key gage.RecoveryKey
 		// the user about an operation they never ran.
 		return exitcode.Wrap(exitcode.Internal, fmt.Errorf(
 			"gage: %q's recipient list is committed, but writing its recovery key to %s failed: %w\n"+
-				"gage: that key is lost — generate a keypair with `age-keygen`, add it with\n"+
-				"gage: `gage recipient add <pubkey> --device %s`, and remove the one just written\n"+
-				"gage: off with `gage recipient remove`", vaultName, path, err, gage.RecoveryDeviceLabel))
+				"gage: that key is lost — `gage recovery rotate` replaces it with a new one",
+			vaultName, path, err))
 	}
 
 	writeOut(app.Err, []string{
