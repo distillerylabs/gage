@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -146,5 +147,76 @@ func TestHistoryDisabledWithoutAPath(t *testing.T) {
 	}
 	if err := h.close(); err != nil {
 		t.Errorf("close on a disabled history: %v", err)
+	}
+}
+
+// TestExpandGagePathExpandsTilde: a configured path is something a human
+// typed into a config file, where `~` is the ordinary way to say "my
+// home directory". Both spellings are handled — bare `~`, and `~/` with
+// something after it — and a path with no tilde is left alone.
+func TestExpandGagePathExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows, so both are set to
+	// keep this test meaningful on all three CI platforms.
+	t.Setenv("USERPROFILE", home)
+
+	t.Run("bare tilde", func(t *testing.T) {
+		got, err := expandGagePath("~")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != home {
+			t.Errorf("expandGagePath(\"~\") = %q, want %q", got, home)
+		}
+	})
+
+	t.Run("tilde with a subpath", func(t *testing.T) {
+		got, err := expandGagePath("~/notes/history")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(home, "notes", "history"); got != want {
+			t.Errorf("expandGagePath = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a tilde inside the path is not expanded", func(t *testing.T) {
+		// Only a leading ~ means home; "a~b" is a filename.
+		in := filepath.Join("some", "a~b")
+		got, err := expandGagePath(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != in {
+			t.Errorf("expandGagePath(%q) = %q, want it unchanged", in, got)
+		}
+	})
+}
+
+// TestVaultIsDirtyIsBestEffort: the {dirty} prompt token has nowhere to
+// report an error from, so anything it can't answer reads as clean. A
+// vault that isn't registered, and one whose files are gone, both fall
+// into that — the next real command will report the problem properly.
+func TestVaultIsDirtyIsBestEffort(t *testing.T) {
+	isolateXDG(t)
+
+	if got := vaultIsDirty("never-registered"); got {
+		t.Error("an unregistered vault rendered as dirty")
+	}
+
+	initEntryTestVault(t, "personal")
+	if got := vaultIsDirty("personal"); got {
+		t.Error("a freshly created vault rendered as dirty")
+	}
+
+	// And with the vault's files removed, it still answers rather than
+	// failing the prompt render.
+	entry := readGlobalConfigForTest(t).Vaults["personal"]
+	if err := os.RemoveAll(entry.Path); err != nil {
+		t.Fatal(err)
+	}
+	if got := vaultIsDirty("personal"); got {
+		t.Error("a vault whose files are gone rendered as dirty")
 	}
 }

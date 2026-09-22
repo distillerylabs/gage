@@ -254,3 +254,38 @@ func identityPathForTest(t *testing.T, vault, device string) string {
 	}
 	return path
 }
+
+// TestIdentityListOnADeviceHoldingNoneSaysSo is the state a device is in
+// immediately after `gage clone`: the vault is registered, and this
+// machine has no key for it yet. The answer names the command that fixes
+// that, and goes to stderr so a script listing identities gets an empty
+// stdout rather than prose.
+func TestIdentityListOnADeviceHoldingNoneSaysSo(t *testing.T) {
+	isolateXDG(t)
+	initVaultForTest(t, "personal", "--device", "laptop-1")
+
+	// The post-clone shape: the registration stays, the wrapped identity
+	// goes away.
+	id := readGlobalConfigForTest(t).Vaults["personal"].ID
+	dir, err := gage.IdentitiesDir(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCLI(t, []string{"identity", "list"}, "")
+	if res.Code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if res.Stdout != "" {
+		t.Errorf("stdout = %q, want nothing — there are no identities to list", res.Stdout)
+	}
+	if !strings.Contains(res.Stderr, "holds no identity") {
+		t.Errorf("stderr = %q, want it to say this device holds none", res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "gage identity add") {
+		t.Errorf("stderr = %q, want it to name the command that fixes this", res.Stderr)
+	}
+}

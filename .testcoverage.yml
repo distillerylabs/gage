@@ -1,9 +1,17 @@
 # Config for go-test-coverage, run by `make cover-check` after `make cover`.
 #
-# Only the overall figure gates for now: 80% total, set just below the
-# 85.7% measured when this was added so an ordinary change doesn't trip it.
-# File and package thresholds stay at 0 (report-only); add per-package
-# overrides here if a package needs a different bar.
+# Only the overall figure gates: 80% total. File and package thresholds
+# stay at 0 (report-only); add per-package overrides here if a package
+# needs a different bar.
+#
+# The threshold is deliberately well below what the suite actually
+# measures — 89.6% excluding the paths below, as of the R1 coverage work
+# (see doc/implementation/00_gage-cli/plans/test-coverage/). It is a
+# floor against a real regression, not a ratchet: setting it just under
+# the current figure makes every ordinary change that touches a little
+# untested error-handling turn CI red, which trains people to raise the
+# number rather than to look at what slipped. Raise it when the *floor*
+# should genuinely move, not to track the high-water mark.
 profile: coverage.out
 
 threshold:
@@ -11,8 +19,17 @@ threshold:
   package: 0
   total: 80
 
-# scripts/ holds standalone dev-only tools (e.g. resetlocalstate) that are
-# never shipped in the gage binary, so they don't count toward coverage.
+# Neither of these ships in the gage binary, so neither counts toward
+# coverage:
+#
+#   scripts/              standalone dev-only tools (e.g. resetlocalstate).
+#   internal/gage/gittest  test scaffolding — the ephemeral bare-repo
+#                          harness every sync test runs against. What is
+#                          uncovered in it is its own t.Fatalf branches,
+#                          which only fire when a fixture fails to build;
+#                          "test the test helper's panic paths" is not a
+#                          gap worth reporting as one.
 exclude:
   paths:
     - ^scripts/
+    - ^internal/gage/gittest/

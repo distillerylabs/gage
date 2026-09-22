@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chzyer/readline"
 
 	"github.com/distillerylabs/gage/internal/gage"
 	"github.com/distillerylabs/gage/internal/gage/config"
@@ -833,5 +837,181 @@ func TestOneShotOnlyCommandsReportPlainlyInSession(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "no vaults have been unlocked") {
 		t.Errorf("the session didn't survive the rejected command:\n%s", res.Stdout)
+	}
+}
+
+// TestSessionLockWithNothingUnlockedSaysSo: a bare `lock` over a session
+// that is holding no keys reports that rather than claiming to have
+// locked something. The distinction is the whole reason sessionLock
+// counts what was actually unlocked instead of echoing its arguments.
+func TestSessionLockWithNothingUnlockedSaysSo(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	res := runSessionScript(t, script(
+		"lock",
+		"exit",
+	))
+	if res.Code != 0 {
+		t.Fatalf("session exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "no vaults are unlocked in this session") {
+		t.Errorf("a bare lock over an empty session said nothing useful:\n%s", res.Stdout)
+	}
+	if strings.Contains(res.Stdout, "locked. run `use") {
+		t.Errorf("lock claimed to have locked a vault it never held:\n%s", res.Stdout)
+	}
+}
+
+// TestSessionCommandArgumentCountsAreChecked: each of the three session
+// verbs that takes a fixed number of arguments reports a usage error
+// rather than misinterpreting the extras. The session keeps running
+// afterwards — a typo is not a reason to drop the keys — which is what
+// the trailing `status` line checks.
+func TestSessionCommandArgumentCountsAreChecked(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"use with no argument", "use", "usage: use <vault>"},
+		{"use with two arguments", "use personal work", "usage: use <vault>"},
+		{"lock with two arguments", "lock personal work", "usage: lock [vault]"},
+		{"status with an argument", "status extra", "usage: status"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runSessionScript(t, script(tc.line, "status", "exit"))
+
+			// The session itself still exits cleanly: a bad command line
+			// inside a session is reported, not fatal.
+			if res.Code != 0 {
+				t.Fatalf("session exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+			}
+			if !strings.Contains(res.Stderr, tc.want) {
+				t.Errorf("stderr doesn't carry %q:\n%s", tc.want, res.Stderr)
+			}
+			// And it kept going rather than dropping out at the error.
+			if !strings.Contains(res.Stdout, "no vaults have been unlocked") {
+				t.Errorf("the session stopped at the usage error instead of continuing:\n%s", res.Stdout)
+			}
+		})
+	}
+}
+
+// TestSessionSkipsBlankLines: pressing Enter at the prompt, or typing
+// only spaces, is not a command — it must not reach the dispatcher and
+// report "unknown command".
+func TestSessionSkipsBlankLines(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	res := runSessionScript(t, script(
+		"",
+		"   ",
+		"\t",
+		"exit",
+	))
+	if res.Code != 0 {
+		t.Fatalf("session exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if strings.Contains(res.Stderr, "unknown command") {
+		t.Errorf("a blank line was dispatched as a command:\n%s", res.Stderr)
+	}
+}
+
+// TestSessionBareLockLocksEverythingItHolds is the other half of
+// TestSessionLockWithNothingUnlockedSaysSo: with keys actually held, a
+// bare `lock` names each vault it locked. It reports what was holding a
+// key rather than echoing its arguments, which is what lets it be
+// accurate about a session where some vaults are already locked.
+func TestSessionBareLockLocksEverythingItHolds(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+	initEntryTestVault(t, "work")
+
+	res := runSessionScript(t, script(
+		"use personal",
+		testPassphrase,
+		"use work",
+		testPassphrase,
+		"lock",
+		"status",
+		"exit",
+	))
+	if res.Code != 0 {
+		t.Fatalf("session exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	for _, name := range []string{"personal", "work"} {
+		if !strings.Contains(res.Stdout, name+" locked.") {
+			t.Errorf("a bare lock didn't report locking %q:\n%s", name, res.Stdout)
+		}
+	}
+	// And a second bare lock now has nothing left to lock.
+	if strings.Count(res.Stdout, "locked. run `use") != 2 {
+		t.Errorf("a bare lock reported a number of vaults other than the two it held:\n%s", res.Stdout)
+	}
+}
+
+// TestHistoryIgnoresBlankLinesAndUnreadableFiles: history is a
+// convenience, so neither a blank line nor a file it can't parse is
+// allowed to become an error in the middle of a working session.
+func TestHistoryIgnoresBlankLinesAndUnreadableFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history")
+	h, err := openHistory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.close() })
+
+	// A blank line — Enter at the prompt — is not a command and is not
+	// recorded.
+	for _, blank := range []string{"", "   ", "\t"} {
+		if err := h.add(blank); err != nil {
+			t.Errorf("history.add(%q) = %v, want nil", blank, err)
+		}
+	}
+	if got := h.lines(); len(got) != 0 {
+		t.Errorf("history recorded %v, want nothing for blank input", got)
+	}
+
+	// A real line is recorded, so the check above isn't passing because
+	// nothing is ever written.
+	if err := h.add("ls"); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.lines(); len(got) != 1 || got[0] != "ls" {
+		t.Errorf("history = %v, want exactly [ls]", got)
+	}
+
+	// A line past what bufio.Scanner will buffer makes the read fail;
+	// lines() answers "no history" rather than propagating it, since a
+	// session must start either way.
+	huge := append(bytes.Repeat([]byte("a"), bufio.MaxScanTokenSize+1), '\n')
+	if err := os.WriteFile(path, huge, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.lines(); got != nil {
+		t.Errorf("history.lines() on an unreadable file = %v, want nil", got)
+	}
+}
+
+// TestMapReadlineErrTranslatesCtrlC: a Ctrl-C inside a prompt is the
+// same "abandon this, keep the session" signal it is at the command
+// prompt, and every other error has to pass through unchanged so a real
+// failure isn't silently read as a cancellation.
+func TestMapReadlineErrTranslatesCtrlC(t *testing.T) {
+	if got := mapReadlineErr(readline.ErrInterrupt); !errors.Is(got, errInterrupted) {
+		t.Errorf("mapReadlineErr(ErrInterrupt) = %v, want errInterrupted", got)
+	}
+	other := errors.New("the terminal went away")
+	if got := mapReadlineErr(other); !errors.Is(got, other) {
+		t.Errorf("mapReadlineErr(%v) = %v, want it unchanged", other, got)
+	}
+	if got := mapReadlineErr(nil); got != nil {
+		t.Errorf("mapReadlineErr(nil) = %v, want nil", got)
 	}
 }

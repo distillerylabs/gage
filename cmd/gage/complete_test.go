@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/distillerylabs/gage/internal/gage"
 )
@@ -621,6 +624,140 @@ func TestSessionCompleterDoWiresCandidatesIntoReadlinesContract(t *testing.T) {
 			}
 			if !sliceEqual(got, tc.want) {
 				t.Errorf("Do(%q) candidates = %v, want %v", tc.partial, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveSessionCommandNameOnAnEmptyWord: an empty first token is
+// "unknown command", not "ambiguous". Every registered name is a prefix
+// match for "", so without the early return a stray empty token would
+// report every command in gage as a candidate.
+func TestResolveSessionCommandNameOnAnEmptyWord(t *testing.T) {
+	got, err := resolveSessionCommandName("")
+	if err != nil {
+		t.Fatalf("resolveSessionCommandName(\"\") = %v, want it left alone for the unknown-command path", err)
+	}
+	if got != "" {
+		t.Errorf("resolveSessionCommandName(\"\") = %q, want it unchanged", got)
+	}
+}
+
+// TestCompletionWordsOnNothingTyped: Tab at an empty prompt, and Tab
+// after nothing but whitespace, both mean "no words, no partial" — the
+// caller then offers the top-level names rather than trying to complete
+// a word that isn't there.
+func TestCompletionWordsOnNothingTyped(t *testing.T) {
+	for _, head := range []string{"", " ", "   ", "\t", " \t "} {
+		words, partial := completionWords(head)
+		if len(words) != 0 || partial != "" {
+			t.Errorf("completionWords(%q) = (%v, %q), want no words and no partial", head, words, partial)
+		}
+	}
+}
+
+// TestFlagCandidatesSkipsHiddenFlags: a hidden flag is hidden from help,
+// and completion is the other surface that would otherwise advertise it.
+// gage registers no hidden flags today, so this builds one — the point
+// is the rule, which has to hold the first time a hidden flag is added.
+func TestFlagCandidatesSkipsHiddenFlags(t *testing.T) {
+	cmd := &cobra.Command{Use: "demo"}
+	var shown, hidden string
+	cmd.Flags().StringVar(&shown, "shown", "", "an ordinary flag")
+	cmd.Flags().StringVar(&hidden, "secret-debug", "", "a hidden flag")
+	if err := cmd.Flags().MarkHidden("secret-debug"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := flagCandidates(cmd)
+	if !slices.Contains(got, "--shown") {
+		t.Errorf("flagCandidates() = %v, want it to offer --shown", got)
+	}
+	if slices.Contains(got, "--secret-debug") {
+		t.Errorf("flagCandidates() = %v, want it to leave the hidden flag out", got)
+	}
+}
+
+// TestSubcommandCandidatesSkipsHiddenChildren is the same rule one level
+// down. It also exercises the default-visible path for a pairing the
+// registry has never heard of: subcommandSessionVisible answers "visible"
+// for a child with no registry entry, since every real command is
+// registered (TestRegistryCompleteness enforces that) and the case only
+// arises for a Cobra child that isn't an invocable command at all —
+// which is exactly what the synthetic tree below is.
+func TestSubcommandCandidatesSkipsHiddenChildren(t *testing.T) {
+	parent := &cobra.Command{Use: "demo"}
+	parent.AddCommand(&cobra.Command{Use: "visible"})
+	parent.AddCommand(&cobra.Command{Use: "concealed", Hidden: true})
+
+	got := subcommandCandidates(parent)
+	if !slices.Contains(got, "visible") {
+		t.Errorf("subcommandCandidates() = %v, want it to offer the visible child", got)
+	}
+	if slices.Contains(got, "concealed") {
+		t.Errorf("subcommandCandidates() = %v, want it to leave the hidden child out", got)
+	}
+}
+
+// TestLeafPositionalCandidatesStopAfterTheFirstArgument: only the first
+// positional is completed. `rename <title> <new-title>` is the case that
+// makes this matter — completing the *new* title against the titles that
+// already exist would suggest exactly the collisions rename is for
+// avoiding.
+func TestLeafPositionalCandidatesStopAfterTheFirstArgument(t *testing.T) {
+	app := testApp()
+	root := NewRootCmd(app)
+
+	for _, name := range []string{"rename", "use", "lock", "show"} {
+		t.Run(name, func(t *testing.T) {
+			target, _, err := root.Find([]string{name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := leafPositionalCandidates(app, target, []string{"already-typed"}); got != nil {
+				t.Errorf("leafPositionalCandidates(%s, one arg already typed) = %v, want nothing", name, got)
+			}
+		})
+	}
+}
+
+// TestCompletingABareDashAtTheTopLevelOffersRootFlags: `-<Tab>` before
+// any command is asking about gage's own flags, not about command names.
+func TestCompletingABareDashAtTheTopLevelOffersRootFlags(t *testing.T) {
+	app := testApp()
+	root := NewRootCmd(app)
+
+	got := completionCandidates(app, root, nil, "-")
+	if len(got) == 0 {
+		t.Fatal("completing a bare dash offered nothing")
+	}
+	for _, g := range got {
+		if !strings.HasPrefix(g, "-") {
+			t.Errorf("completing a bare dash offered %q, which is not a flag; got %v", g, got)
+		}
+	}
+	// And it is the root's own flags, not a command's.
+	if !slices.Equal(got, flagCandidates(root)) {
+		t.Errorf("completing a bare dash = %v, want root's flags %v", got, flagCandidates(root))
+	}
+}
+
+// TestLeafPositionalCandidatesOffersNothingForACommandWithNoQuery: only
+// use/lock and the entry-query commands have a first positional worth
+// completing. Everything else — `sync`, say — gets nothing rather than a
+// list of entry titles that mean nothing to it.
+func TestLeafPositionalCandidatesOffersNothingForACommandWithNoQuery(t *testing.T) {
+	app := testApp()
+	root := NewRootCmd(app)
+
+	for _, name := range []string{"sync", "ls", "init"} {
+		t.Run(name, func(t *testing.T) {
+			target, _, err := root.Find([]string{name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := leafPositionalCandidates(app, target, nil); got != nil {
+				t.Errorf("leafPositionalCandidates(%s) = %v, want nothing", name, got)
 			}
 		})
 	}

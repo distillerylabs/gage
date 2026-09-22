@@ -1056,3 +1056,127 @@ func TestConcurrentReadsDoNotBlockEachOther(t *testing.T) {
 		}
 	}
 }
+
+// TestTrimOneTrailingNewline: exactly one line ending is stripped, so a
+// value that itself ends in a blank line keeps it. Both endings are
+// handled, because a value typed on Windows arrives with CRLF and
+// losing only the "\n" would leave a stray carriage return inside the
+// secret.
+func TestTrimOneTrailingNewline(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"lf", "secret\n", "secret"},
+		{"crlf", "secret\r\n", "secret"},
+		{"two lf strips one", "secret\n\n", "secret\n"},
+		{"crlf then lf strips the crlf", "secret\n\r\n", "secret\n"},
+		{"no trailing newline", "secret", "secret"},
+		{"empty", "", ""},
+		{"only a newline", "\n", ""},
+		{"only a crlf", "\r\n", ""},
+		{"lone cr is not a line ending", "secret\r", "secret\r"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := trimOneTrailingNewline(c.in); got != c.want {
+				t.Errorf("trimOneTrailingNewline(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestShortEntryIDLeavesShortStringsAlone: shortEntryID truncates for
+// display, and a string already at or under the width must come back
+// whole rather than being padded or re-sliced.
+func TestShortEntryIDLeavesShortStringsAlone(t *testing.T) {
+	for _, in := range []string{"", "abc", strings.Repeat("a", shortEntryIDLen)} {
+		if got := shortEntryID(in); got != in {
+			t.Errorf("shortEntryID(%q) = %q, want it unchanged", in, got)
+		}
+	}
+	long := strings.Repeat("b", shortEntryIDLen+5)
+	if got := shortEntryID(long); got != long[:shortEntryIDLen] {
+		t.Errorf("shortEntryID(%q) = %q, want the first %d characters", long, got, shortEntryIDLen)
+	}
+}
+
+// TestLsPlaceholdersForMissingColumns: gage always stamps both dates and
+// an updated_by, so these stand in for an entry hand-written without
+// them. A zero time must not print as "0001-01-01", which reads like a
+// real date nobody chose, and an empty column still has to occupy its
+// place so the row keeps its shape.
+func TestLsPlaceholdersForMissingColumns(t *testing.T) {
+	if got := lsDate(gage.Timestamp{}); got != lsMissing {
+		t.Errorf("lsDate(zero) = %q, want %q", got, lsMissing)
+	}
+	if got := lsField(""); got != lsMissing {
+		t.Errorf("lsField(\"\") = %q, want %q", got, lsMissing)
+	}
+
+	// And a real value is rendered rather than replaced.
+	stamped := gage.NewTimestamp(time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC))
+	if got := lsDate(stamped); got != "2026-03-04" {
+		t.Errorf("lsDate(stamped) = %q, want the UTC date", got)
+	}
+	if got := lsField("laptop-1"); got != "laptop-1" {
+		t.Errorf("lsField(%q) = %q, want it unchanged", "laptop-1", got)
+	}
+}
+
+// TestAlignCatOutputLeavesNonMappingInputAlone: cat's alignment pass
+// rewrites a YAML mapping's key column, and anything that isn't one is
+// returned untouched rather than mangled. The bytes it is handed come
+// from a decrypted entry, so "not a mapping" means a hand-written or
+// damaged entry — exactly when passing the content through unchanged
+// matters most.
+func TestAlignCatOutputLeavesNonMappingInputAlone(t *testing.T) {
+	id := uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	for _, in := range []string{
+		"- just\n- a sequence\n",
+		"a plain scalar\n",
+		"title: [this is not\nvalid: yaml\n",
+		"",
+	} {
+		if got := alignCatOutput(id, []byte(in)); string(got) != in {
+			t.Errorf("alignCatOutput(%q) = %q, want it returned unchanged", in, got)
+		}
+	}
+}
+
+// TestLsAndSearchPrintNothingWhenThereIsNothing: an empty vault and a
+// search that matches nothing both write no rows at all. A header or a
+// blank line would break `gage ls | wc -l` and the shell pipelines the
+// design doc's scripting story rests on.
+func TestLsAndSearchPrintNothingWhenThereIsNothing(t *testing.T) {
+	isolateXDG(t)
+	initEntryTestVault(t, "personal")
+
+	for _, args := range [][]string{
+		{"ls"},
+		{"search", "nothing-matches-this"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			res := runCLI(t, args, "")
+			if res.Code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+			}
+			if res.Stdout != "" {
+				t.Errorf("stdout = %q, want nothing at all", res.Stdout)
+			}
+		})
+	}
+}
+
+// TestPadKeyLinesWithNoKeysIsANoOp: cat's key-column alignment runs over
+// whatever lines it recognized as keys, and an entry it recognized none
+// in — a non-mapping document, say — must come back untouched rather
+// than padded to a width computed from nothing.
+func TestPadKeyLinesWithNoKeysIsANoOp(t *testing.T) {
+	lines := []string{"one", "two"}
+	padKeyLines(lines, nil)
+	if lines[0] != "one" || lines[1] != "two" {
+		t.Errorf("padKeyLines with no keys rewrote its input: %v", lines)
+	}
+}

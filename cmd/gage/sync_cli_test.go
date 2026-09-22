@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/distillerylabs/gage/internal/gage"
 	"github.com/distillerylabs/gage/internal/gage/exitcode"
 	"github.com/distillerylabs/gage/internal/gage/gitrepo"
 	"github.com/distillerylabs/gage/internal/gage/gittest"
@@ -400,4 +402,133 @@ func TestSyncRefusesOverUncommittedChanges(t *testing.T) {
 	if fresh.Exists(t, "scratch.txt") {
 		t.Error("a half-typed local file was published by an automatic merge")
 	}
+}
+
+// stderrOf returns what a testApp's stderr buffer collected, with the
+// type assertion checked so errcheck stays happy about it.
+func stderrOf(t *testing.T, app *App) string {
+	t.Helper()
+	buf, ok := app.Err.(*bytes.Buffer)
+	if !ok {
+		t.Fatalf("app.Err is %T, want a *bytes.Buffer", app.Err)
+	}
+	return buf.String()
+}
+
+// TestSyncLineSaysAlreadyInSyncWhenThereWasNothingToDo is syncLine's
+// default arm: there *is* an origin, and nothing was pulled, merged or
+// pushed — so the answer is "already in sync", not the local-only
+// wording TestSyncOnAVaultWithNoRemoteSaysSoAndSucceeds pins.
+//
+// Driven against syncLine directly rather than through `gage sync`,
+// because `gage sync` cannot currently produce the zero report this arm
+// needs: every successful push call sets SyncReport.Pushed, including a
+// push that sent nothing. See **F2** in the R1 plan doc. When that is
+// fixed, this can become an end-to-end `gage sync` assertion.
+func TestSyncLineSaysAlreadyInSyncWhenThereWasNothingToDo(t *testing.T) {
+	isolateXDG(t)
+	path, _ := initVaultWithRemote(t, "personal")
+	v := &gage.Vault{Name: "personal", Path: path}
+
+	got := syncLine(v, gage.SyncReport{})
+	if !strings.Contains(got, "already in sync with origin") {
+		t.Errorf("syncLine(zero report) = %q, want the already-in-sync wording", got)
+	}
+	if !strings.Contains(got, "personal") {
+		t.Errorf("syncLine = %q, want it to name the vault", got)
+	}
+}
+
+// TestSyncReportsAPushEvenWhenNothingWasSent documents F2 as it stands
+// rather than asserting the behaviour is right: `gage sync` on a vault
+// that is already in sync reports a push, because RemoteSyncer.Push
+// returns only an error and discards gitrepo.Push's "did anything
+// actually get sent" answer.
+//
+// It is pinned so the current wording is not mistaken for correct, and
+// so that fixing F2 turns this test red at exactly the line that
+// describes the fix — at which point the assertion flips to
+// "already in sync" and the test above folds into it.
+func TestSyncReportsAPushEvenWhenNothingWasSent(t *testing.T) {
+	isolateXDG(t)
+	path, _ := initVaultWithRemote(t, "personal")
+
+	// Nothing has changed since init published the vault.
+	ahead, err := gitrepo.AheadCount(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ahead != 0 {
+		t.Fatalf("the vault is %d commits ahead of origin; this test needs it in sync", ahead)
+	}
+
+	res := runCLI(t, []string{"sync"}, "")
+	if res.Code != 0 {
+		t.Fatalf("sync exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "pushed") {
+		t.Skipf("sync no longer claims a push with nothing to send — F2 is fixed; "+
+			"tighten this test and TestSyncLineSaysAlreadyInSyncWhenThereWasNothingToDo. Got: %q", res.Stdout)
+	}
+}
+
+// TestPluralEntries: the counts in sync's summary are read by people,
+// not parsed, so "1 entry" is spelled out rather than rendered as
+// "1 entries".
+func TestPluralEntries(t *testing.T) {
+	cases := map[int]string{0: "0 entries", 1: "1 entry", 2: "2 entries", 11: "11 entries"}
+	for n, want := range cases {
+		if got := pluralEntries(n); got != want {
+			t.Errorf("pluralEntries(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// TestReportConflictsSaysRecipientFilesAreNeverMerged: a recipient-file
+// divergence is more serious than an entry one — the merged result would
+// be an access list neither device wrote — so the report says plainly
+// that gage will never merge it, rather than leaving a user waiting for
+// a resolution prompt that is never coming.
+func TestReportConflictsSaysRecipientFilesAreNeverMerged(t *testing.T) {
+	isolateXDG(t)
+	path, _ := initVaultWithRemote(t, "personal")
+
+	v := &gage.Vault{Name: "personal", Path: path}
+
+	t.Run("a recipient-file conflict", func(t *testing.T) {
+		app := testApp()
+		reportConflicts(app, v, gage.SyncReport{
+			Diverged:  true,
+			Conflicts: []string{".age-recipients"},
+		})
+		out := stderrOf(t, app)
+		if !strings.Contains(out, ".age-recipients") {
+			t.Errorf("the report doesn't name the conflicting path:\n%s", out)
+		}
+		if !strings.Contains(out, "never merge them for you") {
+			t.Errorf("the report doesn't say recipient files are never merged:\n%s", out)
+		}
+		if !strings.Contains(out, path) {
+			t.Errorf("the report doesn't say where the vault is:\n%s", out)
+		}
+	})
+
+	t.Run("an entry conflict says no such thing", func(t *testing.T) {
+		app := testApp()
+		reportConflicts(app, v, gage.SyncReport{
+			Diverged:  true,
+			Conflicts: []string{"entries/11111111-1111-4111-8111-111111111111.age"},
+		})
+		if out := stderrOf(t, app); strings.Contains(out, "never merge them for you") {
+			t.Errorf("an ordinary entry conflict was described as unmergeable:\n%s", out)
+		}
+	})
+
+	t.Run("nothing conflicting reports nothing", func(t *testing.T) {
+		app := testApp()
+		reportConflicts(app, v, gage.SyncReport{})
+		if out := stderrOf(t, app); out != "" {
+			t.Errorf("a clean report printed %q, want nothing", out)
+		}
+	})
 }

@@ -600,3 +600,38 @@ func TestApproveSurfacesAWrongVaultRequestWithoutRetrying(t *testing.T) {
 		t.Errorf("the refused request's contents were rendered anyway:\n%s", res.Stdout)
 	}
 }
+
+// TestApproveWithAnEmptyPromptedCodeApprovesNothing: an empty answer at
+// the code prompt is how a human says "cancel" — the alternative is a
+// prompt with no way out short of a signal. It must end the command
+// having granted nothing, rather than being retried as a wrong code.
+func TestApproveWithAnEmptyPromptedCodeApprovesNothing(t *testing.T) {
+	_, _, _, _ = enrolledDevice(t, "personal", "phone-1")
+
+	p := &fakePrompter{
+		passphrases: []string{testPassphrase},
+		values:      []string{""},
+	}
+	res, _ := runCLIWithPrompter(t, []string{"recipient", "approve"}, "", false, p)
+
+	if res.Code != int(exitcode.Conflict) {
+		t.Fatalf("exit code = %d, want %d (Conflict); stderr=%s", res.Code, exitcode.Conflict, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "nothing was approved") {
+		t.Errorf("stderr = %q, want it to say nothing was granted", res.Stderr)
+	}
+	// Asked once and stopped: an empty answer is a cancellation, not a
+	// wrong code to retry.
+	if len(p.valuePrompts) != 1 {
+		t.Errorf("the code was asked for %d times, want 1 — an empty answer cancels", len(p.valuePrompts))
+	}
+
+	// And the request is still pending, so cancelling costs nothing.
+	pending := runCLI(t, []string{"recipient", "pending"}, "")
+	if pending.Code != 0 {
+		t.Fatalf("recipient pending: exit %d, stderr=%s", pending.Code, pending.Stderr)
+	}
+	if strings.Contains(pending.Stdout, "no pending") {
+		t.Errorf("a cancelled approval cleared the request:\n%s", pending.Stdout)
+	}
+}

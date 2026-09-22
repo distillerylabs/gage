@@ -127,7 +127,7 @@ stacked: `main` <- `27-test-coverage` (these docs) <- R0 <- R1.
 | # | Milestone | Model | Depends on | Status |
 |---|---|---|---|---|
 | R0 | [Library coverage](r0-library-coverage.md) | Sonnet | none | `[x]` |
-| R1 | [CLI coverage and the gate config](r1-cli-coverage.md) | Opus | R0 | `[ ]` |
+| R1 | [CLI coverage and the gate config](r1-cli-coverage.md) | Opus | R0 | `[x]` |
 
 R0 is additive, well-specified, pattern-following library work — Sonnet's
 case exactly. R1 is Opus because its first tasks are a security boundary
