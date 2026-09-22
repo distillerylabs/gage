@@ -793,6 +793,23 @@ designed for — which further favors asking over assuming.
 
 ---
 
+### `[x]` Q-RECOVERY-KEY — Does `gage init` generate an offline recovery key? {#q-recovery-key}
+
+**Blocks:** nothing; tracked by [#7](https://github.com/distillerylabs/gage/issues/7),
+planned in [plans/recovery-key](../recovery-key/index.md).
+
+A vault whose only recipient is one device's wrapped identity file has no
+recovery story. Resolved: `init` generates a second X25519 keypair by
+default and registers it as `recovery-paper-key`. Seven sub-decisions
+(D1-D7) are recorded in the
+[plan index](../recovery-key/index.md#resolved-decisions); the one worth
+remembering is **D7: the key is a bare age secret, not passphrase-wrapped**,
+so its security is physical custody and the output and docs say so.
+`gage` keeps no copy, which preserves "recovery problem, not a backup
+problem".
+
+---
+
 ### `[ ]` Q-RELEASE — Release engineering and distribution {#q-release}
 
 **Blocks:** nothing; needed before a first public release.
