@@ -230,3 +230,113 @@ func TestHelpOutputIsGrouped(t *testing.T) {
 		t.Errorf("grouped commands missing from output:\n%s", res.Stdout)
 	}
 }
+
+// ---------------------------------------------------------------------
+// Parent commands list their children
+// ---------------------------------------------------------------------
+
+// TestParentCommandHelpListsItsChildren covers every group/parent command
+// in the tree: renderCommandHelp is the one function all of them share
+// (HelpFunc is inherited down the whole command tree, see installHelp),
+// so a fix that only covered `recovery` would leave the others as broken
+// as they already were.
+func TestParentCommandHelpListsItsChildren(t *testing.T) {
+	tests := []struct {
+		parent   string
+		children []string
+	}{
+		{"recovery", []string{"enroll", "rotate", "verify"}},
+		{"recipient", []string{"add", "remove", "list", "verify", "pending", "approve", "deny"}},
+		{"vault", []string{"list", "info", "remove", "set-default"}},
+		{"auth", []string{"login", "status", "logout"}},
+		{"git", []string{"set-remote"}},
+		{"identity", []string{"add", "enroll", "list"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.parent, func(t *testing.T) {
+			res := runCLI(t, []string{tc.parent}, "")
+			if res.Code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
+			}
+			if !strings.Contains(res.Stdout, "Available Commands:") {
+				t.Errorf("no \"Available Commands:\" section:\n%s", res.Stdout)
+			}
+			for _, child := range tc.children {
+				if !strings.Contains(res.Stdout, child) {
+					t.Errorf("%q's help doesn't mention child %q:\n%s", tc.parent, child, res.Stdout)
+				}
+			}
+		})
+	}
+}
+
+// TestParentCommandHelpMatchesAcrossBareDashHelpAndHelpCommand: `gage
+// recovery`, `gage recovery --help`, and `gage help recovery` must all
+// show the same children listing — they share one HelpFunc/one help
+// command implementation, and a listing that appeared on only one
+// spelling would be a regression waiting to happen.
+//
+// This compares the "Available Commands:" section specifically, not the
+// whole output byte-for-byte: `gage help <cmd>` already renders every
+// command's Flags section (and the "[flags]" in Usage) differently from
+// `<cmd> --help`, because root.Find doesn't run Cobra's lazy
+// InitDefaultHelpFlag the way actually executing the command does — see
+// gage help identity add, a leaf command untouched by this fix, which is
+// missing "-h, --help" the same way. That gap predates this issue and is
+// unrelated to it; asserting full equality here would make this test
+// about that gap instead of about what #23 is for.
+func TestParentCommandHelpMatchesAcrossBareDashHelpAndHelpCommand(t *testing.T) {
+	extract := func(out string) string {
+		i := strings.Index(out, "Available Commands:")
+		j := strings.Index(out, "\nFlags:")
+		if i < 0 {
+			return ""
+		}
+		if j < 0 || j < i {
+			return out[i:]
+		}
+		return out[i:j]
+	}
+
+	bare := extract(runCLI(t, []string{"recovery"}, "").Stdout)
+	dashHelp := extract(runCLI(t, []string{"recovery", "--help"}, "").Stdout)
+	helpCmd := extract(runCLI(t, []string{"help", "recovery"}, "").Stdout)
+
+	if bare == "" {
+		t.Fatal("gage recovery has no \"Available Commands:\" section to compare")
+	}
+	if bare != dashHelp {
+		t.Errorf("gage recovery's children list != gage recovery --help's:\n%q\nvs\n%q", bare, dashHelp)
+	}
+	if bare != helpCmd {
+		t.Errorf("gage recovery's children list != gage help recovery's:\n%q\nvs\n%q", bare, helpCmd)
+	}
+}
+
+// TestParentCommandChildrenListedWithTheirShortText: a bare name with no
+// description would be exactly as unhelpful as no list at all.
+func TestParentCommandChildrenListedWithTheirShortText(t *testing.T) {
+	res := runCLI(t, []string{"recovery"}, "")
+	if res.Code != 0 {
+		t.Fatalf("exit code = %d; stderr=%s", res.Code, res.Stderr)
+	}
+	want, ok := findCommand("recovery enroll")
+	if !ok {
+		t.Fatal("recovery enroll missing from the registry")
+	}
+	if !strings.Contains(res.Stdout, want.Short) {
+		t.Errorf("recovery's help doesn't show enroll's Short text (%q):\n%s", want.Short, res.Stdout)
+	}
+}
+
+// TestLeafCommandHelpUnchangedByTheChildrenListing: a command with no
+// children must not grow an empty "Available Commands:" section.
+func TestLeafCommandHelpUnchangedByTheChildrenListing(t *testing.T) {
+	res := runCLI(t, []string{"recovery", "verify", "--help"}, "")
+	if res.Code != 0 {
+		t.Fatalf("exit code = %d; stderr=%s", res.Code, res.Stderr)
+	}
+	if strings.Contains(res.Stdout, "Available Commands:") {
+		t.Errorf("a leaf command grew an empty children section:\n%s", res.Stdout)
+	}
+}
