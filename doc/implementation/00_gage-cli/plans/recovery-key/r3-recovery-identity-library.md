@@ -28,66 +28,123 @@ lost device. Nothing here prints or prompts beyond the existing `Prompter`.
 
 ## Decisions to make first
 
-None open. Two details to settle in the milestone rather than leave to the
-code:
+None open on entry. Both planned details were settled as written — the
+commit message is `gage: recovery enroll <device>, retire
+recovery-paper-key (reencrypt)`, and validation runs against the final
+list. Four more were settled while implementing:
 
-- **Commit message.** One message naming the device added and the recovery
-  key retired, in the style of the existing recipient commits, which name
-  devices because a recipient commit's own diff is plaintext anyway.
-- **Order inside the lock.** Validate against the *final* recipient list
-  before writing anything, so a refusal leaves the tree untouched.
+- **`RequireFullAccess` always runs inside the lock**, unlike
+  `AddRecipient`, which runs it before the lock when the tree is clean and
+  inside when it is dirty. `withVaultWrite` has just reset the tree, so one
+  in-lock call reads exactly the state the re-encryption will read and
+  there is no clean/dirty case to get wrong. The ordering property
+  `AddRecipient`'s comment cares about is kept: it is still ahead of the
+  first byte written and of every question asked.
+- **Collisions are checked against the final list, not the current one.**
+  Rebuilding a machine under the name it always had
+  (`--replaces laptop-1` plus `--device laptop-1`) is the ordinary case,
+  and a check against the current list would refuse it. `applySwap` is
+  pure so every refusal happens before a byte is written.
+- **A `--replaces` label that matches nobody is an error**, not a no-op, so
+  a typo cannot silently leave the lost device a recipient.
+- **`RecoverDevice` zeroes the caller's buffer; `VerifyRecoveryKey` does
+  not.** The asymmetry is deliberate and now documented on both: verify
+  returns immediately having compared a public key, while `RecoverDevice`
+  holds the secret across a lock, a full re-encryption and a push. Callers
+  that need the key afterwards must pass a copy — the interrupted-swap test
+  does exactly that.
+
+## Found by review
+
+Two defects were found by a `/code-review` pass after the milestone was
+first reported done, and fixed on the same branch:
+
+- **The retired key could be re-added by the swap that retired it.**
+  `applySwap` removes the recovery label *before* checking the additions
+  for collisions, so by then the retired key looks like any unused public
+  key. `RecoverDevice({Device: "laptop-2", Pubkey: <the recovery pubkey>})`
+  left the bare, passphrase-less secret a permanent *device* recipient
+  while reporting it retired; passing it as `NewRecoveryPubkey` re-seated
+  it under its own label. This is the one collision `swapRecipients`
+  structurally cannot catch, so `checkRecoverSpec` now takes the retired
+  public key and refuses both shapes (`ErrRecipientExists`, `Conflict`).
+- **A relative `--recovery-key-out` skipped the "inside a vault" guard**
+  (`cmd/gage/recoverykey.go`). The ancestor walk started at
+  `filepath.Dir(path)` with no `Abs`, and `filepath.Dir(".")` is `"."`, so
+  a relative destination walked its own prefix, never reached the real
+  ancestors, and was allowed — landing the key in the directory the next
+  reset deletes from. `--recovery-key-out recovery.key` run from inside a
+  vault is the likely spelling, not an exotic one. Every existing test
+  used absolute paths, which is why R1's suite missed it.
+
+The same pass raised a third point that is **deferred to R4 rather than
+fixed here**: `recovery verify` matches any recipient's key, while
+`recoveryIdentity` requires the recovery label, so verify can pass a key
+that enroll will refuse. It is R4's to settle because it is only wrong once
+enroll exists, and the fix is a decision about what verify claims rather
+than a defect in this milestone. See R4's "Decisions to make first".
 
 ## Tasks
 
-- [ ] `(*Vault).recoveryIdentity(secret, p)`, unexported: parse the secret
+- [x] `(*Vault).recoveryIdentity(secret, p)`, unexported: parse the secret
       into a `memlock.Alloc`'d buffer, require its public key to be the
       recipient labelled `RecoveryDeviceLabel`, build an `Identity` with
       `device = RecoveryDeviceLabel` via `newIdentity`. Only the functions
       below call it, and each `Close`s it on return.
-- [ ] Shared unexported `swapRecipients`: under `withVaultWrite`,
+- [x] Shared unexported `swapRecipients`: under `withVaultWrite`,
       `requireRecipientsInSync`, `confirmRecipientTrust` (kept, D12),
       validate the final list (duplicate key, duplicate label, at least one
       recipient remains), `RequireFullAccess`, then `commitRecipientList`
       with a computed list and one commit message. It does not go through
       `RemoveRecipient`, so `confirmSelfRemoval` never fires.
-- [ ] `(*Vault).RecoverDevice(RecoverSpec, secret, p) (RecoverResult, error)`.
+- [x] `(*Vault).RecoverDevice(RecoverSpec, secret, p) (RecoverResult, error)`.
       `RecoverSpec{Device, Pubkey, Replaces, NewRecoveryPubkey}`. One
       commit: add `Device`; remove the used recovery recipient; add
       `NewRecoveryPubkey` as the new `recovery-paper-key` when non-empty;
       remove `Replaces` when set. Calls `syncOnUnlock` first, because this
       path skips `Unlock` and would otherwise re-encrypt on a stale tip.
-- [ ] Typed errors, each with a pinned exit code and a test:
+- [x] Typed errors, each with a pinned exit code and a test:
       `ErrNotRecoveryKey` (a valid key that is not the recovery recipient;
-      `LockedOrAuth`), `ErrLocalIdentityExists` (`Usage`); reuse
-      `ErrRecipientExists`, `ErrNotARecipient`, `ErrMalformedRecoveryKey`.
-- [ ] Error text never contains the pasted key (age's parse errors can
+      `LockedOrAuth`); reuse `ErrRecipientExists`, `ErrNotARecipient`,
+      `ErrMalformedRecoveryKey`. (`ErrLocalIdentityExists` was listed here
+      and has moved to R4: it is the CLI refusing to overwrite a local
+      identity *file*, and the library never touches one.)
+- [x] Error text never contains the pasted key (age's parse errors can
       quote it; do not wrap them).
+- [x] The retired key cannot be re-added by the same swap, as the enrolled
+      device's key or as its own replacement.
 
 ## Tests (write first)
 
-- [ ] `recoveryIdentity` accepts the recovery-labelled key and refuses a
+- [x] `recoveryIdentity` accepts the recovery-labelled key and refuses a
       device key, a valid stranger, and garbage, with the pinned errors and
       exit codes.
-- [ ] No error, from any path, contains the input secret.
-- [ ] `RecoverDevice` yields exactly the expected recipient list, in
+- [x] No error, from any path, contains the input secret.
+- [x] `RecoverDevice` yields exactly the expected recipient list, in
       `config.toml` and `.age-recipients`, in **one** new commit.
-- [ ] Every entry decrypts with the new device key and with the new
+- [x] Every entry decrypts with the new device key and with the new
       recovery key; the old recovery key does not open ciphertext written
       after the swap.
-- [ ] `Replaces` removes the lost device's recipient in the same commit.
-- [ ] Refusals write nothing and leave HEAD untouched: duplicate key,
+- [x] `Replaces` removes the lost device's recipient in the same commit.
+- [x] Refusals write nothing and leave HEAD untouched: duplicate key,
       duplicate label, `Replaces` naming an absent device or the recovery
-      label, and a swap that would leave zero recipients.
-- [ ] A failure partway through leaves HEAD untouched (reuse the crash
+      label, a swap that would leave zero recipients, and the retired key
+      offered back as either the device key or the new recovery key.
+- [x] A failure partway through leaves HEAD untouched (reuse the crash
       simulation pattern in `enrollapproveatomic_test.go`).
-- [ ] M10's confirmation still fires, and a declining prompter aborts with
+- [x] M10's confirmation still fires, and a declining prompter aborts with
       nothing written.
-- [ ] `updated_by` on every entry is unchanged.
-- [ ] The secret buffer is zeroed after the call returns, on success and on
+- [x] `updated_by` on every entry is unchanged.
+- [x] The secret buffer is zeroed after the call returns, on success and on
       every failure.
-- [ ] `forbidigo` stays clean: nothing in `internal/gage` prints.
+- [x] `forbidigo` stays clean: nothing in `internal/gage` prints.
 
 ## Definition of done
 
 Every item green on all three CI platforms, `make lint` and `make test`
 clean, and no exported way to obtain a recovery-scoped `Identity`.
+
+Met. 33 tests, written first, including two added by the post-milestone
+secret-handling review — see "Found by review" below. The enforcement claim holds structurally:
+`recoveryIdentity` is unexported and `Identity`'s fields are unexported, so
+outside `internal/gage` there is no way to obtain one.

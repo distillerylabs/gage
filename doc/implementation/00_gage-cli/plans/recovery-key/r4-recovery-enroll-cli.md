@@ -26,8 +26,32 @@ identity, with the used key retired and a fresh recovery key in hand.
 
 ## Decisions to make first
 
-None open. Wording of the messages is an implementation detail; pin what
-matters in tests.
+**One, pulled in from the R3 review: what `recovery verify` should say
+about a key that is a recipient but not the recovery one.**
+
+`VerifyRecoveryKey` matches any recipient's public key;
+`recoveryIdentity` (R3) additionally requires the label to be exactly
+`recovery-paper-key`. So today a user whose stored key is registered under
+some other label is told "that key is a recipient of vault X", and then
+refused with `ErrNotRecoveryKey` at the moment it matters. Verify is the
+check the docs tell people to trust, so it must not pass a key that enroll
+will reject.
+
+The two answers are both true and they are not the same claim, which is
+why this needs deciding rather than just fixing:
+
+- the key **decrypts this vault** (so `age -d -i` recovers the secrets), and
+- the key **can run `recovery enroll`** (so gage itself is recoverable).
+
+Recommendation: keep exit 0 when the key is a recipient — that is the claim
+the user's backup makes, and it is true — but report the two separately,
+naming the label the key is registered under and saying plainly that
+`recovery enroll` needs the `recovery-paper-key` one. A non-zero exit would
+tell someone whose backup genuinely works that it does not. Settle the
+exact wording and exit code here, with tests, before writing the command.
+
+Wording of the other messages is an implementation detail; pin what matters
+in tests.
 
 ## Tasks
 
@@ -39,8 +63,10 @@ matters in tests.
          with `planRecoveryKey` (terminal on stdin and stderr, or
          `--recovery-key-out`, or `--no-new-recovery-key`); refuse before
          any prompt;
-      2. refuse an existing local identity file for the device without ever
-         asking for its passphrase, and a name already used by a recipient
+      2. refuse an existing local identity file for the device
+         (`ErrLocalIdentityExists`, `Usage` — moved here from R3, since the
+         library never touches a local identity file) without ever asking
+         for its passphrase, and refuse a name already used by a recipient
          unless it is the `--replaces` target;
       3. paste the recovery key through masked `Value` and
          `VerifyRecoveryKey` it, so a wrong paste costs no passphrase entry;
@@ -53,6 +79,9 @@ matters in tests.
 - [ ] `gage clone`'s no-identity message and the `ErrNoLocalIdentity` text
       point at `gage recovery enroll`.
 - [ ] `--recovery-key-out` reuses the R1 destination rules unchanged.
+- [ ] `recovery verify` distinguishes "is a recipient" from "can run
+      `recovery enroll`", per the decision above, so it never passes a key
+      enroll will refuse.
 
 ## Tests (write first, in-process via `runCLIWithPrompter`)
 
@@ -77,6 +106,10 @@ matters in tests.
       (the new one exactly once).
 - [ ] The pasted key is never echoed on stdout or stderr.
 - [ ] Registry completeness and `gage help` list the command.
+- [ ] `recovery verify` on a key registered under a non-recovery label says
+      so, names that label, and does not claim the key can be used to
+      enroll; on the real recovery key it says both are true. Whatever exit
+      codes the decision above settles on are pinned here.
 
 ## Definition of done
 

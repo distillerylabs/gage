@@ -145,7 +145,19 @@ func checkRecoveryKeyOutIsNotGages(path, vaultPath string) error {
 
 	// Any other vault, found the way a vault is recognizable from the
 	// outside, so this catches registered and unregistered ones alike.
-	for dir := filepath.Dir(path); ; {
+	//
+	// The walk starts from an absolute path, and that is load-bearing
+	// rather than tidiness: filepath.Dir(".") is ".", so a relative
+	// destination would walk its own prefix forever-ish, never reach the
+	// real ancestors, find no .gage/config.toml, and be allowed — landing
+	// the key in precisely the directory the next reset deletes from. A
+	// bare `--recovery-key-out recovery.key` run from inside a vault is
+	// the likely spelling, not an exotic one.
+	start, err := filepath.Abs(path)
+	if err != nil {
+		return exitcode.Wrap(exitcode.Usage, err)
+	}
+	for dir := filepath.Dir(start); ; {
 		if _, err := os.Stat(filepath.Join(dir, ".gage", "config.toml")); err == nil {
 			return exitcode.Newf(exitcode.Usage,
 				"gage: %s is inside the vault at %s; gage resets a vault's working tree after an\n"+

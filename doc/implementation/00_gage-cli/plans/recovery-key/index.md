@@ -137,7 +137,7 @@ page-locked. The buffers gage owns are zeroed.
 
 | # | Milestone | Model | Depends on | Status |
 |---|---|---|---|---|
-| R3 | [Recovery identity, library](r3-recovery-identity-library.md) | Opus | R2 | `[ ]` |
+| R3 | [Recovery identity, library](r3-recovery-identity-library.md) | Opus | R2 | `[x]` |
 | R4 | [`gage recovery enroll`](r4-recovery-enroll-cli.md) | Opus | R3 | `[ ]` |
 | R5 | [`gage recovery rotate` and docs](r5-recovery-rotate-and-docs.md) | Sonnet | R3 (lands after R4) | `[ ]` |
 
