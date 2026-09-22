@@ -844,6 +844,52 @@ binary I downloaded is the one you built" deserves an explicit answer
 rather than silent omission. Decide whether this becomes M13 or stays
 out of scope for a first cut.
 
+### `[x]` Q-COVERAGE — What is the test suite's coverage target, and how is it reached? {#q-coverage}
+
+**Resolved 2026-09-21 — target ~90%, through tests that assert behaviour
+only; the gate stays at 80.** Planned as
+[test-coverage](../test-coverage/index.md), tracked by issue #27.
+
+**The question started from a wrong number.** Coverage looked like it was
+"just above 80%", one bad merge from a red `cover-check`. It was 86.55%
+(excluding `scripts/`, which is what the gate measures). The 80.4% that
+prompted the question is the per-package line `make cover` prints for the
+`cmd/gage` test binary — that binary's view of the whole module under
+`-coverpkg=./...`, not the merged total. Worth recording because the
+misreading is easy to repeat: the merged figure comes from
+`go tool cover -func=coverage.out | tail -1`, and a per-file script that
+does not merge the duplicated per-binary blocks will report something
+absurd (8.8%) rather than something wrong-looking.
+
+**What is being fixed is the other half.** Of 874 uncovered statements, a
+real subset is untested behaviour: `Vault.Search` never matching on a
+field value, the recovery-key destination checks under `$GAGE_DATA`, the
+prompter's retry ceilings and its refusal to guess at an unrecognized
+conflict answer, `unknownValueNode`'s whole type switch, `defaultBranchOf`.
+
+**What this means concretely:**
+
+- **No new fault-injection seams.** ~600 of the uncovered statements are
+  `if err != nil { return fmt.Errorf(...) }` around `os.Stat`,
+  `os.MkdirAll`, `os.Chmod`, `git.PlainOpen` and `atomicfile.WriteFile`.
+  Reaching them means a mock filesystem under `internal/gage`, which
+  inverts the standing rule that the real implementation runs in
+  production and in every realistic test, with a fake going through an
+  existing seam (`Prompter`, `Locker`, `RemoteSyncer`) only for the
+  specific failure being proven. They stay uncovered, deliberately.
+- **`threshold.total` stays at 80**, not raised to just under the new
+  figure. A gate set a point below current coverage re-creates exactly
+  the brittleness that prompted the question. The new coverage is a
+  cushion.
+- **`internal/gage/gittest` is excluded** from `.testcoverage.yml` and
+  `codecov.yml`, alongside `^scripts/`. It is test scaffolding, never
+  shipped in the `gage` binary, and its uncovered statements are all
+  `t.Fatalf` branches.
+- **No production code changes.** The only non-`_test.go` files the plan
+  touches are the two config files above.
+- `cmd/gage/main.go` (6 statements, reachable only from a real process)
+  stays uncovered and is not worth a subprocess harness.
+
 ---
 
 ## Design-doc amendments
