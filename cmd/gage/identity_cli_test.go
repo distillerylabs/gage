@@ -17,7 +17,7 @@ import (
 // so what these tests drive is the same thing a user drives.
 func initVaultForTest(t *testing.T, name string, extraArgs ...string) string {
 	t.Helper()
-	args := append([]string{"init", name}, extraArgs...)
+	args := append([]string{"init", name, "--no-recovery-key"}, extraArgs...)
 	res := runCLI(t, args, "")
 	if res.Code != 0 {
 		t.Fatalf("init exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)

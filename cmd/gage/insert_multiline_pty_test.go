@@ -25,7 +25,7 @@ import (
 // with Ctrl-D (EOT) — the terminal's own EOF signal on an empty line.
 func TestInsertMultilineCapturesFromARealTerminalUntilEOF(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 

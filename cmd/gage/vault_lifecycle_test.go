@@ -73,7 +73,7 @@ func identityFileForTest(t *testing.T, name, device string) string {
 func TestInitCreatesFullSkeletonAndRegisters(t *testing.T) {
 	isolateXDG(t)
 
-	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
 	}
@@ -101,7 +101,7 @@ func TestInitCreatesFullSkeletonAndRegisters(t *testing.T) {
 func TestInitWithoutDirUsesGageDataVaultsDir(t *testing.T) {
 	isolateXDG(t)
 
-	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
@@ -124,7 +124,7 @@ func TestInitWithDirUsesGivenPath(t *testing.T) {
 	isolateXDG(t)
 	dir := filepath.Join(t.TempDir(), "somewhere-else")
 
-	res := runCLI(t, []string{"init", "personal", "--dir", dir, "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--dir", dir, "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
@@ -146,7 +146,7 @@ func TestInitIntoNonEmptyNonGageDirectoryFailsWithoutTouchingFiles(t *testing.T)
 		t.Fatal(err)
 	}
 
-	res := runCLI(t, []string{"init", "personal", "--dir", dir, "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--dir", dir, "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code == 0 {
 		t.Fatal("expected init into a non-empty directory to fail")
 	}
@@ -168,14 +168,14 @@ func TestInitIntoNonEmptyNonGageDirectoryFailsWithoutTouchingFiles(t *testing.T)
 func TestInitIntoAlreadyRegisteredNameFailsAndLeavesExistingVaultUntouched(t *testing.T) {
 	isolateXDG(t)
 
-	first := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, "")
+	first := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if first.Code != 0 {
 		t.Fatalf("first init failed: %s", first.Stderr)
 	}
 	before := readGlobalConfigForTest(t)
 	beforeEntry := before.Vaults["personal"]
 
-	second := runCLI(t, []string{"init", "personal", "--recipient", testRecipient2}, "")
+	second := runCLI(t, []string{"init", "personal", "--recipient", testRecipient2, "--no-recovery-key"}, "")
 	if second.Code == 0 {
 		t.Fatal("expected re-init of an already-registered name to fail")
 	}
@@ -215,7 +215,7 @@ func readVaultConfigForTest(t *testing.T, name string) vaultconfig.File {
 
 func TestInitDefaultsLandInVaultConfigAndGlobalConfig(t *testing.T) {
 	isolateXDG(t)
-	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
@@ -255,10 +255,10 @@ func TestInitDefaultsLandInVaultConfigAndGlobalConfig(t *testing.T) {
 func TestInitExplicitTypeAndMethodEquivalentToDefault(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "implicit", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "implicit", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init (flags omitted) failed: %s", res.Stderr)
 	}
-	if res := runCLI(t, []string{"init", "explicit", "--type", "git", "--method", "passphrase", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "explicit", "--type", "git", "--method", "passphrase", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init (flags given) failed: %s", res.Stderr)
 	}
 
@@ -302,7 +302,7 @@ func TestInitExplicitTypeAndMethodEquivalentToDefault(t *testing.T) {
 
 func TestInitUnknownTypeFailsWithUsageAndListsGit(t *testing.T) {
 	isolateXDG(t)
-	res := runCLI(t, []string{"init", "personal", "--type", "s3", "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--type", "s3", "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code != int(exitcode.Usage) {
 		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
 	}
@@ -324,7 +324,7 @@ func TestInitUnknownMethodFailsWithUsage(t *testing.T) {
 	for _, m := range []string{"ssh", "yubikey", "age-key", "secure-enclave", "plugin:foo", "bogus"} {
 		t.Run(m, func(t *testing.T) {
 			name := "personal-" + strings.ReplaceAll(m, ":", "-")
-			res := runCLI(t, []string{"init", name, "--method", m, "--recipient", testRecipient1}, "")
+			res := runCLI(t, []string{"init", name, "--method", m, "--recipient", testRecipient1, "--no-recovery-key"}, "")
 
 			if res.Code != int(exitcode.Usage) {
 				t.Errorf("exit code = %d, want %d (Usage) for method %q", res.Code, exitcode.Usage, m)
@@ -349,7 +349,7 @@ func TestInitUnknownMethodFailsWithUsage(t *testing.T) {
 func TestInitWithNoRecipientGeneratesThisDevicesIdentity(t *testing.T) {
 	isolateXDG(t)
 
-	res := runCLI(t, []string{"init", "personal"}, "")
+	res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init without --recipient failed: %s", res.Stderr)
 	}
@@ -383,7 +383,7 @@ func TestInitWithNoRecipientGeneratesThisDevicesIdentity(t *testing.T) {
 func TestInitWritesTheWrappedIdentityFile(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 	entry := readGlobalConfigForTest(t).Vaults["personal"]
@@ -420,7 +420,7 @@ func TestInitWritesTheWrappedIdentityFile(t *testing.T) {
 func TestInitExtraRecipientFollowsTheDeviceKey(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -453,7 +453,7 @@ func TestInitExtraRecipientFollowsTheDeviceKey(t *testing.T) {
 func TestInitRecordsThisDevicesDeviceAndMethod(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -472,7 +472,7 @@ func TestInitRecordsThisDevicesDeviceAndMethod(t *testing.T) {
 func TestInitDeviceFlagAgreesEverywhere(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal", "--device", "workstation-7"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--device", "workstation-7", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -492,7 +492,7 @@ func TestInitDeviceFlagAgreesEverywhere(t *testing.T) {
 
 func TestInitRepeatedRecipientWritesAll(t *testing.T) {
 	isolateXDG(t)
-	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--recipient", testRecipient2}, "")
+	res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--recipient", testRecipient2, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
@@ -510,7 +510,7 @@ func TestInitRepeatedRecipientWritesAll(t *testing.T) {
 
 func TestInitMalformedRecipientFailsBeforeCreatingFiles(t *testing.T) {
 	isolateXDG(t)
-	res := runCLI(t, []string{"init", "personal", "--recipient", "not-a-valid-key"}, "")
+	res := runCLI(t, []string{"init", "personal", "--recipient", "not-a-valid-key", "--no-recovery-key"}, "")
 	if res.Code != int(exitcode.Usage) {
 		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
 	}
@@ -521,7 +521,7 @@ func TestInitMalformedRecipientFailsBeforeCreatingFiles(t *testing.T) {
 
 func TestInitDeviceFlagOverridesHostnameDefault(t *testing.T) {
 	isolateXDG(t)
-	res := runCLI(t, []string{"init", "personal", "--device", "custom-device", "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--device", "custom-device", "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
@@ -533,7 +533,7 @@ func TestInitDeviceFlagOverridesHostnameDefault(t *testing.T) {
 
 func TestInitDeviceFlagFailingAllowlistRejectedBeforeCreatingFiles(t *testing.T) {
 	isolateXDG(t)
-	res := runCLI(t, []string{"init", "personal", "--device", "../../../etc/x", "--recipient", testRecipient1}, "")
+	res := runCLI(t, []string{"init", "personal", "--device", "../../../etc/x", "--recipient", testRecipient1, "--no-recovery-key"}, "")
 	if res.Code != int(exitcode.Usage) {
 		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
 	}
@@ -544,7 +544,7 @@ func TestInitDeviceFlagFailingAllowlistRejectedBeforeCreatingFiles(t *testing.T)
 
 func TestVaultListIncludesFreshlyInitedVault(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -559,7 +559,7 @@ func TestVaultListIncludesFreshlyInitedVault(t *testing.T) {
 
 func TestVaultInfoByNameReportsExpectedFields(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--recipient", testRecipient2}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--recipient", testRecipient2, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -578,7 +578,7 @@ func TestVaultInfoByNameReportsExpectedFields(t *testing.T) {
 
 func TestVaultInfoNoArgumentReportsOnCurrent(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -597,7 +597,7 @@ func TestVaultInfoNoArgumentReportsOnCurrent(t *testing.T) {
 // swapped in a way a fresh vault can't reveal) and stay green.
 func TestVaultInfoReportsDirtyWorkingTree(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 	path := readGlobalConfigForTest(t).Vaults["personal"].Path
@@ -648,7 +648,7 @@ func rewriteVaultConfigLine(t *testing.T, vaultPath, prefix, replacement string)
 // than parsing the file some other way.
 func TestTamperedFormatVersionRefusedByRealCommand(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 	path := readGlobalConfigForTest(t).Vaults["personal"].Path
@@ -677,7 +677,7 @@ func TestTamperedFormatVersionRefusedByRealCommand(t *testing.T) {
 // a unit test of the parser (Q-DEVICE-NAME).
 func TestTamperedDeviceNameRefusedByRealCommand(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 	path := readGlobalConfigForTest(t).Vaults["personal"].Path
@@ -734,7 +734,7 @@ func identityTree(t *testing.T) []string {
 
 func TestVaultRemoveDropsRegistrationButLeavesFiles(t *testing.T) {
 	isolateXDG(t)
-	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 	path := readGlobalConfigForTest(t).Vaults["personal"].Path
@@ -870,7 +870,7 @@ func TestReinitAfterVaultRemoveIsAnOrdinaryRetry(t *testing.T) {
 		t.Fatalf("identity file should have survived vault remove: %v", err)
 	}
 
-	res := runCLI(t, []string{"init", "vault-test-newinit", "--device", "laptop-1"}, "")
+	res := runCLI(t, []string{"init", "vault-test-newinit", "--device", "laptop-1", "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("re-init after a vault remove should be an ordinary retry, not a failure: exit %d, stderr=%s", res.Code, res.Stderr)
 	}

@@ -41,7 +41,7 @@ func soleEntryID(t *testing.T, vaultPath string) uuid.UUID {
 // CLI path) for entry-command tests and returns its on-disk path.
 func initEntryTestVault(t *testing.T, name string) string {
 	t.Helper()
-	if res := runCLI(t, []string{"init", name, "--recipient", testRecipient1}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", name, "--recipient", testRecipient1, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init %q failed: %s", name, res.Stderr)
 	}
 	return readGlobalConfigForTest(t).Vaults[name].Path

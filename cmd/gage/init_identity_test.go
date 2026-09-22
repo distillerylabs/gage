@@ -22,7 +22,7 @@ import (
 func TestInitThenUnlockDecryptsSomethingEncryptedToTheVault(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -88,7 +88,7 @@ func TestInitLeavesNoVaultBehindWhenCreateFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := runCLI(t, []string{"init", "personal", "--dir", dir}, "")
+	res := runCLI(t, []string{"init", "personal", "--dir", dir, "--no-recovery-key"}, "")
 	if res.Code == 0 {
 		t.Fatal("expected init into a non-empty directory to fail")
 	}
@@ -112,7 +112,7 @@ func TestInitLeavesNoVaultBehindWhenCreateFails(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "keep.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if res := runCLI(t, []string{"init", "personal", "--dir", dir}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--dir", dir, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("retrying init after fixing the target directory failed: %s", res.Stderr)
 	}
 }
@@ -150,7 +150,7 @@ func wrappedIdentityFiles(t *testing.T, root string) []string {
 func TestInitAfterVaultRemoveGeneratesAFreshKeyRatherThanReusingTheOldOne(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 	firstID := vaultIDForTest(t, "personal")
@@ -172,7 +172,7 @@ func TestInitAfterVaultRemoveGeneratesAFreshKeyRatherThanReusingTheOldOne(t *tes
 	}
 
 	// A second, unrelated vault under the same local name.
-	res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--dir", filepath.Join(t.TempDir(), "again")}, "")
+	res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--dir", filepath.Join(t.TempDir(), "again"), "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("second init failed: exit %d, stderr=%s", res.Code, res.Stderr)
 	}
@@ -216,7 +216,7 @@ func TestTwoFailedInitsLeaveNoOrphanedIdentities(t *testing.T) {
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		if res := runCLI(t, []string{"init", "personal", "--dir", dir}, ""); res.Code == 0 {
+		if res := runCLI(t, []string{"init", "personal", "--dir", dir, "--no-recovery-key"}, ""); res.Code == 0 {
 			t.Fatalf("attempt %d: expected init into a non-empty directory to fail", attempt)
 		}
 	}
@@ -242,7 +242,7 @@ func TestTwoFailedInitsLeaveNoOrphanedIdentities(t *testing.T) {
 func TestInitReportsTheDeviceAndPublicKey(t *testing.T) {
 	isolateXDG(t)
 
-	res := runCLI(t, []string{"init", "personal", "--device", "laptop-1"}, "")
+	res := runCLI(t, []string{"init", "personal", "--device", "laptop-1", "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
@@ -262,7 +262,7 @@ func TestInitAsksForTheNewPassphraseThroughThePrompter(t *testing.T) {
 	isolateXDG(t)
 
 	p := &fakePrompter{passphrases: []string{testPassphrase}}
-	res, _ := runCLIWithPrompter(t, []string{"init", "personal", "--device", "laptop-1"}, "", false, p)
+	res, _ := runCLIWithPrompter(t, []string{"init", "personal", "--device", "laptop-1", "--no-recovery-key"}, "", false, p)
 	if res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
@@ -288,7 +288,7 @@ func TestInitAsksForTheNewPassphraseThroughThePrompter(t *testing.T) {
 func TestInitWithARejectedDeviceNameWritesNoIdentityFile(t *testing.T) {
 	isolateXDG(t)
 
-	res := runCLI(t, []string{"init", "personal", "--device", "../../escape"}, "")
+	res := runCLI(t, []string{"init", "personal", "--device", "../../escape", "--no-recovery-key"}, "")
 	if res.Code != int(exitcode.Usage) {
 		t.Errorf("exit code = %d, want %d (Usage)", res.Code, exitcode.Usage)
 	}

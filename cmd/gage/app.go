@@ -36,6 +36,19 @@ type App struct {
 	// one seam production code and tests genuinely need to differ on.
 	IsTerminal func() bool
 
+	// IsErrTerminal reports whether Err is a real terminal, which is a
+	// different question from IsTerminal: Err is where gage puts prompts,
+	// warnings, and `init`'s one-time recovery key, and `gage init
+	// 2>build.log` redirects all of that while leaving stdin a terminal.
+	// Only the recovery key consults it, because it is the only output
+	// gage produces that is both secret and unrepeatable — see
+	// planRecoveryKey.
+	//
+	// nil means "same as IsTerminal", which is what every test wants and
+	// what Run overrides with a real check on the stderr it was handed.
+	// Read through errIsTerminal, never directly.
+	IsErrTerminal func() bool
+
 	// Now is the clock the session's idle timeout reads, defaulting to
 	// time.Now when nil. It exists for the same reason IsTerminal does:
 	// a test needs to differ from production on it and cannot fake it
@@ -212,6 +225,15 @@ func NewRootCmd(app *App) *cobra.Command {
 	installHelp(app, root)
 
 	return root
+}
+
+// errIsTerminal reports whether there is a human watching app.Err,
+// falling back to IsTerminal when nothing more specific was supplied.
+func (app *App) errIsTerminal() bool {
+	if app.IsErrTerminal != nil {
+		return app.IsErrTerminal()
+	}
+	return app.IsTerminal()
 }
 
 // clipboard returns this run's clipboardKeeper, building it on first

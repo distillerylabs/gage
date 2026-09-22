@@ -25,7 +25,7 @@ func initVaultWithRemote(t *testing.T, name string) (vaultPath, remote string) {
 	t.Helper()
 
 	remote = gittest.NewBareRemote(t)
-	res := runCLI(t, []string{"init", name, "--remote", remote}, "")
+	res := runCLI(t, []string{"init", name, "--remote", remote, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
 	}
@@ -43,7 +43,7 @@ func TestInitPublishesTheNewVault(t *testing.T) {
 	isolateXDG(t)
 
 	remote := gittest.NewBareRemote(t)
-	res := runCLI(t, []string{"init", "personal", "--remote", remote}, "")
+	res := runCLI(t, []string{"init", "personal", "--remote", remote, "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
 	}
@@ -66,7 +66,7 @@ func TestInitAgainstAMissingRepositorySaysToCreateIt(t *testing.T) {
 	isolateXDG(t)
 
 	missing := filepath.Join(t.TempDir(), "nothing-here.git")
-	res := runCLI(t, []string{"init", "personal", "--remote", missing}, "")
+	res := runCLI(t, []string{"init", "personal", "--remote", missing, "--no-recovery-key"}, "")
 	if res.Code == 0 {
 		t.Fatalf("init against a nonexistent repository succeeded; stdout=%s", res.Stdout)
 	}
@@ -270,7 +270,7 @@ func TestSyncReportsAConflictingDivergenceAndNamesTheVault(t *testing.T) {
 func TestSyncOnAVaultWithNoRemoteSaysSoAndSucceeds(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -322,7 +322,7 @@ func TestOfflineExitsUnreachableAndDivergedExitsConflict(t *testing.T) {
 
 	// A vault whose remote is permanently unreachable. init says so and
 	// still succeeds — the vault is durable locally either way.
-	res := runCLI(t, []string{"init", "personal", "--remote", gittest.URL("git.example.com", "me/vault.git")}, "")
+	res := runCLI(t, []string{"init", "personal", "--remote", gittest.URL("git.example.com", "me/vault.git"), "--no-recovery-key"}, "")
 	if res.Code != 0 {
 		t.Fatalf("init against an unreachable remote exit code = %d, want 0; stderr=%s", res.Code, res.Stderr)
 	}

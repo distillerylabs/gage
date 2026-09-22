@@ -117,7 +117,7 @@ func TestAuthLogoutForgetsTheToken(t *testing.T) {
 func TestHostDefaultsToTheCurrentVaultsOrigin(t *testing.T) {
 	isolateXDG(t)
 
-	if res := runCLI(t, []string{"init", "personal", "--remote", "https://git.example.com/me/vault.git"}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--remote", "https://git.example.com/me/vault.git", "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 
@@ -140,7 +140,7 @@ func TestAuthOnALocalRemoteSaysNoTokenIsNeeded(t *testing.T) {
 	isolateXDG(t)
 
 	remote := gittest.NewBareRemote(t)
-	if res := runCLI(t, []string{"init", "personal", "--remote", remote}, ""); res.Code != 0 {
+	if res := runCLI(t, []string{"init", "personal", "--remote", remote, "--no-recovery-key"}, ""); res.Code != 0 {
 		t.Fatalf("init failed: %s", res.Stderr)
 	}
 

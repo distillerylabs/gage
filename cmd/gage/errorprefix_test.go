@@ -57,9 +57,9 @@ func TestNoCommandDoublesGagesOwnPrefix(t *testing.T) {
 		},
 		{
 			name: "init into an already-registered name",
-			args: []string{"init", "personal"},
+			args: []string{"init", "personal", "--no-recovery-key"},
 			setup: func(t *testing.T) []string {
-				if res := runCLI(t, []string{"init", "personal"}, ""); res.Code != 0 {
+				if res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, ""); res.Code != 0 {
 					t.Fatalf("seeding: %s", res.Stderr)
 				}
 				return nil
@@ -67,7 +67,7 @@ func TestNoCommandDoublesGagesOwnPrefix(t *testing.T) {
 		},
 		{
 			name: "init against a repository that doesn't exist",
-			args: []string{"init", "personal", "--remote", "PLACEHOLDER"},
+			args: []string{"init", "personal", "--remote", "PLACEHOLDER", "--no-recovery-key"},
 			setup: func(t *testing.T) []string {
 				return []string{filepath.Join(t.TempDir(), "nothing-here.git")}
 			},
@@ -76,7 +76,7 @@ func TestNoCommandDoublesGagesOwnPrefix(t *testing.T) {
 			name: "entry not found",
 			args: []string{"show", "nosuchentry"},
 			setup: func(t *testing.T) []string {
-				if res := runCLI(t, []string{"init", "personal"}, ""); res.Code != 0 {
+				if res := runCLI(t, []string{"init", "personal", "--no-recovery-key"}, ""); res.Code != 0 {
 					t.Fatalf("seeding: %s", res.Stderr)
 				}
 				return nil

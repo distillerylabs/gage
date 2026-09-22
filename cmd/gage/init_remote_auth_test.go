@@ -19,7 +19,7 @@ func TestInitSolicitsATokenWhenNoneIsStored(t *testing.T) {
 	recorder := gittest.InstallRecordingTransport(t, errors.New("recorded; not connecting"))
 
 	const host = "git.example.com"
-	res, p := runCLIWithPrompter(t, []string{"init", "personal", "--remote", gittest.URL(host, "me/vault.git")}, "",
+	res, p := runCLIWithPrompter(t, []string{"init", "personal", "--remote", gittest.URL(host, "me/vault.git"), "--no-recovery-key"}, "",
 		false, &fakePrompter{passphrases: []string{testPassphrase}, values: []string{"tok_from_prompt"}})
 
 	// The recording transport always fails the connection, so init
@@ -64,7 +64,7 @@ func TestInitSkipsTheTokenWhenTheAnswerIsBlank(t *testing.T) {
 	recorder := gittest.InstallRecordingTransport(t, errors.New("recorded; not connecting"))
 
 	const host = "git.example.com"
-	res, _ := runCLIWithPrompter(t, []string{"init", "personal", "--remote", gittest.URL(host, "me/vault.git")}, "",
+	res, _ := runCLIWithPrompter(t, []string{"init", "personal", "--remote", gittest.URL(host, "me/vault.git"), "--no-recovery-key"}, "",
 		false, &fakePrompter{passphrases: []string{testPassphrase}, values: []string{""}})
 
 	if res.Code == 0 {
@@ -96,7 +96,7 @@ func TestInitDoesNotPromptWhenATokenAlreadyExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, p := runCLIWithPrompter(t, []string{"init", "personal", "--remote", gittest.URL(host, "me/vault.git")}, "",
+	res, p := runCLIWithPrompter(t, []string{"init", "personal", "--remote", gittest.URL(host, "me/vault.git"), "--no-recovery-key"}, "",
 		false, &fakePrompter{passphrases: []string{testPassphrase}})
 
 	if res.Code == 0 {
@@ -119,7 +119,7 @@ func TestInitDoesNotPromptForALocalRemote(t *testing.T) {
 	isolateXDG(t)
 
 	remote := gittest.NewBareRemote(t)
-	res, p := runCLIWithPrompter(t, []string{"init", "personal", "--remote", remote}, "",
+	res, p := runCLIWithPrompter(t, []string{"init", "personal", "--remote", remote, "--no-recovery-key"}, "",
 		false, &fakePrompter{passphrases: []string{testPassphrase}})
 
 	if res.Code != 0 {

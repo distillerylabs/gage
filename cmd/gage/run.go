@@ -2,6 +2,9 @@ package main
 
 import (
 	"io"
+	"os"
+
+	"golang.org/x/term"
 
 	"github.com/distillerylabs/gage/internal/gage/exitcode"
 )
@@ -12,6 +15,15 @@ import (
 // inspect the int without a subprocess.
 func Run(args []string, in io.Reader, out, errW io.Writer, isTerminal func() bool, build BuildInfo) int {
 	app := &App{Out: out, Err: errW, In: in, Build: build, IsTerminal: isTerminal}
+	// Whether the stream carrying prompts and `init`'s one-time recovery
+	// key is a terminal, asked of the writer actually handed in rather
+	// than of os.Stderr: the same *os.File test the prompter applies to
+	// its own reader, and it answers false for the io.Writer a test or a
+	// future embedder supplies. See App.IsErrTerminal.
+	app.IsErrTerminal = func() bool {
+		f, ok := errW.(*os.File)
+		return ok && term.IsTerminal(int(f.Fd()))
+	}
 	// Prompts and warnings go to stderr, not stdout: a `gage show foo >
 	// secret.txt` must put only the secret in the file, while the human
 	// still sees the passphrase prompt they're answering.
