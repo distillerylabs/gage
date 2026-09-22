@@ -3,6 +3,7 @@
 [![Test](https://github.com/distillerylabs/gage/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/distillerylabs/gage/actions/workflows/test.yml)
 [![Lint](https://github.com/distillerylabs/gage/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/distillerylabs/gage/actions/workflows/lint.yml)
 [![Vuln](https://github.com/distillerylabs/gage/actions/workflows/vuln.yml/badge.svg?branch=main)](https://github.com/distillerylabs/gage/actions/workflows/vuln.yml)
+[![Codecov](https://codecov.io/gh/distillerylabs/gage/graph/badge.svg?branch=main)](https://codecov.io/gh/distillerylabs/gage)
 
 `gage` (`git` + `age`) is a git-backed, age-encrypted secret and notes manager for the command line, written in Go.
 
