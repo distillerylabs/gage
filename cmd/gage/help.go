@@ -232,6 +232,33 @@ func renderCommandHelp(w io.Writer, cmd *cobra.Command) {
 		lines = append(lines, "", "Aliases:", "  "+strings.Join(names, ", "))
 	}
 
+	// A group command (recovery, recipient, vault, auth, git, identity) has
+	// children and nothing else — its own Short is the only description a
+	// user would otherwise see, with no way to learn the child names short
+	// of already knowing them or going back to the top-level `gage help`.
+	// Cobra's own default help would list these; this codebase replaces
+	// that default (see installHelp) but never carried this part of it
+	// forward, which is what left every group command looking like a leaf
+	// with no subcommands. A real leaf has no Commands() and gets nothing
+	// added here.
+	if children := cmd.Commands(); len(children) > 0 {
+		names := make([]string, 0, len(children))
+		for _, c := range children {
+			if c.IsAvailableCommand() {
+				names = append(names, c.Name())
+			}
+		}
+		sort.Strings(names)
+		lines = append(lines, "", "Available Commands:")
+		for _, name := range names {
+			child, _, err := cmd.Find([]string{name})
+			if err != nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("  %-16s%s", name, child.Short))
+		}
+	}
+
 	// Flags belong in per-command help specifically, and this is where
 	// -u|--use surfaces: the design doc keeps it out of the top-level
 	// session listing (which leads with bare `use <vault>`) while
