@@ -93,7 +93,7 @@ func builtGageBinary(t *testing.T) string {
 		}
 		binDir = dir
 		binPath = filepath.Join(dir, exeName("gage"))
-		cmd := exec.Command("go", "build", "-o", binPath, ".")
+		cmd := exec.Command("go", "build", "-o", binPath, ".") // #nosec G204 -- fixed argv building the test binary, no untrusted input
 		cmd.Dir = "."
 		if out, err := cmd.CombinedOutput(); err != nil {
 			binErr = err
@@ -115,7 +115,7 @@ func TestRealBinaryWithRedirectedStdinPrintsHelp(t *testing.T) {
 	}
 	defer func() { _ = devNull.Close() }()
 
-	cmd := exec.Command(bin)
+	cmd := exec.Command(bin) // #nosec G204 -- bin is the binary this test just built, not untrusted input
 	cmd.Stdin = devNull
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -129,7 +129,7 @@ func TestRealBinaryWithRedirectedStdinPrintsHelp(t *testing.T) {
 func TestRealBinaryVersionFlag(t *testing.T) {
 	bin := builtGageBinary(t)
 
-	out, err := exec.Command(bin, "--version").CombinedOutput()
+	out, err := exec.Command(bin, "--version").CombinedOutput() // #nosec G204 -- bin is the binary this test just built, not untrusted input
 	if err != nil {
 		t.Fatalf("gage --version failed: %v\noutput: %s", err, out)
 	}
@@ -160,6 +160,7 @@ func TestLinkTimeVersionInjection(t *testing.T) {
 	const wantVersion = "v9.9.9-testtag"
 	const wantCommit = "cafef00"
 
+	// #nosec G204 -- fixed argv building the test binary, no untrusted input
 	build := exec.Command("go", "build",
 		"-ldflags", "-X 'main.version="+wantVersion+"' -X 'main.commit="+wantCommit+"'",
 		"-o", bin, ".")
@@ -167,7 +168,7 @@ func TestLinkTimeVersionInjection(t *testing.T) {
 		t.Fatalf("building with ldflags: %v\n%s", err, out)
 	}
 
-	out, err := exec.Command(bin, "--version").CombinedOutput()
+	out, err := exec.Command(bin, "--version").CombinedOutput() // #nosec G204 -- bin is the binary this test just built, not untrusted input
 	if err != nil {
 		t.Fatalf("gage --version failed: %v\noutput: %s", err, out)
 	}

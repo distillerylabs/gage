@@ -16,7 +16,7 @@ import (
 // testToken is what the fake prompter answers `auth login`'s token
 // prompt with. It's deliberately distinctive so a leak test can look for
 // it anywhere output goes.
-const testToken = "ghp_TESTTOKENVALUE0123456789"
+const testToken = "ghp_TESTTOKENVALUE0123456789" // #nosec G101 -- deliberately fake token value, not a real credential
 
 // runAuthCLI runs the CLI with a prompter that answers the token prompt.
 func runAuthCLI(t *testing.T, args []string) cliResult {

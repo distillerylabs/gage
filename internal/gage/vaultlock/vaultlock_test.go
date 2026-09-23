@@ -61,8 +61,10 @@ func runLockHolder() {
 	// kills us outright (simulated crash) — either way, this process
 	// holding the OS-level lock is what's under test, not this loop.
 	buf := make([]byte, 1)
+	// #nosec G104 -- lock-holder subprocess intentionally ignores a short read on shutdown
 	os.Stdin.Read(buf) //nolint:errcheck
-	lock.Release()     //nolint:errcheck
+	// #nosec G104 -- best-effort release on subprocess exit; the OS reclaims the lock either way
+	lock.Release() //nolint:errcheck
 	os.Exit(0)
 }
 
@@ -79,7 +81,7 @@ func spawnHolder(t *testing.T, path string) (*exec.Cmd, io.Closer, func()) {
 		t.Fatalf("os.Executable: %v", err)
 	}
 
-	cmd := exec.Command(self, "-test.run=^$")
+	cmd := exec.Command(self, "-test.run=^$") // #nosec G204 -- self is os.Executable(), this test binary re-executing itself
 	cmd.Env = append(os.Environ(), lockHolderEnv+"=1", lockHolderPathEnv+"="+path)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
