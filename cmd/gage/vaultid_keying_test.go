@@ -36,7 +36,7 @@ func writeVaultConfigForTest(t *testing.T, name, content string) {
 		t.Fatalf("vault %q is not registered", name)
 	}
 	path := filepath.Join(entry.Path, ".gage", "config.toml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil { // #nosec G306 -- matches what gage writes
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -847,7 +847,7 @@ func orphanThisDevicesKey(t *testing.T, name string) {
 
 	entry := readGlobalConfigForTest(t).Vaults[name]
 	if err := os.WriteFile(filepath.Join(entry.Path, ".age-recipients"),
-		[]byte(replacement+"\n"), 0o644); err != nil { // #nosec G306 -- matches what gage writes
+		[]byte(replacement+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

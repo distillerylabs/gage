@@ -136,10 +136,28 @@ linters:
         linters:
           - forbidigo
 
-      # Test files also get a narrower gosec pass. G404 (weak RNG) and
-      # G306/G302 (permissive file modes) describe fixtures under
-      # t.TempDir(), not shipped behavior.
+      # Test files get a narrower gosec pass than shipped code: these
+      # four codes describe test-fixture mechanics, not shipped
+      # behavior, and would otherwise require the same suppression at
+      # nearly every t.TempDir()-based test in the suite.
+      #   - G304 (path traversal via variable): every fixture path is
+      #     built from t.TempDir()/t.Name(), not attacker input.
+      #   - G302/G306 (permissive/unusual file & dir modes): tests
+      #     deliberately chmod fixtures to exercise permission-denied
+      #     paths, or write with the same mode gage itself uses on disk.
+      #   - G602 (slice index out of range): gosec's SSA-based bounds
+      #     analyzer cannot always follow a `for i := range slice`
+      #     invariant and flags provably in-bounds indexing (see
+      #     memlock_test.go's TestAllocGivesEachBufferItsOwnPage).
+      # G101 (hardcoded credentials), G204 (subprocess launched with a
+      # variable) and G104 (unhandled errors) are deliberately NOT
+      # listed here: each describes a mistake that's just as real in a
+      # test file as in shipped code (a pasted real token, a
+      # shell-injection-shaped subprocess call, a silently dropped
+      # error), so those three are suppressed per call site with
+      # `// #nosec <CODE> -- reason` instead, same as shipped code.
       - path: _test\.go$
+        text: 'G304|G302|G306|G602'
         linters:
           - gosec
 
