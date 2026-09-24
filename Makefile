@@ -156,6 +156,12 @@ clean:
 clean-tools:
 	rm -rf bin/
 
+# Installs a git pre-commit hook that runs `make lint`, the same check CI's
+# lint workflow runs. Pass ARGS=--uninstall or ARGS=--force as needed.
+.PHONY: install-hooks
+install-hooks:
+	sh scripts/install-pre-commit-hook.sh $(ARGS)
+
 # Wipes every directory gage owns on this machine ($GAGE_CONFIG, $GAGE_DATA,
 # $GAGE_STATE) so you can test the tool from a fresh-install state. Deletes
 # real vaults, identities, and tokens if you have any registered — the
