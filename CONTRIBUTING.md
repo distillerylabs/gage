@@ -23,6 +23,11 @@ make vet         # go vet only
 Run a single test with `go test ./internal/gage/ -run TestName -v` (or the
 relevant package, e.g. `./cmd/gage/`).
 
+To catch lint and format failures before they reach CI, install the
+pre-commit hook with `make install-hooks`. It runs `make lint` on every commit
+(bypass once with `git commit --no-verify`; remove with
+`make install-hooks ARGS=--uninstall`).
+
 ## Before opening a PR
 
 `make lint` and `make test` must both be clean. CI runs them natively on

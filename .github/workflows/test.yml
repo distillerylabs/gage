@@ -18,6 +18,9 @@ concurrency:
 # (lint.yml, vuln.yml) so each gets its own status badge.
 jobs:
   test:
+    # Pinned so the required-check names stay "test (<os>)" regardless of
+    # which extra keys the matrix entries carry.
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
